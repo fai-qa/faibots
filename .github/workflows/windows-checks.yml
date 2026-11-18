@@ -1,0 +1,38 @@
+name: Windows checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.20.0'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm audit --audit-level=high
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Exercise the desktop proposal flow
+        shell: pwsh
+        run: |
+          npm run prestart
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $runtime = Join-Path $env:RUNNER_TEMP 'faibots-electron'
+          New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+          Copy-Item -Path 'node_modules/electron/dist/*' -Destination $runtime -Recurse
+          $env:FAIBOTS_SMOKE_ELECTRON = Join-Path $runtime 'electron.exe'
+          node tests/windows-desktop-smoke.cjs

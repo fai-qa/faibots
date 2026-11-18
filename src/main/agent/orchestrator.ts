@@ -1,0 +1,860 @@
+// The runtime: who speaks when (ARCHITECTURE §5). Plain code decides, no model does:
+//
+//   dm        every user message gives the bot one turn.
+//   group     every user message starts a cascade of rounds. Round 1: @mentioned bots must answer;
+//             @everyone/@all addresses all members; nobody addressed -> the group policy (open:
+//             everyone may answer or pass; mentions: the primary bot answers; router: a cheap
+//             model call picks). Later rounds offer the bots' new posts to the other members
+//             (mentioned bots must answer; in open policy the rest may answer or pass). At most
+//             maxRounds rounds and maxBotPosts bot posts; the last round is "winding down";
+//             a round without posts ends the cascade.
+//   exchange  a bot's send_to_agent posts into the exchange with the other bot, runs that bot's
+//             turn there and waits for its reply (chain depth ≤ 3, no loops, 10 minute timeout).
+//
+// A bot runs one turn at a time per conversation (SerialQueues). Stop cancels every running and
+// queued turn of a conversation, and through the signals every exchange those turns opened.
+//
+// Every turn that reaches a model is written to the turn log with what started it (user, group,
+// agent, routine) and its tokens. Automatic turns (agent, routine) first check the bot's daily run
+// limit, so a routine or a chatty bot cannot spend a whole allowance unattended.
+
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import {
+  DEFAULT_GROUP_SETTINGS,
+  MAX_GROUP_BOTS,
+  type Bot,
+  type BotPhase,
+  type Conversation,
+  type Entry,
+  type EntryTrigger,
+  type GroupSettings,
+  type GroupTurnPolicy,
+  type Id,
+  type ManifestLiteSource,
+  type TurnTrigger
+} from '@shared/domain'
+import type { SendMessageRequest } from '@shared/ipc'
+import type { AutomatedRunResult, Runtime, Services, ToolContext, ToolDefinition, ToolResult } from '../contracts'
+import type { EngineKind } from '../providers/catalog'
+import type { RuntimeProviders } from '../providers/provider-service'
+import type { ToolCallRequest } from '../providers/types'
+import { errorResult } from '../tools/define'
+import { nativeActionId } from '../tools/action-executor'
+import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
+import { IncompleteTurnError, type TurnEngine } from './engine'
+import { speakerName } from './history'
+import { LiveStates } from './live-state'
+import { parseMentions } from './mentions'
+import { buildSystemPrompt, turnNote } from './prompt'
+import { SerialQueues } from './queue'
+import { routeMessage } from './router'
+import { TurnRecorder, toolStatus, resultPreview } from './turn-recorder'
+
+export const MAX_CHAIN_DEPTH = 3
+/** send_to_agent calls one turn may make. */
+export const MAX_ASKS_PER_TURN = 5
+/** send_to_agent calls one chain may make in total, across every level of asking. */
+export const MAX_ASKS_PER_CHAIN = 12
+export const EXCHANGE_TIMEOUT_MS = 10 * 60_000
+const SHUTDOWN_WAIT_MS = 4_000
+
+export type RuntimeDeps = Omit<Services, 'providers' | 'runtime' | 'routines' | 'webhooks' | 'missions'> & { providers: RuntimeProviders }
+
+export interface RuntimeOptions {
+  engines: Record<EngineKind, TurnEngine>
+  exchangeTimeoutMs?: number
+  now?: () => Date
+}
+
+export interface TurnOutcome {
+  /** 'limited': an automatic turn was refused by the bot's daily run limit. */
+  status: 'sent' | 'pass' | 'error' | 'cancelled' | 'skipped' | 'limited'
+  posts: Entry[]
+  error?: string
+}
+
+interface TurnRequest {
+  /** What started the turn: the turn log and the daily limit use it. */
+  trigger: TurnTrigger
+  mustAnswer: boolean
+  isWindingDown?: boolean
+  inGroup: boolean
+  chain: Id[]
+  /** Selected sources for this turn (manifest-lite, FJ-09); only mission runs set it. */
+  manifestLite?: { sources: ManifestLiteSource[] }
+  /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
+  parentSignal?: AbortSignal
+  cascade?: Cascade
+  /** Shared by a turn and every exchange it starts, however deep (bounds bot-to-bot fan-out). */
+  askBudget?: { left: number }
+}
+
+interface ActiveTurn {
+  turnId: Id
+  bot: Bot
+  conversationId: Id
+  recorder: TurnRecorder
+  mustAnswer: boolean
+  passed: boolean
+  waiting: number
+  beforeWaiting?: { phase: BotPhase; activity?: string }
+  asks: number
+  askBudget: { left: number }
+  unresolvedActions: Set<string>
+}
+
+/** One user message's rounds in a group. */
+class Cascade {
+  posts = 0
+  refused = 0
+  stopped = false
+  superseded = false
+  constructor(readonly maxPosts: number) {}
+
+  /** Take one post (one message entry) from the budget. */
+  reserve(): boolean {
+    if (this.stopped || this.posts >= this.maxPosts) {
+      this.refused++
+      return false
+    }
+    this.posts++
+    return true
+  }
+
+  get exhausted(): boolean {
+    return this.posts >= this.maxPosts
+  }
+}
+
+interface ConversationRun {
+  stop: AbortController
+  cascades: Set<Cascade>
+}
+
+interface Participant {
+  bot: Bot
+  mustAnswer: boolean
+}
+
+const unique = <T>(items: T[]) => [...new Set(items)]
+const isOwn = (e: Entry, botId: Id) => e.author.kind === 'bot' && e.author.botId === botId
+const POLICIES: GroupTurnPolicy[] = ['open', 'mentions', 'router']
+
+function clamp(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback
+}
+
+/** Group settings with defaults filled in and values kept in sane bounds. */
+export function normalizeGroupSettings(settings: Partial<GroupSettings> | undefined): GroupSettings {
+  const s = { ...DEFAULT_GROUP_SETTINGS, ...settings }
+  return {
+    turnPolicy: POLICIES.includes(s.turnPolicy) ? s.turnPolicy : DEFAULT_GROUP_SETTINGS.turnPolicy,
+    maxRounds: clamp(s.maxRounds, 1, 10, DEFAULT_GROUP_SETTINGS.maxRounds),
+    maxBotPosts: clamp(s.maxBotPosts, 1, 50, DEFAULT_GROUP_SETTINGS.maxBotPosts),
+    allowBotToBot: typeof s.allowBotToBot === 'boolean' ? s.allowBotToBot : DEFAULT_GROUP_SETTINGS.allowBotToBot,
+    parallel: typeof s.parallel === 'boolean' ? s.parallel : DEFAULT_GROUP_SETTINGS.parallel
+  }
+}
+
+export class Orchestrator implements Runtime, CollabRuntime {
+  private readonly live: LiveStates
+  private readonly queues = new SerialQueues()
+  private readonly runs = new Map<Id, ConversationRun>()
+  private readonly active = new Map<Id, ActiveTurn>()
+  private readonly background = new Set<Promise<unknown>>()
+  /** Outcome of the latest turn that really ran, per conversation and bot (in memory only). */
+  private readonly lastRealOutcome = new Map<string, { status: TurnOutcome['status']; error?: string }>()
+  private readonly unsubscribe: () => void
+  private readonly exchangeTimeoutMs: number
+  private readonly now: () => Date
+  private closed = false
+
+  constructor(
+    private readonly deps: RuntimeDeps,
+    private readonly options: RuntimeOptions
+  ) {
+    this.live = new LiveStates(deps.bus)
+    this.exchangeTimeoutMs = options.exchangeTimeoutMs ?? EXCHANGE_TIMEOUT_MS
+    this.now = options.now ?? (() => new Date())
+    this.recoverInterruptedTurns()
+    this.unsubscribe = deps.approvals.subscribe((event) => {
+      const turn = this.active.get(event.ctx.turnId)
+      if (event.state === 'pending') this.emitConversationAndRoot(event.ctx.conversation.id)
+      if (!turn) return
+      if (event.state === 'pending') {
+        if (turn.waiting++ === 0) turn.beforeWaiting = turn.recorder.currentPhase
+        turn.recorder.phase('waiting', 'Waiting for your approval')
+      } else if (--turn.waiting <= 0) {
+        turn.waiting = 0
+        turn.recorder.phase(turn.beforeWaiting?.phase ?? 'tool', turn.beforeWaiting?.activity)
+      }
+    })
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Runtime contract
+  // -------------------------------------------------------------------------------------------
+
+  async send(req: SendMessageRequest): Promise<Entry> {
+    if (this.closed) throw new Error('FaiBots is shutting down.')
+    const { store } = this.deps
+    const conversation = store.conversations.get(req.conversationId)
+    if (!conversation) throw new Error('Conversation not found')
+    if (conversation.kind === 'exchange') throw new Error('Conversations between bots are read-only.')
+    if (req.clientNonce) {
+      const existing = store.entries.findByNonce(conversation.id, req.clientNonce)
+      if (existing) return existing
+    }
+    const text = req.text.trim()
+    const attachments = req.attachmentPaths.length > 0 ? this.deps.attachments.ingest(req.attachmentPaths) : []
+    if (!text && attachments.length === 0) throw new Error('Type a message or attach a file.')
+
+    const parsed = parseMentions(text, this.membersOf(conversation))
+    const mentions = unique([...req.mentions.filter((id) => conversation.botIds.includes(id)), ...parsed.ids])
+    const entry = store.entries.append({
+      conversationId: conversation.id,
+      kind: 'message',
+      author: { kind: 'user' },
+      text,
+      mentions,
+      mentionsEveryone: req.mentionsEveryone || parsed.everyone,
+      ...(req.replyToId && { replyToId: req.replyToId }),
+      attachments,
+      isStreaming: false,
+      ...(req.clientNonce && { clientNonce: req.clientNonce })
+    })
+    this.emitEntry(entry)
+
+    if (conversation.kind === 'dm') {
+      const botId = conversation.botIds[0]
+      if (botId) this.track(this.scheduleTurn(conversation.id, botId, { trigger: 'user', mustAnswer: true, inGroup: false, chain: [] }))
+    } else {
+      this.track(this.runCascade(conversation.id, entry))
+    }
+    return entry
+  }
+
+  stop(conversationId: Id): void {
+    const run = this.runs.get(conversationId)
+    if (!run) return
+    for (const cascade of run.cascades) cascade.stopped = true
+    run.stop.abort()
+    // Turns scheduled after the stop get a fresh signal.
+    run.stop = new AbortController()
+  }
+
+  reset(conversationId: Id): void {
+    const { store, bus } = this.deps
+    this.stop(conversationId)
+    store.entries.clear(conversationId)
+    store.botContext.clearConversation(conversationId)
+    const conversation = store.conversations.get(conversationId)
+    if (conversation) bus.emit('conv:changed', { conversation })
+  }
+
+  liveStates() {
+    return this.live.list()
+  }
+
+  createGroup(input: { title?: string; botIds: Id[]; settings?: Partial<GroupSettings> }): Conversation {
+    const { store, bus } = this.deps
+    const botIds = unique(input.botIds)
+    if (botIds.length === 0) throw new Error('Pick at least one bot for the group.')
+    if (botIds.length > MAX_GROUP_BOTS) throw new Error(`A group can have at most ${MAX_GROUP_BOTS} bots.`)
+    const bots = botIds.map((id) => {
+      const bot = store.bots.get(id)
+      if (!bot) throw new Error('One of the bots no longer exists.')
+      return bot
+    })
+    const title = input.title?.trim() || bots.map((b) => b.name).join(', ')
+    const conversation = store.conversations.create({
+      kind: 'group',
+      title,
+      botIds,
+      group: normalizeGroupSettings(input.settings)
+    })
+    bus.emit('conv:changed', { conversation })
+    return conversation
+  }
+
+  openDm(botId: Id): Conversation {
+    const { store, bus } = this.deps
+    const bot = store.bots.get(botId)
+    if (!bot) throw new Error('Bot not found')
+    const existing = store.conversations.findDm(botId)
+    if (existing) return existing
+    const conversation = store.conversations.create({ kind: 'dm', title: bot.name, botIds: [botId] })
+    bus.emit('conv:changed', { conversation })
+    return conversation
+  }
+
+  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
+    if (this.closed) throw new Error('FaiBots is shutting down.')
+    const { store } = this.deps
+    const text = input.text.trim()
+    if (!text) throw new Error('A routine needs something to do.')
+    const conversation = this.openDm(input.botId)
+    // FaiBots, not the user, speaks here: the bot must not take a routine's words as yours.
+    const entry = store.entries.append({
+      conversationId: conversation.id,
+      kind: 'message',
+      author: { kind: 'system' },
+      text,
+      mentions: [input.botId],
+      mentionsEveryone: false,
+      attachments: [],
+      isStreaming: false,
+      trigger: input.trigger
+    })
+    this.emitEntry(entry)
+
+    const outcome = await this.scheduleTurn(conversation.id, input.botId, {
+      trigger: 'routine',
+      mustAnswer: true,
+      inGroup: false,
+      chain: [],
+      ...(input.manifestLite && { manifestLite: input.manifestLite }),
+      ...(input.signal && { parentSignal: input.signal })
+    })
+    // Include coalesced text as context only. A skipped turn has no verified execution outcome;
+    // another turn's partial reply must never promote it to successful completion.
+    const posts =
+      outcome.posts.length > 0
+        ? outcome.posts
+        : store.entries.since(conversation.id, entry.seq).filter((e) => e.kind === 'message' && isOwn(e, input.botId))
+    const reply = posts.filter((p) => p.kind === 'message').map((p) => p.text).join('\n\n').trim()
+    const status: AutomatedRunResult['status'] =
+      outcome.status === 'sent' || outcome.status === 'pass' ? 'done' : outcome.status
+    return {
+      status,
+      conversationId: conversation.id,
+      entryId: entry.id,
+      reply,
+      ...(outcome.error && { error: outcome.error })
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    this.closed = true
+    for (const id of this.runs.keys()) this.stop(id)
+    const settled = Promise.allSettled([...this.background, this.queues.idle()])
+    await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, SHUTDOWN_WAIT_MS).unref?.())])
+    this.unsubscribe()
+    this.live.clear()
+  }
+
+  /** Resolves when every scheduled turn and cascade has finished (tests, shutdown). */
+  async idle(): Promise<void> {
+    while (this.background.size > 0) await Promise.allSettled([...this.background])
+    await this.queues.idle()
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Collab tools
+  // -------------------------------------------------------------------------------------------
+
+  markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer' {
+    const turn = this.active.get(turnId)
+    if (!turn) return 'no-turn'
+    if (turn.mustAnswer) return 'must-answer'
+    turn.passed = true
+    return 'passed'
+  }
+
+  async askBot(ctx: ToolContext, target: Bot, message: string): Promise<{ reply: string; exchange: Conversation }> {
+    const { store, bus } = this.deps
+    const from = ctx.bot
+    if (target.id === from.id) throw new CollabRefusal('You cannot send a message to yourself.')
+    if (ctx.chain.includes(target.id)) {
+      const names = [...ctx.chain, from.id].map((id) => store.bots.get(id)?.name ?? 'a bot').join(' → ')
+      throw new CollabRefusal(
+        `${target.name} is already waiting for an answer in this chain (${names}). Asking it would loop; answer with what you have.`
+      )
+    }
+    if (ctx.chain.length >= MAX_CHAIN_DEPTH) {
+      throw new CollabRefusal(`This request is already ${MAX_CHAIN_DEPTH} bots deep. Answer with what you have instead of asking another bot.`)
+    }
+    if (ctx.signal.aborted) throw new CollabRefusal('Cancelled.')
+
+    // Each asked bot may ask others in turn, so without these limits one message could fan out
+    // into hundreds of model turns.
+    const asking = this.active.get(ctx.turnId)
+    if (asking) {
+      if (asking.asks >= MAX_ASKS_PER_TURN) {
+        throw new CollabRefusal(`You already asked other bots ${MAX_ASKS_PER_TURN} times in this turn. Answer with what you have.`)
+      }
+      if (asking.askBudget.left <= 0) {
+        throw new CollabRefusal(`Bots already asked each other ${MAX_ASKS_PER_CHAIN} times for this request. Answer with what you have.`)
+      }
+      asking.asks++
+      asking.askBudget.left--
+    }
+    const card = asking?.recorder.findToolEntry(ctx.callId, ['send_to_agent'])
+    const origin = { conversationId: ctx.conversation.id, entryId: card?.id ?? '', fromBotId: from.id }
+    const found = store.conversations.findExchange(from.id, target.id)
+    // The latest request decides where the exchange's approval cards surface.
+    const exchange = found
+      ? store.conversations.update(found.id, { origin })
+      : store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
+    bus.emit('conv:changed', { conversation: exchange })
+    if (card) asking?.recorder.annotateTool(card.id, { title: `Messaging ${target.name}`, exchangeConversationId: exchange.id })
+
+    const entry = store.entries.append({
+      conversationId: exchange.id,
+      kind: 'message',
+      author: { kind: 'bot', botId: from.id },
+      text: message.trim(),
+      mentions: [target.id],
+      mentionsEveryone: false,
+      attachments: [],
+      isStreaming: false
+    })
+    this.emitEntry(entry)
+
+    const timeout = new AbortController()
+    const timer = setTimeout(() => timeout.abort(), this.exchangeTimeoutMs)
+    try {
+      const outcome = await this.scheduleTurn(exchange.id, target.id, {
+        trigger: 'agent',
+        mustAnswer: true,
+        inGroup: false,
+        chain: [...ctx.chain, from.id],
+        parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
+        ...(asking && { askBudget: asking.askBudget })
+      })
+      // Normally the turn's own posts. If an earlier queued turn of the same bot already
+      // answered this message (two bots asked it at once), use what it wrote after the question.
+      const posts =
+        outcome.posts.length > 0
+          ? outcome.posts
+          : store.entries.since(exchange.id, entry.seq).filter((e) => e.kind === 'message' && isOwn(e, target.id))
+      const reply = posts.map((p) => p.text).join('\n\n').trim()
+      const partial = reply || undefined
+      if (ctx.signal.aborted) throw new CollabError('Cancelled.', partial, exchange.id)
+      if (timeout.signal.aborted) {
+        const ms = this.exchangeTimeoutMs
+        const limit = ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.max(1, Math.round(ms / 1000))} seconds`
+        throw new CollabError(`${target.name} did not answer within ${limit}.`, partial, exchange.id)
+      }
+      // Text never decides success: an errored, cancelled or limited turn is unfinished even if it wrote.
+      // A skipped turn borrowed another turn's posts, so it is only as successful as that turn was.
+      const judged =
+        outcome.status === 'skipped' && outcome.posts.length === 0
+          ? this.lastRealOutcome.get(`${exchange.id}\u0000${target.id}`) ?? outcome
+          : outcome
+      const failed = Boolean(judged.error) || judged.status === 'error' || judged.status === 'cancelled' || judged.status === 'limited'
+      if (failed) {
+        const reason = judged.error ?? `its turn ended as ${judged.status}`
+        throw new CollabError(`${target.name} could not answer: ${reason}`, partial, exchange.id)
+      }
+      if (!reply) throw new CollabError(`${target.name} did not reply.`, undefined, exchange.id)
+      return { reply, exchange }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Rounds
+  // -------------------------------------------------------------------------------------------
+
+  private async runCascade(conversationId: Id, trigger: Entry): Promise<void> {
+    const run = this.runFor(conversationId)
+    // A new user message replaces older cascades: they finish their round and stop.
+    for (const older of run.cascades) older.superseded = true
+    const first = this.deps.store.conversations.get(conversationId)
+    if (!first) return
+    const settings = normalizeGroupSettings(first.group)
+    const cascade = new Cascade(settings.maxBotPosts)
+    run.cascades.add(cascade)
+    const stopSignal = run.stop.signal
+    try {
+      let offered: Entry[] = [trigger]
+      for (let round = 1; round <= settings.maxRounds; round++) {
+        if (stopSignal.aborted || cascade.stopped) return
+        const conversation = this.deps.store.conversations.get(conversationId)
+        if (!conversation) return
+        const members = this.membersOf(conversation)
+        const participants =
+          round === 1
+            ? await this.firstRound(members, trigger, settings.turnPolicy, stopSignal)
+            : this.followUpRound(members, offered, settings.turnPolicy)
+        if (participants.length === 0 || stopSignal.aborted) return
+
+        const isWindingDown = round > 1 && round === settings.maxRounds
+        const turn = (p: Participant) =>
+          this.scheduleTurn(conversationId, p.bot.id, {
+            trigger: round === 1 ? 'user' : 'group',
+            mustAnswer: p.mustAnswer,
+            isWindingDown,
+            inGroup: true,
+            chain: [],
+            cascade
+          })
+        const outcomes: TurnOutcome[] = []
+        if (settings.parallel) {
+          outcomes.push(...(await Promise.all(participants.map(turn))))
+        } else {
+          for (const p of participants) {
+            if (stopSignal.aborted || cascade.stopped) break
+            outcomes.push(await turn(p))
+          }
+        }
+        if (stopSignal.aborted || cascade.stopped) return
+        const posts = outcomes.flatMap((o) => o.posts)
+
+        if (cascade.refused > 0) {
+          this.systemEvent(conversationId, `Reached the limit of ${settings.maxBotPosts} bot replies for one message.`)
+          return
+        }
+        const passed = outcomes.some((o) => o.status === 'pass') && outcomes.every((o) => o.status === 'pass' || o.status === 'skipped')
+        if (round === 1 && posts.length === 0 && passed && participants.every((p) => !p.mustAnswer)) {
+          this.systemEvent(conversationId, 'No one had anything to add. @mention a bot to ask it directly.')
+        }
+        if (posts.length === 0 || !settings.allowBotToBot || cascade.superseded || cascade.exhausted) return
+        offered = posts
+      }
+    } finally {
+      run.cascades.delete(cascade)
+    }
+  }
+
+  private async firstRound(members: Bot[], trigger: Entry, policy: GroupTurnPolicy, signal: AbortSignal): Promise<Participant[]> {
+    if (members.length === 0) return []
+    if (trigger.mentionsEveryone) return members.map((bot) => ({ bot, mustAnswer: true }))
+    const mentioned = members.filter((b) => trigger.mentions.includes(b.id))
+    if (mentioned.length > 0) return mentioned.map((bot) => ({ bot, mustAnswer: true }))
+    if (policy === 'mentions') {
+      const primary = members.find((b) => b.isPrimary) ?? members[0]!
+      return [{ bot: primary, mustAnswer: true }]
+    }
+    if (policy === 'router') {
+      const picked = await this.route(members, trigger.text, signal)
+      if (picked) return members.filter((b) => picked.includes(b.id)).map((bot) => ({ bot, mustAnswer: true }))
+    }
+    return members.map((bot) => ({ bot, mustAnswer: false }))
+  }
+
+  /** Round k+1: the other members get the new posts; mentioned ones must answer. */
+  private followUpRound(members: Bot[], offered: Entry[], policy: GroupTurnPolicy): Participant[] {
+    const out: Participant[] = []
+    for (const bot of members) {
+      const fromOthers = offered.filter((p) => !isOwn(p, bot.id))
+      if (fromOthers.length === 0) continue
+      const mentioned = fromOthers.some((p) => p.mentionsEveryone || p.mentions.includes(bot.id))
+      if (mentioned) out.push({ bot, mustAnswer: true })
+      else if (policy === 'open') out.push({ bot, mustAnswer: false })
+    }
+    return out
+  }
+
+  /** Router policy: settings.defaultModel picks who answers. Undefined = fall back to open. */
+  private async route(members: Bot[], text: string, signal: AbortSignal): Promise<Id[] | undefined> {
+    const { store, providers } = this.deps
+    const settings = store.settings.get()
+    if (!settings.defaultModel) return undefined
+    try {
+      const route = providers.resolve(settings.defaultModel)
+      if (route.engine !== 'native') return undefined
+      return await routeMessage({
+        adapter: providers.adapterFor(route.provider),
+        modelId: route.modelId,
+        members,
+        userName: settings.userName,
+        text,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+      })
+    } catch (err) {
+      if (!signal.aborted) console.warn('[runtime] router unavailable:', err instanceof Error ? err.message : String(err))
+      return undefined
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Turns
+  // -------------------------------------------------------------------------------------------
+
+  private scheduleTurn(conversationId: Id, botId: Id, req: TurnRequest): Promise<TurnOutcome> {
+    // Captured now, so a Stop also cancels turns still waiting in the queue.
+    const stopSignal = this.runFor(conversationId).stop.signal
+    return this.queues.run(`${conversationId}\u0000${botId}`, async () => {
+      if (stopSignal.aborted || req.parentSignal?.aborted || this.closed) return { status: 'cancelled', posts: [] }
+      return this.runTurn(conversationId, botId, req, stopSignal)
+    })
+  }
+
+  private async runTurn(conversationId: Id, botId: Id, req: TurnRequest, stopSignal: AbortSignal): Promise<TurnOutcome> {
+    const { store, bus, providers, tools, secrets } = this.deps
+    const conversation = store.conversations.get(conversationId)
+    const bot = store.bots.get(botId)
+    if (!conversation || !bot || !conversation.botIds.includes(botId)) return { status: 'skipped', posts: [] }
+
+    const context = store.botContext.get(conversationId, botId)
+    const unseen = store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.kind === 'message' && !isOwn(e, botId))
+    // Nothing new (an earlier queued turn already answered it): no model call.
+    if (unseen.length === 0) return { status: 'skipped', posts: [] }
+    const upToSeq = store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+
+    let route: ReturnType<RuntimeProviders['resolve']> | undefined
+    let routeError: string | undefined
+    try {
+      route = providers.resolve(bot.model)
+    } catch (err) {
+      routeError = err instanceof Error ? err.message : String(err)
+    }
+
+    const abort = new AbortController()
+    const signal = AbortSignal.any([stopSignal, abort.signal, ...(req.parentSignal ? [req.parentSignal] : [])])
+    const members = this.membersOf(conversation)
+    const turnId = randomUUID()
+    const recorder = new TurnRecorder(
+      { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
+      {
+        bot,
+        conversation,
+        members,
+        signal,
+        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId } }),
+        ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
+      }
+    )
+    const active: ActiveTurn = {
+      turnId, bot, conversationId, recorder, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
+      asks: 0, askBudget: req.askBudget ?? { left: MAX_ASKS_PER_CHAIN }, unresolvedActions: new Set()
+    }
+
+    if (!route) {
+      // In an open group round a bot without a model just sits out; asked directly, it says why.
+      // Its messages stay unseen, so it catches up once it has a model.
+      if (req.mustAnswer) recorder.event(`${bot.name} could not answer: ${routeError}`)
+      return { status: req.mustAnswer ? 'error' : 'skipped', posts: [], ...(routeError && { error: routeError }) }
+    }
+    if (signal.aborted) return { status: 'cancelled', posts: [] }
+    const startedAt = this.now().getTime()
+    if ((req.trigger === 'agent' || req.trigger === 'routine') &&
+      !store.turns.reserveAutomatic({ id: turnId, botId, startedAt })) {
+      const limit = store.bots.get(botId)?.dailyRunLimit ?? bot.dailyRunLimit
+      const limited = `${bot.name} reached its daily limit of ${limit} automatic run${limit === 1 ? '' : 's'}. Raise it in ${bot.name}'s Profile, or wait until tomorrow.`
+      if (req.trigger === 'routine') this.systemEvent(conversationId, limited)
+      return { status: 'limited', posts: [], error: limited }
+    }
+    store.botContext.set({ ...context, lastSeenSeq: upToSeq })
+
+    this.active.set(turnId, active)
+    recorder.phase('reading')
+    let error: string | undefined
+    try {
+      const engine = this.options.engines[route.engine]
+      const settings = store.settings.get()
+      const workspaceDir = join(settings.workspaceRoot, bot.handle)
+      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup })
+      const mcpTools = new Map<string, { serverId: Id; remoteName: string }>()
+      for (const t of turnTools) if (t.serverId && t.remoteName) mcpTools.set(t.name, { serverId: t.serverId, remoteName: t.remoteName })
+      const toolContext: Omit<ToolContext, 'callId'> = {
+        bot,
+        conversation,
+        turnId,
+        signal,
+        chain: req.chain,
+        inGroup: req.inGroup,
+        workspaceDir,
+        mcpTools
+      }
+      const others = members.filter((b) => b.id !== bot.id)
+      const lastAsker = [...unseen].reverse().find((e) => e.author.kind === 'bot')
+      const asker = lastAsker?.author.kind === 'bot' ? store.bots.get(lastAsker.author.botId) : undefined
+      const system = buildSystemPrompt({
+        bot,
+        conversation,
+        others,
+        ...(asker && { asker }),
+        userName: settings.userName,
+        memoryBlock: this.deps.memory.promptBlock(bot.id),
+        skillsBlock: this.deps.skills.promptBlock(bot.id),
+        mcpInstructions: this.deps.mcp.instructionsForBot(bot),
+        workspaceDir,
+        now: this.now(),
+        platform: process.platform,
+        engine: route.engine,
+        ...(req.manifestLite && { manifestLite: req.manifestLite })
+      })
+      const userName = settings.userName
+      const labels = new Map(turnTools.map((t) => [t.name, t.activityLabel]))
+      await engine.run({
+        turnId,
+        bot,
+        conversation,
+        route,
+        system,
+        tools: turnTools,
+        toolContext,
+        context,
+        upToSeq,
+        turnNote: turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
+        recorder,
+        signal,
+        nameOf: (author) => speakerName(author, (id) => store.bots.get(id), userName),
+        activityFor: (name, input) => this.activityFor(labels, name, input),
+        passed: () => active.passed,
+        runTool: (call) => this.runTool(recorder, toolContext, turnTools, call),
+        // After a stop or reset, an engine's late state (an old session id) must not come back.
+        saveContext: (patch) => {
+          if (!signal.aborted) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
+        }
+      })
+      if (active.unresolvedActions.size > 0 && !signal.aborted) throw new Error('A tool action remains unresolved or its outcome is unknown. Reconcile it before accepting this run.')
+    } catch (err) {
+      if (!signal.aborted) {
+        error = secrets.redact(err instanceof Error ? err.message : String(err))
+        if (!(err instanceof IncompleteTurnError)) recorder.event(`${bot.name} could not answer: ${error}`)
+      }
+    } finally {
+      this.active.delete(turnId)
+      recorder.finish(signal.aborted)
+      this.live.idle(bot.id, conversationId)
+    }
+
+    const posts = recorder.posts
+    const outcome: TurnOutcome = error
+      ? { status: 'error', posts, error }
+      : signal.aborted
+        ? { status: 'cancelled', posts }
+        : { status: posts.length > 0 ? 'sent' : 'pass', posts }
+    store.turns.record({
+      id: turnId,
+      botId,
+      conversationId,
+      conversationKind: conversation.kind,
+      trigger: req.trigger,
+      status: outcome.status === 'error' || outcome.status === 'cancelled' || outcome.status === 'sent' ? outcome.status : 'pass',
+      providerId: route.provider.id,
+      modelId: route.modelId,
+      ...recorder.usageTotals,
+      startedAt,
+      endedAt: Date.now(),
+      ...(error && { error })
+    })
+    this.lastRealOutcome.set(`${conversationId}\u0000${botId}`, { status: outcome.status, ...(outcome.error && { error: outcome.error }) })
+    return outcome
+  }
+
+  private async runTool(
+    recorder: TurnRecorder,
+    toolContext: Omit<ToolContext, 'callId'>,
+    turnTools: ToolDefinition[],
+    call: ToolCallRequest
+  ): Promise<ToolResult> {
+    const labels = new Map(turnTools.map((t) => [t.name, t.activityLabel]))
+    const title = this.activityFor(labels, call.name, call.input)
+    const ctx = { ...toolContext, callId: call.id }
+    const actionId = nativeActionId(ctx)
+    recorder.toolStart(call.id, call.name, title, call.input, actionId)
+    recorder.phase('tool', title)
+    let result: ToolResult
+    if (call.inputError) {
+      result = errorResult(`Your call to ${call.name} could not be used: ${call.inputError}`)
+    } else {
+      result = await this.deps.tools.execute(call.name, call.input, { ...ctx, actionId })
+    }
+    recorder.toolEnd(call.id, result, toolContext.signal.aborted)
+    const active = this.active.get(toolContext.turnId)
+    if (result.recovery) active?.unresolvedActions.add(result.recovery.actionId)
+    else if (!result.isError) active?.unresolvedActions.delete(actionId)
+    recorder.phase('thinking')
+    return result
+  }
+
+  private activityFor(labels: Map<string, string>, name: string, input?: unknown): string {
+    if (name === 'send_to_agent' && input && typeof input === 'object') {
+      const to = (input as { to?: unknown }).to
+      const target = typeof to === 'string' ? findBot(this.deps.store.bots.list(), to) : undefined
+      return target ? `Messaging ${target.name}` : 'Messaging another bot'
+    }
+    return labels.get(name) ?? (name.startsWith('mcp__') ? `Using ${name.split('__')[1] ?? 'a connector'}` : `Using ${name}`)
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Helpers
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * After a crash or a forced quit, the newest entries can still say "streaming" or "running".
+   * The application owns a single-instance lock. Run once before workers start.
+   * An interrupted dispatch is unknown, not proof that the external action was cancelled.
+   */
+  private recoverInterruptedTurns(): void {
+    const { store } = this.deps
+    store.actions.recoverInterrupted()
+    for (const entry of store.entries.interrupted()) {
+        try {
+          if (entry.isStreaming) store.entries.update(entry.id, { isStreaming: false })
+          if (entry.toolCall?.status === 'running') {
+            const action = entry.toolCall.actionId ? store.actions.get(entry.toolCall.actionId) : undefined
+            const unknown = action?.state === 'unknown'
+            const result = action?.receipt
+            store.entries.update(entry.id, { toolCall: { ...entry.toolCall,
+              status: unknown ? 'error' : result ? toolStatus(result, false) : 'cancelled',
+              ...(unknown ? { resultText: 'Outcome unknown after interruption. Reconcile this action before retrying.' } :
+                result ? { resultText: resultPreview(result) } : {}) } })
+          }
+        } catch (err) {
+          console.warn('[runtime] could not tidy an interrupted entry:', err instanceof Error ? err.message : String(err))
+        }
+    }
+  }
+
+  private runFor(conversationId: Id): ConversationRun {
+    let run = this.runs.get(conversationId)
+    if (!run) {
+      run = { stop: new AbortController(), cascades: new Set() }
+      this.runs.set(conversationId, run)
+    }
+    return run
+  }
+
+  private membersOf(conversation: Conversation): Bot[] {
+    return conversation.botIds.map((id) => this.deps.store.bots.get(id)).filter((b): b is Bot => !!b)
+  }
+
+  private track(promise: Promise<unknown>): void {
+    const tracked = promise.catch((err) => {
+      console.error('[runtime] background task failed:', err instanceof Error ? err.message : String(err))
+    })
+    this.background.add(tracked)
+    void tracked.finally(() => this.background.delete(tracked))
+  }
+
+  private emitEntry(entry: Entry): void {
+    const { store, bus } = this.deps
+    bus.emit('conv:entry', { entry })
+    const conversation = store.conversations.get(entry.conversationId)
+    if (conversation) bus.emit('conv:changed', { conversation })
+  }
+
+  /** A system line in a conversation ("No one had anything to add…"). */
+  private systemEvent(conversationId: Id, text: string): void {
+    const entry = this.deps.store.entries.append({
+      conversationId,
+      kind: 'event',
+      author: { kind: 'system' },
+      text,
+      mentions: [],
+      mentionsEveryone: false,
+      attachments: [],
+      isStreaming: false
+    })
+    this.emitEntry(entry)
+  }
+
+  /** conv:changed for a conversation and, for an exchange, the conversation its chain started in. */
+  private emitConversationAndRoot(conversationId: Id): void {
+    const { store, bus } = this.deps
+    let current = store.conversations.get(conversationId)
+    for (let depth = 0; current && depth < 10; depth++) {
+      bus.emit('conv:changed', { conversation: current })
+      if (current.kind !== 'exchange' || !current.origin) return
+      current = store.conversations.get(current.origin.conversationId)
+    }
+  }
+}

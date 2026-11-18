@@ -1,0 +1,76 @@
+// The SQLite store: one file <dataDir>/faibots.db shared by every platform service.
+
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Store } from '../contracts'
+import { createBotContextRepo } from './bot-context'
+import { createBotRepo, type BotDeletion } from './bots'
+import { createConversationRepo } from './conversations'
+import { openDatabase, type Db } from './db'
+import { createEntryRepo, type PlatformEntryRepo } from './entries'
+import { createProviderRepo } from './providers'
+import { createProjectRepo, createProjectSourceRepo, createArtifactRepo, type ArtifactRepo, type ProjectRepo, type ProjectSourceRepo } from './projects'
+import { createJourneyRunRepo, type JourneyRunRepo } from './journey-runs'
+import { createRoutineRepo } from './routines'
+import { createSettingsRepo, defaultSettings } from './settings'
+import { createTurnLogRepo } from './turns'
+import { createActionRepo } from './actions'
+
+export type { BotDeletion } from './bots'
+
+/** The Store contract plus what other platform services need (the shared db, delete hooks). */
+export interface PlatformStore extends Store {
+  db: Db
+  entries: PlatformEntryRepo
+  /** Journey repos (migration 6 + 7). */
+  projects: ProjectRepo
+  projectSources: ProjectSourceRepo
+  artifacts: ArtifactRepo
+  journeyRuns: JourneyRunRepo
+  /** Called after a bot and its rows are deleted, to remove files (skills, secret values) and notify the UI. */
+  onBotDeleted(listener: (deletion: BotDeletion) => void): () => void
+}
+
+export function createStore(opts: { dataDir: string; homeDir: string; userName?: string }): PlatformStore {
+  mkdirSync(opts.dataDir, { recursive: true })
+  return openStore(join(opts.dataDir, 'faibots.db'), opts)
+}
+
+/** Open a store at an explicit path (':memory:' in tests). */
+export function openStore(path: string, opts: { homeDir: string; userName?: string }): PlatformStore {
+  const db = openDatabase(path)
+  const listeners = new Set<(deletion: BotDeletion) => void>()
+  const settings = createSettingsRepo(db, defaultSettings(opts.homeDir, opts.userName))
+
+  const bots = createBotRepo(db, settings, (deletion) => {
+    for (const listener of listeners) {
+      try {
+        listener(deletion)
+      } catch (err) {
+        console.error('[store] bot delete listener failed:', err instanceof Error ? err.message : err)
+      }
+    }
+  })
+
+  return {
+    db,
+    bots,
+    conversations: createConversationRepo(db),
+    entries: createEntryRepo(db),
+    botContext: createBotContextRepo(db),
+    settings,
+    providers: createProviderRepo(db),
+    turns: createTurnLogRepo(db),
+    routines: createRoutineRepo(db),
+    actions: createActionRepo(db),
+    projects: createProjectRepo(db),
+    projectSources: createProjectSourceRepo(db),
+    artifacts: createArtifactRepo(db),
+    journeyRuns: createJourneyRunRepo(db),
+    onBotDeleted(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    close: () => db.close()
+  }
+}

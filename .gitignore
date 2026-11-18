@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+release/
+*.log
+.env
+.env.*
+# local runtime data is never committed
+.faibots-data/
