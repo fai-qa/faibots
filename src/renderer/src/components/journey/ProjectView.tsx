@@ -20,6 +20,12 @@ import { RunDetails } from './RunDetails'
 import { AgentTrail, type TrailStep } from '../ui/agent-trail-clean'
 
 const SHA_PREFIX = 12
+const REVIEW_PRESENTATION = {
+  accepted: { label: 'Accepted by bot', tone: 'success' },
+  repair: { label: 'Changes requested', tone: 'warn' },
+  rejected: { label: 'Rejected by bot', tone: 'danger' },
+  partial: { label: 'Review incomplete', tone: 'neutral' }
+} as const
 
 export function ProjectView({ projectId }: { projectId: string }) {
   const project = useData((s) => s.projects.find((p) => p.id === projectId))
@@ -315,8 +321,7 @@ function ReviewChip({ reviews }: { reviews: ReviewDecision[] }) {
     return <StatusChip tone="next" title="Next: no review decision has been recorded for this revision yet." />
   }
   const reviewer = botMap.get(last.reviewer)?.name ?? 'a reviewer'
-  const tone = last.decision === 'accepted' ? 'success' : last.decision === 'repair' ? 'warn' : last.decision === 'rejected' ? 'danger' : 'neutral'
-  const label = last.decision === 'accepted' ? 'Accepted' : last.decision === 'repair' ? 'Repair' : last.decision === 'rejected' ? 'Rejected' : 'Partial'
+  const { label, tone } = REVIEW_PRESENTATION[last.decision]
   return (
     <Badge tone={tone} title={`${reviewer} reviewed this revision: ${last.explanation || 'no explanation recorded'}`}>
       {label} · {reviewer}
@@ -324,7 +329,28 @@ function ReviewChip({ reviews }: { reviews: ReviewDecision[] }) {
   )
 }
 
+function LatestBotReview({ review, revisionNo }: { review: ReviewDecision; revisionNo: number }) {
+  const reviewer = useData((s) => s.botMap.get(review.reviewer)?.name)
+  const { label, tone } = REVIEW_PRESENTATION[review.decision]
+  const explanation = review.explanation.trim()
+
+  return (
+    <section aria-label={`Bot review for revision ${revisionNo}`} className="mt-3 rounded-inner border border-line-soft bg-pane px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-[13px] font-semibold text-fg">
+          Bot review <span className="font-normal text-fg-3">· r{revisionNo}{reviewer ? ` · ${reviewer}` : ''}</span>
+        </h4>
+        <Badge tone={tone}>{label}</Badge>
+      </div>
+      {explanation && <p className="selectable mt-2 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-fg-2">{explanation}</p>}
+    </section>
+  )
+}
+
 function ArtifactCard({ row }: { row: ArtifactWithRevisions }) {
+  const latestRevision = row.revisions.at(-1)
+  const latestReview = latestRevision?.reviews.at(-1)
+
   return (
     <div className="rounded-card border border-line-soft bg-elevated p-4">
       <div className="flex items-center justify-between gap-2">
@@ -344,7 +370,7 @@ function ArtifactCard({ row }: { row: ArtifactWithRevisions }) {
       {row.revisions.length > 0 ? (
         <ul className="mt-2 divide-y divide-line-soft">
           {row.revisions.map((revision) => (
-            <li key={revision.id} className="flex items-center gap-2 py-1.5">
+            <li key={revision.id} className="flex flex-wrap items-center gap-2 py-1.5">
               <span className="shrink-0 rounded-pill bg-active px-1.5 py-px font-mono text-2xs font-medium text-fg-2">
                 r{revision.revisionNo}
               </span>
@@ -352,10 +378,12 @@ function ArtifactCard({ row }: { row: ArtifactWithRevisions }) {
                 {revision.sha256.slice(0, SHA_PREFIX)}…
               </span>
               <StatusChip tone="built" title="The snapshot record exists in the local database." />
-              <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[12px] text-fg-3">
-                Review
-                <ReviewChip reviews={revision.reviews} />
-              </span>
+              {(!latestReview || revision.id !== latestRevision?.id) && (
+                <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[12px] text-fg-3">
+                  Review
+                  <ReviewChip reviews={revision.reviews} />
+                </span>
+              )}
             </li>
           ))}
         </ul>
@@ -365,6 +393,7 @@ function ArtifactCard({ row }: { row: ArtifactWithRevisions }) {
           <StatusChip tone="next" title="Next: revisions appear when the mission runs." />
         </p>
       )}
+      {latestRevision && latestReview && <LatestBotReview review={latestReview} revisionNo={latestRevision.revisionNo} />}
       {row.content && (
         <details className="mt-3 overflow-hidden rounded-inner border border-line-soft">
           <summary className="cursor-pointer select-none px-3 py-2 text-[12.5px] font-medium text-fg-2 hover:text-fg">
