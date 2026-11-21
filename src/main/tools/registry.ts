@@ -143,6 +143,8 @@ export function createToolRegistry(deps: {
 
     async execute(name, input, ctx) {
       if (ctx.signal.aborted) return cancelled()
+      if (ctx.selectedResultAvailable && !ctx.selectedResultAvailable())
+        return errorResult('The selected project result is unavailable.')
       if (ctx.actionId) {
         try { input = snapshotInput(input) } catch { return errorResult('Action input must be serializable JSON.') }
       }
@@ -230,6 +232,8 @@ export function createToolRegistry(deps: {
         if (ctx.signal.aborted) return cancelled()
         // The approval card may have been open a while: check the grant again right before dispatch.
         if (isConnector && !(await granted())) return revoked()
+        if (ctx.selectedResultAvailable && !ctx.selectedResultAvailable())
+          return errorResult('The selected project result is unavailable.')
         return dispatch()
       }
       if (ctx.actionId && !def.requiresLiveRead) return executeAction({ actions: deps.store.actions, ctx, def, input, finalize, authorize })

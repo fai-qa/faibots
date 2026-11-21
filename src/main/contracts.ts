@@ -320,6 +320,8 @@ export interface ToolContext {
   userEntryId?: Id
   /** The host's actual input entry and optional trusted scheduler wake. Never taken from tool arguments. */
   projectResultTrigger?: {entryId: Id; wake?: {id: Id; revision: number}}
+  /** Host authority over the selected result, checked again before any later tool action. */
+  selectedResultAvailable?(): boolean
   bot: Bot
   conversation: Conversation
   /** Resolve a selected virtual project note in this turn, checking its current access. */

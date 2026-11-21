@@ -26,6 +26,8 @@ export interface RecorderOptions {
   members: Bot[]
   replyToId?: Id
   meta?: Entry['meta']
+  /** Selected evidence stays in this turn until the host checks its live authority at delivery. */
+  selectedResultAvailable?(): boolean
   /** Once aborted (Stop, reset), late text and tool calls from the engine are dropped. */
   signal?: AbortSignal
   /**
@@ -43,6 +45,8 @@ export interface RecorderOptions {
 const DENIED = /^(The user declined this action|.+ is turned off for you)/
 
 const CARD_RESULT_CHARS = 2_000
+export const SELECTED_RESULT_WITHHELD = 'The selected project result is unavailable. Check its sources in the project before asking fai again.'
+export const SELECTED_RESULT_ERROR = 'fai could not finish its reply to the selected project result.'
 /**
  * Tools that leave no card in the chat. A pass is the normal outcome for most members of a
  * group round; a card for each one would bury the actual replies.
@@ -86,11 +90,15 @@ export class TurnRecorder {
   private phaseNow: { phase: BotPhase; activity?: string } | undefined
   private usage = { inputTokens: 0, outputTokens: 0 }
   private codexUsageState?: 'measured' | 'unknown'
+  private held?: { text: string; separate: boolean; failed: boolean; overflow: boolean; withdrawn: boolean; closed: boolean }
 
   constructor(
     private readonly deps: RecorderDeps,
     private readonly opts: RecorderOptions
-  ) {}
+  ) {
+    if (opts.selectedResultAvailable)
+      this.held = { text: '', separate: false, failed: false, overflow: false, withdrawn: false, closed: false }
+  }
 
   get bot(): Bot {
     return this.opts.bot
@@ -135,7 +143,8 @@ export class TurnRecorder {
   }
 
   phase(phase: BotPhase, activity?: string): void {
-    if (this.opts.signal?.aborted) return
+    if (this.opts.signal?.aborted || this.held?.closed) return
+    if (this.held && activity) activity = 'Working on the selected project result'
     this.phaseNow = { phase, ...(activity && { activity }) }
     this.deps.live.set(this.opts.bot.id, this.opts.conversation.id, phase, activity)
   }
@@ -144,11 +153,29 @@ export class TurnRecorder {
     return this.phaseNow
   }
 
+  withdrawSelectedResult(): void {
+    if (!this.held) return
+    this.held.text = ''
+    this.held.withdrawn = true
+  }
+
   /** Stream text into the current message (created on the first non-blank text). */
   textDelta(delta: string): void {
-    if (this.refused || !delta) return
+    if (this.refused || !delta || this.held?.closed) return
     if (this.opts.signal?.aborted) {
       this.opts.onLateText?.(delta)
+      return
+    }
+    if (this.held) {
+      if (this.held.overflow || this.held.withdrawn) return
+      if (this.held.text.length + delta.length > 512 * 1024) {
+        this.held.overflow = true
+        this.held.text = ''
+        return
+      }
+      if (this.held.separate && this.held.text) this.held.text += '\n\n'
+      this.held.text += delta
+      this.held.separate = false
       return
     }
     if (!this.current) {
@@ -184,6 +211,10 @@ export class TurnRecorder {
 
   /** Finish the current message, if any. */
   endText(): void {
+    if (this.held) {
+      this.held.separate = true
+      return
+    }
     this.pending = ''
     const current = this.current
     if (!current) return
@@ -213,7 +244,11 @@ export class TurnRecorder {
 
   toolStart(callId: string, toolName: string, title: string, input: unknown, actionId?: string): Entry | undefined {
     this.endText()
-    if (SILENT_TOOLS.has(toolName) || this.opts.signal?.aborted) return undefined
+    if (SILENT_TOOLS.has(toolName) || this.opts.signal?.aborted || this.held?.closed) return undefined
+    if (this.held) {
+      title = toolName === 'read_project_result' ? 'Checking the selected project result' : 'Using a tool for this project request'
+      input = {}
+    }
     if (this.tools.has(callId)) return this.tools.get(callId)
     const entry = this.append({
       conversationId: this.opts.conversation.id,
@@ -231,6 +266,7 @@ export class TurnRecorder {
   }
 
   toolEnd(callId: string, result: ToolResult, aborted: boolean): void {
+    if (this.held?.closed) return
     const entry = this.tools.get(callId)
     if (!entry?.toolCall) return
     this.finishTool(callId, entry, {
@@ -243,6 +279,7 @@ export class TurnRecorder {
 
   /** Close a tool card with a plain outcome (external engines report text, not ToolResults). */
   toolEndText(callId: string, status: ToolCallInfo['status'], resultText: string): void {
+    if (this.held?.closed) return
     const entry = this.tools.get(callId)
     if (!entry?.toolCall) return
     const preview = resultText.length > CARD_RESULT_CHARS ? `${resultText.slice(0, CARD_RESULT_CHARS)}…` : resultText
@@ -251,9 +288,11 @@ export class TurnRecorder {
 
   /** Attach details to a tool card while it runs (e.g. the exchange a send_to_agent opened). */
   annotateTool(entryId: Id, patch: Partial<Pick<ToolCallInfo, 'title' | 'exchangeConversationId'>>): void {
+    if (this.held?.closed) return
     for (const [callId, entry] of this.tools) {
       if (entry.id !== entryId || !entry.toolCall) continue
       const toolCall = { ...entry.toolCall, ...patch }
+      if (this.held) toolCall.title = entry.toolCall.title
       const updated = this.update(entry.id, { toolCall, text: toolCall.title })
       if (updated) this.tools.set(callId, updated)
       return
@@ -270,6 +309,10 @@ export class TurnRecorder {
 
   private finishTool(callId: string, entry: Entry, patch: Partial<ToolCallInfo>): void {
     const toolCall: ToolCallInfo = { ...entry.toolCall!, ...patch }
+    if (this.held) {
+      toolCall.title = entry.toolCall!.title
+      if (patch.resultText !== undefined) toolCall.resultText = toolCall.status === 'done' ? 'Tool finished.' : 'Tool did not complete.'
+    }
     // The source DM owns the selected words. Copying them into a tool card would bypass future grant checks.
     if (toolCall.toolName === 'read_handoff' && patch.resultText !== undefined) {
       toolCall.resultText = toolCall.status === 'done' ? 'Handoff checked against current access.' : 'The handoff could not be read.'
@@ -283,6 +326,14 @@ export class TurnRecorder {
   /** A line in the chat about this turn ("Researcher could not answer: …"). */
   event(text: string): Entry | undefined {
     this.endText()
+    if (this.held) {
+      this.held.failed = true
+      return
+    }
+    return this.appendEvent(text)
+  }
+
+  private appendEvent(text: string): Entry | undefined {
     return this.append({
       conversationId: this.opts.conversation.id,
       kind: 'event',
@@ -296,16 +347,41 @@ export class TurnRecorder {
   }
 
   /** End of turn: close the open message and any tool card still running. */
-  finish(aborted: boolean): void {
+  finish(aborted: boolean, failed = false): string | undefined {
+    if (this.held?.closed) return
     this.endText()
     for (const [callId, entry] of this.tools) {
       if (entry.toolCall?.status !== 'running') continue
       this.finishTool(callId, entry, { status: aborted ? 'cancelled' : 'error' })
+    }
+    let withheld: string | undefined
+    if (this.held) {
+      this.held.closed = true
+      const output = this.held.text.trim()
+      this.held.text = ''
+      if (!aborted) {
+        // Never emit a partial delta or streaming DB row for scoped evidence. No await separates
+        // the final authority check and the one complete, user-visible message.
+        let available = false
+        try { available = this.opts.selectedResultAvailable!() } catch { /* Withhold by default. */ }
+        if (!available || this.held.withdrawn) withheld = SELECTED_RESULT_WITHHELD
+        else if (failed || this.held.failed) withheld = SELECTED_RESULT_ERROR
+        else if (this.held.overflow) withheld = 'The selected-result reply was too long to display. Ask a narrower question.'
+        if (withheld) this.appendEvent(withheld)
+        else if (output) {
+          const mentions = parseMentions(output, this.opts.members.filter(b => b.id !== this.bot.id))
+          const entry = this.append({ conversationId:this.conversationId,kind:'message',author:{kind:'bot',botId:this.bot.id},
+            text:output,mentions:mentions.ids,mentionsEveryone:mentions.everyone,attachments:[],isStreaming:false,
+            ...(this.opts.replyToId && {replyToId:this.opts.replyToId}),...(this.opts.meta && {meta:this.opts.meta}) })
+          if (entry) this.posts.push(entry)
+        }
+      }
     }
     const last = this.posts[this.posts.length - 1]
     if (last && (this.usage.inputTokens || this.usage.outputTokens)) {
       const meta = { ...last.meta, inputTokens: this.usage.inputTokens, outputTokens: this.usage.outputTokens }
       this.posts[this.posts.length - 1] = this.update(last.id, { meta }) ?? last
     }
+    return withheld
   }
 }

@@ -87,7 +87,7 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
         } catch (err) {
           if (!signal.aborted) {
             compactionFailedAt.set(`${conversationId}:${bot.id}`, Date.now())
-            console.warn(`[runtime] compaction failed for ${bot.handle}:`, err instanceof Error ? err.message : String(err))
+            console.warn(`[runtime] compaction failed for ${bot.handle}:`, turn.selectedResultTrigger ? 'Selected-result context unavailable.' : err instanceof Error ? err.message : String(err))
           }
           return false
         }

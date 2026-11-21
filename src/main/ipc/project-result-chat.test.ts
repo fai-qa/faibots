@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { createHarness, type Harness } from '../agent/testing/fakes'
 import { projectResultTool } from '../agent/project-result-tool'
+import { workBriefTools } from '../agent/work-brief-tools'
 import { turnPrompt } from '../agent/external-common'
 import { createAttachmentStore } from '../attachments/attachments'
 import { createSnapshotService } from '../attachments/snapshots'
@@ -22,6 +23,7 @@ function boot() {
   h = createHarness({ diskProfile: root, attachments: (dataDir) => createAttachmentStore({ dataDir }) })
   mkdirSync(h.services.dataDir, { recursive: true })
   h.services.tools.register(projectResultTool(h.services.store, h.services))
+  for (const tool of workBriefTools(h.services.store,h.services.bus,h.services)) h.services.tools.register(tool)
   return projectSessionHandlers(
     { ...h.services, providers: h.providers, runtime: h.runtime },
     h.services.store
@@ -75,20 +77,27 @@ it('delivers the same DM entry on retry, checks each live read and excludes othe
   })
   let first = '',
     second = ''
+  let deniedWrite = false
   h.engine.script(chief.handle, async ({ turn, tool, say }) => {
     expect(turn.tools.map((t) => t.name)).toContain('read_project_result')
     expect(turn.context.engineSessionId).toBeUndefined()
     expect(turn.context.summary).toBe('')
     expect(turnPrompt(turn, store, true).text).not.toMatch(/ordinary earlier|unrelated summary|blue marker/i)
     first = JSON.stringify(await tool('read_project_result', {}))
+    say('First fragment with West entrance.')
+    const work = workBriefs(store.db).start(dm.id,turn.toolContext.userEntryId!,turn.turnId,'Entrance','Direction','Cite the note')
+    expect(JSON.stringify(h.services.bus.events)).not.toContain('West entrance')
+    expect(JSON.stringify(store.entries.since(dm.id,0))).not.toContain('West entrance')
     store.projectContent.select(
       scope.projectId,
       store.projectContent.pin(scope.projectId, source.id).itemId,
       false
     )
     second = JSON.stringify(await tool('read_project_result', {}))
+    deniedWrite = !!(await tool('review_work',{action:'result',id:work.id,revision:work.revision,text:'West entrance.'})).isError
     turn.saveContext({ engineSessionId: 'restricted-thread', summary: 'restricted summary' })
     say('The selected answer quoted West entrance.')
+    throw new Error('Provider failed: West entrance.')
   })
   const [one, two] = await Promise.all([ipc['session:ask-fai'](request), ipc['session:ask-fai'](request)])
   expect(one).toEqual(two)
@@ -97,13 +106,19 @@ it('delivers the same DM entry on retry, checks each live read and excludes othe
   expect(first).not.toMatch(/blue marker/i)
   expect(second).toContain('"isError":true')
   expect(second).not.toMatch(/fixture-notes|west entrance/)
+  expect(deniedWrite).toBe(true)
+  expect(store.db.prepare('select state,result from chief_work').get()).toMatchObject({state:'active',result:''})
+  expect(JSON.stringify(h.services.bus.events)).not.toContain('West entrance')
+  expect(JSON.stringify(store.entries.since(dm.id,0))).not.toContain('West entrance')
+  expect(JSON.stringify(store.db.prepare('select error from turns').all())).not.toContain('West entrance')
+  expect(store.entries.since(dm.id,0).some(e=>e.text.includes('selected project result is unavailable'))).toBe(true)
   expect(h.engine.turns).toHaveLength(2)
   expect(store.botContext.get(dm.id, chief.id)).toMatchObject({
     engineSessionId: 'ordinary-private-thread',
     summary: 'unrelated summary'
   })
   const entries = store.entries.since(dm.id, 0)
-  expect(entries.filter((e) => e.kind === 'tool-call').map((e) => e.toolCall?.resultText)).toEqual([
+  expect(entries.filter((e) => e.toolCall?.toolName === 'read_project_result').map((e) => e.toolCall?.resultText)).toEqual([
     'The selected result was checked against current access.',
     'The selected result could not be read.'
   ])
@@ -313,4 +328,28 @@ it('withholds a revoked queued selection on restart before opening any provider 
   const entries = h.services.store.entries.since(dm.id, 0)
   expect(entries.some(e => e.kind === 'event' && e.text.includes('selected project result is unavailable'))).toBe(true)
   expect(JSON.stringify(entries)).not.toContain('West entrance')
+})
+
+it('withholds all completed text segments when source bytes change after the last successful read', async () => {
+  const { ipc, store, chief, dm, request, source } = await fixture()
+  let lateDelta: (() => void) | undefined
+  h.engine.script(chief.handle, async ({ turn, tool, say }) => {
+    const evidence = await tool('read_project_result', {})
+    expect(JSON.stringify(evidence)).toContain('West entrance')
+    say('Draft segment: West entrance.')
+    expect(store.entries.since(dm.id,0).some(e=> e.text.includes('West entrance'))).toBe(false)
+    writeFileSync(join(h.services.dataDir, 'attachments',source.sha256.slice(0,16)+'-'+source.name), 'new content')
+    say('Final segment: West entrance.')
+    lateDelta = () => { turn.recorder.textDelta('Late West entrance.'); turn.recorder.endText() }
+  })
+  await ipc['session:ask-fai'](request)
+  await h.runtime.idle()
+  expect(lateDelta).toBeTypeOf('function')
+  lateDelta!()
+  const entries = store.entries.since(dm.id,0)
+  expect(entries.some(e=>e.text.includes('selected project result is unavailable'))).toBe(true)
+  expect(JSON.stringify(entries)).not.toContain('West entrance')
+  expect(JSON.stringify(h.services.bus.events)).not.toContain('West entrance')
+  expect(store.db.prepare("select status,error from turns where conversation_id=?").get(dm.id))
+    .toMatchObject({status:'error',error:expect.stringContaining('selected project result is unavailable')})
 })

@@ -59,7 +59,7 @@ import { resolveMentionHints } from './mentions'
 import { buildSystemPrompt, turnNote } from './prompt'
 import { SerialQueues } from './queue'
 import { routeMessage } from './router'
-import { TurnRecorder, toolStatus, resultPreview } from './turn-recorder'
+import { TurnRecorder, toolStatus, resultPreview, SELECTED_RESULT_ERROR, SELECTED_RESULT_WITHHELD } from './turn-recorder'
 
 export const MAX_CHAIN_DEPTH = 3
 /** send_to_agent calls one turn may make. */
@@ -789,8 +789,16 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (!claimed.changes) return {status:'skipped',posts:[]}
     }
     if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
+    let resultWithdrawn = false
+    const selectedResultAvailable: (() => boolean) | undefined = resultOrigin ? () => {
+      if (resultWithdrawn) return false
+      if (projectResultForEntry(store, this.deps.dataDir, this.deps.attachments, conversationId, resultOrigin)?.status === 'available') return true
+      resultWithdrawn = true
+      recorder.withdrawSelectedResult()
+      return false
+    } : undefined
     let lateBuffer = ''
-    const recorder = new TurnRecorder(
+    const recorder: TurnRecorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
         turnId,
@@ -800,6 +808,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.userRequest && { replyToId: req.userRequest.id }),
         ...(wakeEntry && { replyToId: wakeEntry.id }),
         signal,
+        selectedResultAvailable,
         ...(req.assignment && { onLateText: (delta: string) => {
           if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
         } }),
@@ -816,7 +825,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (!route) {
       // In an open group round a bot without a model just sits out; asked directly, it says why.
       // Its messages stay unseen, so it catches up once it has a model.
-      if (req.mustAnswer) recorder.event(`${bot.name} could not answer: ${routeError}`)
+      if (req.mustAnswer) {
+        recorder.event(`${bot.name} could not answer: ${routeError}`)
+        if (selectedResultAvailable) recorder.finish(false, true)
+      }
       return { status: req.mustAnswer ? 'error' : 'skipped', posts: [], ...(routeError && { error: routeError }) }
     }
     if (signal.aborted) return { status: 'cancelled', posts: [] }
@@ -846,6 +858,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const toolContext: Omit<ToolContext, 'callId'> = {
         ...(userEntry && { userEntryId: userEntry.id }),
         projectResultTrigger,
+        selectedResultAvailable,
         bot,
         conversation,
         turnId,
@@ -885,8 +898,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       // the configured provider sees even the new instruction, which can itself quote the source.
       if (selectedResultTrigger && resultOrigin &&
         (projectResultOrigin(store, conversationId, selectedResultTrigger, req.wake) !== resultOrigin ||
-          projectResultForEntry(store, this.deps.dataDir, this.deps.attachments, conversationId, resultOrigin)?.status !== 'available')) {
-        recorder.event('The selected project result is unavailable. Check its sources in the project before asking fai again.')
+          !selectedResultAvailable?.())) {
+        recorder.event(SELECTED_RESULT_WITHHELD)
         return { status: 'skipped', posts: [] }
       }
       await engine.run({
@@ -939,12 +952,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (active.unresolvedActions.size > 0 && !signal.aborted) throw new Error('A tool action remains unresolved or its outcome is unknown. Reconcile it before accepting this run.')
     } catch (err) {
       if (!signal.aborted) {
-        error = secrets.redact(err instanceof Error ? err.message : String(err))
+        error = selectedResultAvailable ? SELECTED_RESULT_ERROR : secrets.redact(err instanceof Error ? err.message : String(err))
         if (!(err instanceof IncompleteTurnError)) recorder.event(`${bot.name} could not answer: ${error}`)
       }
     } finally {
       this.active.delete(turnId)
-      recorder.finish(signal.aborted)
+      error = recorder.finish(signal.aborted, !!error) ?? error
       this.live.idle(bot.id, conversationId)
     }
 
