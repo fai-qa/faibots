@@ -24,7 +24,7 @@ If Electron exits immediately on Windows, run `npm run prestart` to download the
 
 When a job needs several steps, fai can keep a work brief in the chat. Open it to see the deliverable and checks, update that job, answer a question, or accept a result. A specialist can work in the background while you speak with fai. The brief and its verified returns survive reopening the app.
 
-Projects have a Library for selected source revisions, a Space for reviewed Pages, and separate session histories. You choose which work to bring into a new session. Project instructions can be tried on two sets of notes before you activate them.
+Projects have a Library for selected source revisions, a Space for reviewed Pages, and separate session histories. You choose which work to bring into a new session. To discuss a search result in your main chat, choose **Ask fai** below the result, enter your instruction, and select **Send to fai**. Project instructions can be tried on two sets of notes before you activate them.
 
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
 

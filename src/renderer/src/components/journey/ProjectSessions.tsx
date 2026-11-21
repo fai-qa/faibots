@@ -1,15 +1,74 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { ProjectAddress, ProjectAnswer, ProjectSession, ProjectSessionView } from '@shared/project-sessions'
 import { errorMessage, invoke } from '../../lib/bridge'
 import { useAsync } from '../../lib/hooks'
 import { useData } from '../../store/data'
+import { navigate, useUi } from '../../store/ui'
 import { TurnContext } from '../details/TurnContext'
 import { Button } from '../ui/Button'
-import { TextInput, Select } from '../ui/Field'
+import { Field, Select, TextArea, TextInput } from '../ui/Field'
 
 const small = 'text-[12px] text-fg-3'
 
-function Answer({ answer }: { answer: ProjectAnswer }) {
+function AskFai({ scope, sessionId, answerId }: { scope: ProjectAddress; sessionId: string; answerId: string }) {
+  const [open, setOpen] = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const sending = useRef(false)
+  const lastRequest = useRef<{ instruction: string; id: string } | null>(null)
+
+  async function send() {
+    const text = instruction.trim()
+    if (!text || sending.current) return
+    sending.current = true
+    setBusy(true)
+    setError('')
+    if (lastRequest.current?.instruction !== text) {
+      lastRequest.current = { instruction: text, id: crypto.randomUUID() }
+    }
+    try {
+      const result = await invoke('session:ask-fai', {
+        ...scope, sessionId, answerId, requestId: lastRequest.current.id, instruction: text
+      })
+      const route = useUi.getState().route
+      if (route.kind === 'project' && route.id === scope.projectId) navigate({ kind: 'conversation', id: result.conversationId })
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      sending.current = false
+      setBusy(false)
+    }
+  }
+
+  if (!open) return <Button size="sm" onClick={() => setOpen(true)}>Ask fai</Button>
+  return (
+    <form className="space-y-2" onSubmit={(event) => { event.preventDefault(); void send() }}>
+      <Field label="What should fai do with this result?" hint="The cited evidence will be available to fai in your main chat.">
+        <TextArea
+          autoFocus
+          aria-label="What should fai do with this result?"
+          value={instruction}
+          onChange={(event) => setInstruction(event.target.value)}
+          rows={2}
+          maxLength={2000}
+          disabled={busy}
+        />
+      </Field>
+      {error && <p role="alert">{error}</p>}
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" variant="primary" disabled={busy || !instruction.trim()}>
+          {busy ? 'Sending…' : 'Send to fai'}
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+function Answer({ answer, scope, sessionId }: { answer: ProjectAnswer; scope: ProjectAddress; sessionId: string }) {
   return (
     <article className="space-y-2 border-t border-line-soft pt-3" aria-label="Saved answer">
       <h4 className="text-ui font-medium">{answer.query}</h4>
@@ -41,6 +100,9 @@ function Answer({ answer }: { answer: ProjectAnswer }) {
           Project {answer.projectId} · Session {answer.sessionId} · Owner {answer.ownerId} · Result {answer.id}
         </p>
       </details>
+      {answer.status !== 'unavailable' && answer.citations.length > 0 && (
+        <AskFai scope={scope} sessionId={sessionId} answerId={answer.id} />
+      )}
     </article>
   )
 }
@@ -182,7 +244,7 @@ function OpenSession({ view, scope }: { view: ProjectSessionView; scope: Project
         <p role="status">Some results are hidden because their sources are unavailable.</p>
       )}
       {history.map((answer) => (
-        <Answer key={answer.id} answer={answer} />
+        <Answer key={answer.id} answer={answer} scope={scope} sessionId={view.session.id} />
       ))}
       <form
         className="space-y-2"
