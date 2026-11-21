@@ -16,6 +16,9 @@ import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-sc
 
 import { workBriefSchema } from '../src/main/store/work-brief-schema'
 
+import { ARTIFACT_SAVE_SCHEMA } from '../src/main/store/artifact-save-schema'
+
+const SAVE_VERSION = MIGRATIONS.indexOf(ARTIFACT_SAVE_SCHEMA) + 1
 const BRIEF_VERSION = MIGRATIONS.indexOf(workBriefSchema) + 1
 const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
@@ -25,6 +28,7 @@ const LATEST = MIGRATIONS.length
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name: 'artifact_saves', since: SAVE_VERSION, cols: ['run_id','project_id','artifact_id','pinned_root','provenance','state','sha256','revision_id'], order: 'run_id' },
   { name: 'chief_work', since: BRIEF_VERSION, cols: ['id','conversation_id','user_entry_id','objective','revision','state'], order: 'id' },
   { name: 'chief_decisions', since: BRIEF_VERSION, cols: ['work_id','revision','decision','note','pending_reply'], order: 'work_id,revision' },
   { name: 'chief_wakes', since: BRIEF_VERSION, cols: ['work_id','revision','state','entry_id'], order: 'work_id,revision' },
@@ -138,6 +142,7 @@ function seed(db: DatabaseSync, v: number): void {
     run("insert into project_evaluations values (?,'complete','accepted',?,'user',1,2)", `jr-${t}`, `rev-${t}`)
     run("insert into evaluation_trials values (?,?,?,'passed','accepted',3,'verified','accepted')", v, `jr-${t}`, `jr-${t}`)
   }
+  if (v >= SAVE_VERSION) run("insert into artifact_saves values (?,?,?,'synthetic','{}','linked',?,null,?)",`jr-${t}`,`proj-${t}`,`art-${t}`,'b'.repeat(64),`rev-${t}`)
   if (v >= BRIEF_VERSION) {
     run("insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at) values (?,?,?,'brief','draft','review','active',3,1)", `brief-${t}`,`conv-${t}`,`entry-${t}`)
     run("insert into chief_decisions values (?,2,'answer','two copies',1,1)", `brief-${t}`)

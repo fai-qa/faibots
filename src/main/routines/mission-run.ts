@@ -8,7 +8,7 @@
 // Honesty rules (P0): a failed chief or reviewer turn is never success; partial text with a
 // failure stays partial/failed; human acceptance stays manual, so nothing auto-accepts here.
 
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   Artifact, Bot, Conversation, EntryTrigger, Id, JourneyRun, JourneyRunBudgets, ManifestLiteSource, Project,
@@ -18,6 +18,7 @@ import type { AttachmentStore, EventBus, MissionRunService, Runtime } from '../c
 import { readSourceSnapshot, revisionText } from '../attachments/project-reads'
 import { transaction } from '../store/db'
 import { safeFileName } from '../attachments/attachments'
+import { artifactSaves } from './artifact-saves'
 import { observeFile, pinWorkspace } from './acceptance'
 import { RUNNING_STATUSES, type JourneyRunRepo } from '../store/journey-runs'
 import type { PlatformStore } from '../store'
@@ -106,6 +107,7 @@ export function missionTrigger(project: Project, artifact: Artifact): EntryTrigg
 export function createMissionRunService(deps: MissionRunServiceDeps): MissionRunService & { idle(): Promise<void> } {
   const { store, runtime, attachments, dataDir, bus } = deps
   const now = deps.now ?? Date.now
+  const saves = artifactSaves(store,dataDir)
   const active = new Map<Id, Promise<void>>()
   const repo: JourneyRunRepo = store.journeyRuns
 
@@ -278,6 +280,8 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       }
       mkdirSync(join(pinnedRoot, runFolder))
       const notes = missionNotes(run, sources)
+      saves.intent(run,pinnedRoot,{ projectId: project.id, sources: notes.provenance,
+        note: `First draft from ${sources.length} selected source${sources.length === 1 ? '' : 's'} (mission run ${run.id}).` })
 
       const draft = await runtime.runAutomated({
         botId: chief.id,
@@ -305,22 +309,8 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         fail('The proposal file is empty.', emptyBudgets())
         return
       }
-      // Persist the exact verified bytes under application-owned storage before recording the revision.
-      const snapshots = join(dataDir, 'artifact-revisions')
-      mkdirSync(snapshots, { recursive: true })
-      const snapshotDir = join(realpathSync(snapshots), run.id)
-      mkdirSync(snapshotDir)
-      writeFileSync(join(snapshotDir, DELIVERABLE_PATH), observed.data, { flag: 'wx' })
-      const revision = store.artifacts.createRevision({
-        artifactId: artifact.id,
-        sha256: observed.sha256,
-        provenance: {
-          projectId: project.id,
-          sources: notes.provenance,
-          note: `First draft from ${sources.length} selected source${sources.length === 1 ? '' : 's'} (mission run ${run.id}).`,
-          file: { workspace: snapshotDir, path: DELIVERABLE_PATH }
-        }
-      })
+      saves.capture(run.id,observed.data,observed.sha256)
+      const revision = saves.link(run.id)
       const revisionBudget = { bytes: observed.bytes, sha256: observed.sha256 }
       const budgets = () =>
         computeBudgets({ run, sources, dmId: draft.conversationId, revision: revisionBudget, revisions: store.artifacts.revisions(artifact.id).length })
@@ -446,13 +436,16 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
 
     runs: (projectId, limit) => repo.listByProject(projectId, limit),
 
-    closeInterrupted: (at) => transaction(store.db, () => {
+    closeInterrupted: (at) => {
+      saves.recover(at)
+      return transaction(store.db, () => {
       const unfinished = store.db.prepare(`select r.id from journey_runs r join project_context c on c.run_id=r.id
         where r.status in ('working','waiting_review')`).all()
       const count = repo.closeInterrupted(at)
       for (const row of unfinished) store.projectContent.recordOutcome(repo.get(String(row.id))!)
       return count
-    }),
+      })
+    },
 
     async idle() {
       while (active.size > 0) await Promise.allSettled([...active.values()])

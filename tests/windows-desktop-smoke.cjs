@@ -35,6 +35,16 @@ function fixtureResponse(messages) {
   const prompt = textOf(messages[promptIndex])
   const result = messages.slice(promptIndex + 1).findLast((message) => message.role === 'tool')
 
+  if (prompt.includes('Plan the pickup note.') || prompt.includes('Answer for work')) {
+    const answering = prompt.includes('Answer for work')
+    if (!result) return {name:'plan_work',arguments:{objective:'Arrange pickup',deliverable:'Pickup note',checks:'Verify the gate'}}
+    if (result.tool_call_id === 'call_plan_work') {
+      const brief = JSON.parse(textOf(result))
+      return {name:'review_work',arguments:{id:brief.id,revision:brief.revision,action:answering?'result':'question',
+        text:answering?'Meet at Gate 4.':'Which pickup gate?'}}
+    }
+    return answering ? 'Your pickup note is ready.' : 'Please choose a gate.'
+  }
   if (prompt.includes(chatQuestion)) return chatAnswer
   if (prompt.includes(chiefQuestion)) return chiefAnswer
   if (prompt.includes('<<<REVIEW MESSAGE')) {
@@ -194,6 +204,42 @@ async function checkDirectChat(invoke, window, mode, profile, baseUrl) {
   console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for fai startup and both saved DMs`)
 }
 
+async function checkWorkBrief(invoke, window, mode, profile, baseUrl) {
+  const evaluate = (expression) => window.webContents.executeJavaScript(expression)
+  const chief = await primaryFai(invoke)
+  const dm = await invoke('conv:open-dm', {botId: chief.id})
+  const query = {conversationId: dm.id}
+  const panel = 'aside[aria-label="Work in this chat"]'
+  const contains = (value) => `document.querySelector(${JSON.stringify(panel)})?.innerText.includes(${JSON.stringify(value)})`
+  if (mode === 'brief') {
+    const model = await configureModel(invoke,profile,baseUrl)
+    await invoke('bots:update', {id: chief.id, patch: {model}})
+    await invoke('conv:send', {...query, text:'Plan the pickup note.', clientNonce:'pickup', mentions:[],mentionsEveryone:false,attachmentPaths:[]})
+    await waitForWindow(evaluate, contains('Which pickup gate?'), 'the owner question')
+    const [brief] = await invoke('work:list',query)
+    assert.equal(brief.state,'needs_input')
+    writeFileSync(join(profile,'brief-id.txt'),brief.id)
+  } else if (mode === 'brief-answer') {
+    await waitForWindow(evaluate,contains('Which pickup gate?'),'the recovered owner question')
+    await evaluate(`document.querySelector('textarea[aria-label="Your answer"]').focus()`)
+    await window.webContents.insertText('Gate 4')
+    await waitForWindow(evaluate, `[...document.querySelectorAll('button')].some(b=>b.textContent==='Send answer' && !b.disabled)`, 'the answer button')
+    await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Send answer').click()`)
+    await waitForWindow(evaluate,contains('Meet at Gate 4.'),'the pickup note')
+    await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Accept result').click()`)
+    await waitForWindow(evaluate,contains('Accepted'),'the owner acceptance')
+  } else {
+    await waitForWindow(evaluate,contains('Accepted'),'the persisted acceptance')
+    const briefs = await invoke('work:list',query)
+    assert.equal(briefs.length,1)
+    assert.equal(briefs[0].id,readFileSync(join(profile,'brief-id.txt'),'utf8'))
+    assert.equal(briefs[0].state,'accepted')
+    const {entries} = await invoke('conv:entries',query)
+    assert.equal(entries.filter(entry=>entry.clientNonce?.startsWith('work-')).length,1)
+  }
+  console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for the same work brief.`)
+}
+
 function runDesktop() {
   const { app } = require('electron')
   const [mode, profile, baseUrl] = process.argv.slice(-3)
@@ -208,6 +254,11 @@ function runDesktop() {
         assert.equal((await invoke('app:info')).platform, 'win32')
         assert.equal(await window.webContents.executeJavaScript('document.title'), 'faibots')
         assert.equal(window.getTitle(), 'faibots')
+        if (mode.startsWith('brief')) {
+          await checkWorkBrief(invoke,window,mode,profile,baseUrl)
+          app.quit()
+          return
+        }
         if (mode === 'chat' || mode === 'chat-reopen') {
           await checkDirectChat(invoke, window, mode, profile, baseUrl)
           app.quit()
@@ -264,7 +315,7 @@ async function runSmoke() {
   const electron = process.env.FAIBOTS_SMOKE_ELECTRON || require('electron')
   const { server, baseUrl } = await startFixture()
   try {
-    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen']]) {
+    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen'], ['brief','brief-answer','brief-reopen']]) {
       const profile = mkdtempSync(join(tmpdir(), 'faibots-desktop-'))
       mkdirSync(join(profile, 'workspaces'))
       for (const mode of stages) {

@@ -1,5 +1,6 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
+import { ARTIFACT_SAVE_SCHEMA } from './artifact-save-schema'
 import { workBriefSchema } from './work-brief-schema'
 import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 
@@ -329,5 +330,6 @@ export const MIGRATIONS: string[] = [
   PROJECT_CONTENT_SCHEMA,
   workBriefSchema,
   ASSIGNMENT_BUDGET_SCHEMA,
-  SESSION_SCHEMA
+  SESSION_SCHEMA,
+  ARTIFACT_SAVE_SCHEMA
 ]
