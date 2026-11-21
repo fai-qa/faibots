@@ -2,7 +2,7 @@ import clsx from 'clsx'
 import { Ellipsis, Eye, EyeOff, MailOpen, Pencil, Pin, PinOff, RotateCcw, Settings2, Star, Trash } from 'lucide-react'
 import { useState } from 'react'
 import type { Bot, Conversation } from '@shared/domain'
-import { botStatus, liveFor, useData } from '../../store/data'
+import { botStatus, lastActivityLabel, liveFor, useData } from '../../store/data'
 import { confirmDialog, navigate, openDetails, useUi } from '../../store/ui'
 import { deleteBot, deleteConversation, markRead, openBot, resetConversation, updateBot } from '../../store/actions'
 import type { SidebarItem } from '../../lib/sidebar'
@@ -33,10 +33,10 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
   const status = bot
     ? botStatus(live, bot.id)
     : conv
-      ? liveFor(live, conv.id).sort((a, b) => Number(b.phase === 'waiting') - Number(a.phase === 'waiting'))[0]
+      ? liveFor(live, conv.id).sort((a, b) => Number(!!a.stale) - Number(!!b.stale) || Number(b.phase === 'waiting') - Number(a.phase === 'waiting'))[0]
       : undefined
-  const waiting = status?.phase === 'waiting'
-  const statusText = waiting ? 'Waiting for you' : status ? 'Working' : undefined
+  const waiting = !status?.stale && status?.phase === 'waiting'
+  const statusText = status?.stale ? lastActivityLabel(status) : waiting ? 'Waiting for you' : status ? 'Working' : undefined
 
   let preview = ''
   if (draft?.text) preview = `Draft: ${plainPreview(draft.text, 80)}`
@@ -95,7 +95,7 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
     item.kind === 'group' ? (
       <GroupAvatar bots={members} size={compact ? 34 : 30} />
     ) : bot ? (
-      <BotAvatar bot={bot} size={compact ? 34 : 30} state={status?.phase} attention={waiting} />
+      <BotAvatar bot={bot} size={compact ? 34 : 30} state={status?.stale ? 'idle' : status?.phase} attention={waiting} />
     ) : null
 
   if (compact) {

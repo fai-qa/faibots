@@ -64,7 +64,7 @@ function BotPanel({ bot, onClose, backLabel, onBack }: { bot: Bot; onClose: () =
     <>
       <header className={`bot-${bot.avatar.color} drag flex h-[52px] shrink-0 items-center gap-2.5 px-3`}>
         {onBack ? <IconButton icon={ArrowLeft} label={backLabel ?? 'Back'} onClick={onBack} /> : null}
-        <BotAvatar bot={bot} size={26} state={status?.phase} />
+        <BotAvatar bot={bot} size={26} state={status?.stale ? 'idle' : status?.phase} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13.5px] font-semibold text-fg">{bot.name}</div>
         </div>

@@ -20,7 +20,8 @@ export class LiveStates {
   set(botId: Id, conversationId: Id, phase: BotPhase, activity?: string): void {
     const key = this.key(botId, conversationId)
     const current = this.states.get(key)
-    if (current && current.phase === phase && current.activity === activity) return
+    // Repeated real engine activity refreshes the observation. A silent worker never gets a synthetic heartbeat.
+    if (current && current.phase === phase && current.activity === activity && Date.now() - current.updatedAt < 15_000) return
     if (!current && phase === 'idle') return
     const state: BotLiveState = { botId, conversationId, phase, ...(activity && { activity }), updatedAt: Date.now() }
     if (phase === 'idle') this.states.delete(key)

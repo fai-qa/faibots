@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { MessageSquarePlus, Plus } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useData } from './store/data'
+import { refreshLiveFreshness, useData } from './store/data'
 import { navigate, useUi } from './store/ui'
 import { boot } from './store/actions'
 import { useCurrentConversation } from './lib/hooks'
@@ -42,6 +42,12 @@ export function App() {
   const bootError = useData((s) => s.bootError)
   useTheme()
   useEffect(() => void boot(), [])
+  useEffect(() => {
+    const check = () => refreshLiveFreshness()
+    const timer = window.setInterval(check, 5_000)
+    window.addEventListener('focus', check)
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', check) }
+  }, [])
 
   if (status === 'loading') return <BootScreen />
   if (status === 'error') {

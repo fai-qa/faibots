@@ -78,7 +78,7 @@ function ProfileCard({ bot, onDone }: { bot: Bot; onDone: () => void }) {
       className={`bot-${bot.avatar.color} w-[264px] rounded-2xl border border-line bg-elevated p-4 text-left shadow-pop`}
     >
       <div className="flex items-start gap-3">
-        <BotAvatar bot={bot} size={52} state={status?.phase} />
+        <BotAvatar bot={bot} size={52} state={status?.stale ? 'idle' : status?.phase} />
         <div className="min-w-0 pt-1">
           <div className="truncate text-[15px] font-semibold text-bot-fg">{bot.name}</div>
           <div className="truncate text-[12.5px] text-fg-3">@{bot.handle}</div>
