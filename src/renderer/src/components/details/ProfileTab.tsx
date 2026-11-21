@@ -4,7 +4,7 @@ import type { Bot } from '@shared/domain'
 import { useData } from '../../store/data'
 import { toast, useUi } from '../../store/ui'
 import { attempt, updateBot } from '../../store/actions'
-import { findDm } from '../../lib/bots'
+import { findDm, mainBotRole } from '../../lib/bots'
 import { useDraftValue } from '../../lib/hooks'
 import { BotAvatar } from '../avatar/BotAvatar'
 import { Button } from '../ui/Button'
@@ -222,7 +222,7 @@ export function ProfileTab({ bot }: { bot: Bot }) {
         label="Description"
         placeholder="Add a description"
         multiline
-        hint={`Other bots read this to decide when to ask ${bot.name} for help.`}
+        hint={bot.isPrimary ? mainBotRole : `Other bots read this to decide when to ask ${bot.name} for help.`}
       />
 
       <SoulEditor bot={bot} />

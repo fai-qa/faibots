@@ -3,6 +3,8 @@
 import type { Bot, BotColor, AvatarShape, Conversation, Id } from '@shared/domain'
 import { joinNames } from './format'
 
+export const mainBotRole = 'fai can answer directly, choose a specialist for the job, or propose a new bot for your approval.'
+
 export const COLOR_LABELS: Record<BotColor, string> = {
   black: 'Black',
   brown: 'Brown',

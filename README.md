@@ -42,6 +42,13 @@ The desktop app uses Electron. The optional browser UI preview uses example data
 
 On Windows, `npm run prestart` followed by `node tests/windows-desktop-smoke.cjs` checks the built desktop app with a local model fixture. It exercises the desktop runtime with fictional data and checks that records survive reopening.
 
+Maintainers can assemble a portable ZIP from the same checkout with Python 3.12 or later. After building the app, run these commands from the repository root on Windows. The ZIP command asks for a new filename if the destination already exists.
+
+```powershell
+npx --no-install electron-builder --win --x64 --dir --publish never
+python -B scripts/package-windows-preview.py dist/win-unpacked dist/faibots-windows-x64.zip
+```
+
 ## Licensing
 
 The fai.qa-owned code and documentation are available under the [MIT License](LICENSE). The brand assets and integrated affectUI Pro component keep their separate terms. See [Notice](NOTICE.md) and [third-party notices](THIRD_PARTY_LICENSES/README.md).
