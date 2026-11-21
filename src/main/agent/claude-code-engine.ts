@@ -294,7 +294,7 @@ export function createClaudeCodeEngine(deps: ClaudeCodeEngineDeps): TurnEngine {
     const query = deps.query ?? (await loadQuery())
     const { recorder } = turn
     const workspace = turn.toolContext.workspaceDir
-    const { text: prompt, newEntries } = turnPrompt(turn, deps.store, !resume)
+    const { text: prompt, newEntries, replayedEntries } = turnPrompt(turn, deps.store, !resume)
     const connectors = connectorToolNames(turn.tools)
     const bridge = await deps.bridge.open(turn.toolContext)
     const abortController = new AbortController()
@@ -417,6 +417,10 @@ export function createClaudeCodeEngine(deps: ClaudeCodeEngineDeps): TurnEngine {
 
     try {
       mkdirSync(workspace, { recursive: true })
+      turn.disclose?.([
+        ...turn.tools.filter((t) => !t.name.startsWith('mcp__')).map(({ name }) => ({ name, exposedAs: `mcp__${BRIDGE_SERVER}__${name}` })),
+        ...[...connectors].map(([exposed, tool]) => ({ name: tool.name, exposedAs: `mcp__${CONNECTORS_SERVER}__${exposed}` }))
+      ], [...replayedEntries, ...newEntries], ['Claude Code manages its built-in tools. Mapped file, shell and web actions use the faibots permission gate. The full host catalog is unavailable.'])
       const q = query({ prompt, options })
       try {
         for await (const msg of q) {

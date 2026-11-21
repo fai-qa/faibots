@@ -2,7 +2,7 @@
 // file sent twice is stored once and later edits to the original don't change the transcript.
 
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { Attachment } from '@shared/domain'
 import type { AttachmentStore } from '../contracts'
@@ -36,6 +36,29 @@ export function safeFileName(name: string): string {
   return cleaned.slice(0, 100 - ext.length) + ext
 }
 
+function readSizedFile(path: string, name: string, expectedSize: number): Buffer {
+  // A project snapshot can be replaced or grow during a read. Bound allocation to its recorded size.
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > MAX_ATTACHMENT_BYTES)
+    throw new Error('Invalid snapshot size.')
+  const changed = () => new Error('Source snapshot no longer matches: ' + name)
+  const fd = openSync(path, 'r')
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || stat.size !== expectedSize) throw changed()
+    const bytes = Buffer.alloc(expectedSize + 1)
+    let total = 0
+    while (total < bytes.length) {
+      const count = readSync(fd, bytes, total, bytes.length - total, null)
+      if (count === 0) break
+      total += count
+    }
+    if (total !== expectedSize) throw changed()
+    return bytes.subarray(0, total)
+  } finally {
+    closeSync(fd)
+  }
+}
+
 export function createAttachmentStore(deps: { dataDir: string }): AttachmentStore {
   const dir = join(deps.dataDir, 'attachments')
 
@@ -46,11 +69,13 @@ export function createAttachmentStore(deps: { dataDir: string }): AttachmentStor
         const stat = statSync(source)
         if (!stat.isFile()) throw new Error(`${basename(source)} is not a file`)
         if (stat.size > MAX_ATTACHMENT_BYTES) throw new Error(`${basename(source)} is larger than 50 MB`)
-        const hash = createHash('sha256').update(readFileSync(source)).digest('hex').slice(0, 16)
+        const bytes = readSizedFile(source, basename(source), stat.size)
+        const sha256 = createHash('sha256').update(bytes).digest('hex')
+        const hash = sha256.slice(0, 16)
         const name = basename(source)
         const path = join(dir, `${hash}-${safeFileName(name)}`)
-        if (!existsSync(path)) copyFileSync(source, path)
-        return { id: randomUUID(), name, mimeType: mimeTypeFor(name), sizeBytes: stat.size, path }
+        if (!existsSync(path)) writeFileSync(path, bytes)
+        return { id: randomUUID(), name, mimeType: mimeTypeFor(name), sizeBytes: bytes.length, sha256, path }
       })
     },
 
@@ -58,26 +83,7 @@ export function createAttachmentStore(deps: { dataDir: string }): AttachmentStor
       // Attachments come back from the transcript; only ever read inside our own folder.
       if (!isInside(attachment.path, dir)) throw new Error('Attachment is outside the attachment store')
       if (expectedSize === undefined) return readFileSync(attachment.path)
-      // A project snapshot can be replaced or grow during a read. Bound allocation to its recorded size.
-      if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > MAX_ATTACHMENT_BYTES)
-        throw new Error('Invalid snapshot size.')
-      const changed = () => new Error('Source snapshot no longer matches: ' + attachment.name)
-      const fd = openSync(attachment.path, 'r')
-      try {
-        const stat = fstatSync(fd)
-        if (!stat.isFile() || stat.size !== expectedSize) throw changed()
-        const bytes = Buffer.alloc(expectedSize + 1)
-        let total = 0
-        while (total < bytes.length) {
-          const count = readSync(fd, bytes, total, bytes.length - total, null)
-          if (count === 0) break
-          total += count
-        }
-        if (total !== expectedSize) throw changed()
-        return bytes.subarray(0, total)
-      } finally {
-        closeSync(fd)
-      }
+      return readSizedFile(attachment.path, attachment.name, expectedSize)
     }
   }
 }

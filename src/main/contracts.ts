@@ -333,6 +333,8 @@ export interface ToolContext {
   workspaceDir: string
   /** Turn-start identity of each connector tool the model was offered: model-facing name -> server and the tool's own name there.
    * Names can be renumbered when grants change, so execute resolves connectors by this identity. Absent for older callers. */
+  /** Built-in names admitted to this dispatch; the bridge also rechecks current permissions. */
+  admittedTools?: ReadonlySet<string>
   mcpTools?: ReadonlyMap<string, { serverId: Id; remoteName: string }>
 }
 
@@ -351,8 +353,12 @@ export interface ToolDefinition {
    * Change version when the remote target/account or recovery semantics change. */
   recovery?: { version: string; recover(input: unknown, ctx: ToolContext): Promise<ToolResult | undefined> }
   defaultPermission: PermissionMode
+  /** Registry permission when the outbound catalog was selected. */
+  effectivePermission?: PermissionMode
   /** Human label for activity lines and cards, e.g. "Running a command". */
   activityLabel: string
+  /** An Ask permission can allow local workspace operations without prompting. */
+  autoAllowedInWorkspace?: boolean
   /** Plain-words summary for an approval card. */
   summarize?(input: unknown, ctx: ToolContext): string
   /** Only offered when this returns true (e.g. pass_turn only in group turns). */
@@ -363,7 +369,7 @@ export interface ToolDefinition {
 export interface ToolRegistry {
   register(def: ToolDefinition): void
   /** Tools the bot can call in this context; 'never' tools are omitted. Includes MCP tools. */
-  forTurn(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup'>): Promise<ToolDefinition[]>
+  forTurn(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup'>, omitted?: (name: string, reason: 'scope' | 'permission') => void): Promise<ToolDefinition[]>
   /** UI listing with effective permissions. */
   info(botId?: Id): Promise<ToolInfo[]>
   setPermission(toolName: string, mode: PermissionMode | null, botId?: Id): void
@@ -478,7 +484,7 @@ export interface Runtime {
    * the bot's turn. Counts against the bot's daily run limit. Mission runs pass the selected
    * sources as manifest-lite so the prompt can cite them.
    */
-  runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
+  runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; projectRun?: { projectId: Id; runId: Id }; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
   cancelBrief(workId: Id): void
   stop(conversationId: Id): void
   reset(conversationId: Id): void

@@ -8,6 +8,7 @@ import { createAttachmentStore } from '../attachments/attachments'
 import { pdfFixture } from '../attachments/testing/pdf-fixture'
 import { createSnapshotService } from '../attachments/snapshots'
 import { openStore, type PlatformStore } from '../store'
+import { turnContextHandlers } from '../store/turn-context'
 import { projectSessionHandlers } from './project-sessions'
 
 let root: string, store: PlatformStore
@@ -27,7 +28,7 @@ function fixture() {
   const attachments = createAttachmentStore({ dataDir: root })
   const complete = vi.fn(async () => 'The signed notice says Tuesday [notice.md r1 line 1].')
   const providers = {
-    resolve: () => ({ engine: 'native', provider: {}, modelId: 'test' }),
+    resolve: () => ({ engine: 'native', provider: { id: 'fixture-provider' }, modelId: 'test' }),
     adapterFor: () => ({ complete })
   }
   const services = { dataDir: root, attachments, providers } as unknown as Services
@@ -183,6 +184,38 @@ it('preserves native citations and conflict with the graph disconnected; detects
   expect(() => handlers['session:open']({ ...scope(a.id), sessionId: s.id, mode: 'continue' })).toThrow(
     /source revisions or permissions changed/
   )
+})
+
+it('returns scoped project turn metadata and withholds a stale, deselected or revoked revision', async () => {
+  const { a, b, scope, attach, ask, start, handlers, services } = fixture()
+  const source = attach(a.id, 'turn-private-note.md', 'Handoff time: noon.')
+  const selected = store.projectContent.pin(a.id, source.id)
+  const session = start(a.id)
+  const get = turnContextHandlers(services, store)['context:turns']
+  const anchor = { ...scope(a.id), kind: 'project' as const, sessionId: session.id }
+  const lookup = await ask(a.id, session.id, 'What is the handoff time?')
+  const model = await ask(a.id, session.id, 'Handoff', true)
+  const read = () => get({ scope: anchor, turnId: model.id }).turns[0]!
+  expect(get({ scope: anchor, turnId: lookup.id }).turns[0]).toMatchObject({ engine:'local-search', tools:[] })
+  expect(read()).toMatchObject({ id:model.id, route:'project', engine:'native', providerId:'fixture-provider', modelId:'test',
+    botId:session.ownerId, scopeId:session.id, sources:[{kind:'project', ...selected}], tools:[] })
+  const fork = handlers['session:open']({ ...scope(a.id), mode:'fork', parentId:session.id, parentProjectId:a.id, answerIds:[model.id] })
+  expect(get({ scope:{ ...anchor, sessionId:fork.session.id }, turnId:model.id }).turns).toEqual([])
+  for (const wrong of [{projectId:b.id}, {hostId:'other-host'}, {environmentId:'other-environment'}])
+    expect(() => get({scope:{ ...anchor,...wrong }})).toThrow()
+  const payload = JSON.stringify(store.db.prepare('select payload from turn_context_receipts').all())
+  for (const privateValue of ['noon', 'turn-private-note.md', 'What is the handoff time?', root])
+    expect(payload).not.toContain(privateValue)
+  const path = join(root, 'attachments', source.sha256.slice(0, 16)+'-'+source.name)
+  writeFileSync(path, 'Different file bytes and size.')
+  expect(read().sources).toEqual([{kind:'withheld'}])
+  writeFileSync(path, 'Handoff time: noon.')
+  expect(read().sources[0]).toEqual({kind:'project', ...selected})
+  store.projectContent.select(a.id, selected.itemId, false)
+  expect(read().sources).toEqual([{kind:'withheld'}])
+  store.projectContent.select(a.id, selected.itemId, true)
+  store.projectContent.revoke(a.id, selected.itemId)
+  expect(read().sources).toEqual([{kind:'withheld'}])
 })
 
 it('asks only the configured native model when requested and rechecks access before delivering its response', async () => {

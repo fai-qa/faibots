@@ -4,6 +4,7 @@ import type { WorkBrief, WorkReply } from './work-brief'
 // the preload bridge only forwards names that appear in INVOKE_CHANNELS / EVENT_CHANNELS.
 
 import { CONTENT_CHANNELS, type ContentInvoke } from './project-content'
+import type { TurnContextInvoke } from './turn-context'
 import { SESSION_CHANNELS, type SessionInvoke } from './project-sessions'
 import { IMPROVEMENT_CHANNELS, type ImprovementInvoke } from './project-improvements'
 import { ESCALATION_CHANNELS, type EscalationInvoke } from './escalations'
@@ -100,7 +101,7 @@ export interface ArtifactWithRevisions {
   content?: string
 }
 
-export interface InvokeMap extends ContentInvoke, SessionInvoke, ImprovementInvoke, EscalationInvoke {
+export interface InvokeMap extends ContentInvoke, TurnContextInvoke, SessionInvoke, ImprovementInvoke, EscalationInvoke {
   'work:list': { req: { conversationId: Id }; res: WorkBrief[] }
   'work:decide': { req: WorkReply & { conversationId: Id }; res: WorkBrief }
   'app:info': { req: void; res: AppInfo }
@@ -257,6 +258,7 @@ export type EventChannel = keyof EventMap
 export const INVOKE_CHANNELS = [
   ...CONTENT_CHANNELS,
   'work:list', 'work:decide',
+  'context:turns',
   ...SESSION_CHANNELS,
   ...IMPROVEMENT_CHANNELS,
   ...ESCALATION_CHANNELS,

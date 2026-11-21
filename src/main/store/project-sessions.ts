@@ -212,5 +212,5 @@ export function createProjectSessions(store: PlatformStore, dataDir: string) {
     })
     return { history, omittedHistory: rows.length - history.length }
   }
-  return { list, ready, open, save, historyAt, checkAnswer }
+  return { list, ready, sessionAt, open, save, historyAt, checkAnswer }
 }

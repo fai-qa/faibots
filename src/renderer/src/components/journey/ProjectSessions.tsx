@@ -3,6 +3,7 @@ import type { ProjectAddress, ProjectAnswer, ProjectSession, ProjectSessionView 
 import { errorMessage, invoke } from '../../lib/bridge'
 import { useAsync } from '../../lib/hooks'
 import { useData } from '../../store/data'
+import { TurnContext } from '../details/TurnContext'
 import { Button } from '../ui/Button'
 import { TextInput, Select } from '../ui/Field'
 
@@ -175,6 +176,7 @@ function OpenSession({ view, scope }: { view: ProjectSessionView; scope: Project
           </p>
         ))}
       </details>
+      <TurnContext revision={history.length} scope={{ ...scope, kind: 'project', sessionId: view.session.id }} />
       <p className={small}>Searching verified local sources. The graph is disconnected.</p>
       {view.omittedHistory > 0 && (
         <p role="status">Some results are hidden because their sources are unavailable.</p>

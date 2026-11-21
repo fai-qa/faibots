@@ -159,6 +159,8 @@ export interface Attachment {
   name: string
   mimeType: string
   sizeBytes: number
+  /** Digest of the file copied at selection time; absent on older entries. */
+  sha256?: string
   /** Absolute path in the app's attachment store. */
   path: string
 }

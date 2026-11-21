@@ -113,9 +113,16 @@ export function createToolRegistry(deps: {
       registered.set(def.name, def)
     },
 
-    async forTurn(ctx) {
+    async forTurn(ctx, omitted) {
       const defs = [...registered.values(), ...(await mcpTools(ctx.bot))]
-      return defs.filter((def) => (def.isAvailable?.(ctx) ?? true) && resolve(def, ctx.bot) !== 'never')
+      const admitted: ToolDefinition[] = []
+      for (const def of defs) {
+        const effectivePermission = resolve(def, ctx.bot)
+        if (def.isAvailable?.(ctx) === false) omitted?.(def.name, 'scope')
+        else if (effectivePermission === 'never') omitted?.(def.name, 'permission')
+        else admitted.push({ ...def, effectivePermission })
+      }
+      return admitted
     },
 
     async info(botId) {

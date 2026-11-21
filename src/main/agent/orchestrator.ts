@@ -45,6 +45,7 @@ import { errorResult } from '../tools/define'
 import { MAX_RESULT_CHARS, truncateText } from '../tools/registry'
 import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
+import { attachmentContext, projectSelections, safeModelId, saveTurnContext } from '../store/turn-context'
 import { startOfLocalDay } from '../store/turns'
 import { MAIN_BOT_NAME } from '../store/bots'
 import { workBriefs } from '../store/work-briefs'
@@ -93,6 +94,7 @@ interface TurnRequest {
   inGroup: boolean
   chain: Id[]
   /** Selected sources for this turn (manifest-lite, FJ-09); only mission runs set it. */
+  projectRun?: { projectId: Id; runId: Id }
   manifestLite?: { sources: ManifestLiteSource[] }
   readProjectNote?: ToolContext['readProjectNote']
   /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
@@ -115,6 +117,7 @@ interface ActiveTurn {
   waiting: number
   beforeWaiting?: { phase: BotPhase; activity?: string }
   asks: number
+  projectRun?: TurnRequest['projectRun']
   root: AssignmentRoot
   unresolvedActions: Set<string>
 }
@@ -283,6 +286,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   reset(conversationId: Id): void {
     const { store, bus } = this.deps
     this.stop(conversationId)
+    store.db.prepare('delete from turn_context_receipts where conversation_id=?').run(conversationId)
     store.entries.clear(conversationId)
     store.botContext.clearConversation(conversationId)
     const conversation = store.conversations.get(conversationId)
@@ -325,7 +329,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     return conversation
   }
 
-  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
+  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; projectRun?: { projectId: Id; runId: Id }; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
     if (this.closed) throw new Error('faibots is shutting down.')
     const { store } = this.deps
     const text = input.text.trim()
@@ -350,6 +354,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       mustAnswer: true,
       inGroup: false,
       chain: [],
+      ...(input.projectRun && { projectRun: input.projectRun }),
       ...(input.manifestLite && { manifestLite: input.manifestLite }),
       readProjectNote: input.readProjectNote,
       ...(input.signal && { parentSignal: input.signal })
@@ -500,6 +505,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         trigger: 'agent',
         mustAnswer: true,
         inGroup: false,
+        ...(asking?.projectRun && { projectRun: asking.projectRun }),
         assignment: { lease, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
@@ -742,6 +748,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     )
     const active: ActiveTurn = {
       turnId, bot, conversationId, recorder, abort, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
+      ...(req.projectRun && { projectRun: req.projectRun }),
       asks: 0, root: req.root ?? { turnId, conversationId }, unresolvedActions: new Set()
     }
 
@@ -769,7 +776,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const engine = this.options.engines[route.engine]
       const settings = store.settings.get()
       const workspaceDir = join(settings.workspaceRoot, bot.handle)
-      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup })
+      const excluded: Record<'scope' | 'permission', string[]> = { scope: [], permission: [] }
+      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup }, (name, reason) => excluded[reason].push(name))
       const mcpTools = new Map<string, { serverId: Id; remoteName: string }>()
       for (const t of turnTools) if (t.serverId && t.remoteName) mcpTools.set(t.name, { serverId: t.serverId, remoteName: t.remoteName })
       const userEntry = [...unseen].reverse().find((entry) => entry.author.kind === 'user')
@@ -783,7 +791,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
         inGroup: req.inGroup,
         workspaceDir,
         readProjectNote: req.readProjectNote,
-        mcpTools
+        mcpTools,
+        admittedTools: new Set(turnTools.map((tool) => tool.name))
       }
       const others = members.filter((b) => b.id !== bot.id)
       const lastAsker = [...unseen].reverse().find((e) => e.author.kind === 'bot')
@@ -816,6 +825,26 @@ export class Orchestrator implements Runtime, CollabRuntime {
         route,
         system,
         tools: turnTools,
+        disclose: (admitted, entries, omissions) => {
+          if (signal.aborted) return
+          const catalog = new Map(turnTools.map((tool) => [tool.name, tool]))
+          const sources = attachmentContext(entries, this.deps)
+          if (req.projectRun && req.manifestLite) sources.push(...projectSelections(store, req.projectRun.projectId, req.projectRun.runId))
+          saveTurnContext(store, {
+            id: turnId, botId, createdAt: startedAt, scopeId: conversationId, route: conversation.kind,
+            engine: route.engine, providerId: route.provider.id, modelId: safeModelId(route.modelId, (v) => secrets.redact(v)),
+            ...(req.projectRun && { projectId: req.projectRun.projectId }),
+            sources, omissions: [...omissions,
+              ...(req.projectRun && !req.manifestLite ? ['No project file access was passed to this turn.'] : []),
+              ...(excluded.permission.length ? [`Turned off by permission: ${excluded.permission.join(', ')}.`] : []),
+              ...(excluded.scope.length ? [`Outside this bot or chat scope: ${excluded.scope.join(', ')}.`] : [])],
+            tools: admitted.map((tool) => {
+              const def = catalog.get(tool.name)!
+              return { ...tool, permission: def.effectivePermission ?? def.defaultPermission,
+                ...(def.autoAllowedInWorkspace && { workspaceException: true }) }
+            })
+          })
+        },
         toolContext,
         context,
         upToSeq,

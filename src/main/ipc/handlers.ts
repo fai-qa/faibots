@@ -12,6 +12,7 @@ import { revisionText } from '../attachments/project-reads'
 import { workBriefs } from '../store/work-briefs'
 import { deliverWorkReplies } from '../agent/work-brief-tools'
 import { projectContentHandlers } from './project-content'
+import { turnContextHandlers } from '../store/turn-context'
 import { projectSessionHandlers } from './project-sessions'
 import { improvementHandlers } from './project-improvements'
 import { escalationHandlers } from './escalations'
@@ -38,6 +39,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       await deliverWorkReplies(store, s.runtime)
       return result
     },
+    ...turnContextHandlers(s, store),
     ...projectSessionHandlers(s, store),
     ...improvementHandlers(s, store),
     ...escalationHandlers(s, store),

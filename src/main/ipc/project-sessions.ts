@@ -4,6 +4,7 @@ import { prepareNoteReader, readSourceSnapshot } from '../attachments/project-re
 import type { Services } from '../contracts'
 import type { RuntimeProviders } from '../providers/provider-service'
 import type { PlatformStore } from '../store'
+import { safeModelId, saveTurnContext } from '../store/turn-context'
 import { createProjectSessions } from '../store/project-sessions'
 
 type Lookup = SessionInvoke['session:lookup']['req']
@@ -36,6 +37,13 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
     const evidence = lookupEvidence(query, session.sources, read)
     const verifiedSources = new Set(evidence.citations.map((citation) => citation.source.sourceId))
     let modelReply: string | undefined
+    const disclose = (model?: { providerId?: string; modelId: string }) => saveTurnContext(store, {
+      id: req.requestId, createdAt: Date.now(), botId: session.ownerId, scopeId: session.id, projectId: req.projectId,
+      route: 'project', engine: model ? 'native' : 'local-search', ...model, tools: [],
+      sources: session.sources.map(({ itemId, sourceId, revision, sha256 }) => ({ kind: 'project', itemId, sourceId, revision, sha256 })),
+      omissions: [model ? 'The model received verified citations and selected history. Tool access is disabled.' :
+        'Local evidence lookup used the selected project revisions. No model or host tools were used.']
+    }, true)
     if (req.useModel && evidence.status === 'found') {
       const history = sessions().historyAt(req, session.id, verify).history
       const chief = store.bots.get(session.ownerId)!
@@ -53,6 +61,7 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
       const prompt = JSON.stringify(context)
       if (prompt.length > 80_000)
         throw new Error('The selected history exceeds the summary limit. Fork fewer results.')
+      disclose({ providerId: route.provider.id, modelId: safeModelId(route.modelId, (text) => services.secrets?.redact(text) ?? text) })
       modelReply = await providers.adapterFor(route.provider).complete({
         modelId: route.modelId,
         system:
@@ -68,7 +77,7 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
         sessions().checkAnswer(req.projectId, entry, session.sources, verify)
         for (const id of entry.verifiedSourceIds) verifiedSources.add(id)
       }
-    }
+    } else disclose()
     const answer: ProjectAnswer = {
       id: req.requestId,
       sessionId: session.id,

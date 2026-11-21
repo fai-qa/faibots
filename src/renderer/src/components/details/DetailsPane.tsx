@@ -17,6 +17,7 @@ import { MemoryTab } from './MemoryTab'
 import { ProfileTab } from './ProfileTab'
 import { RoutinesTab } from './RoutinesTab'
 import { SkillsTab } from './SkillsTab'
+import { TurnContext } from './TurnContext'
 import { ToolsTab } from './ToolsTab'
 
 const TABS: { id: DetailsTab; label: string }[] = [
@@ -53,6 +54,7 @@ export function DetailsPane() {
   return (
     <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-line-soft bg-pane" aria-label="Details">
       {body}
+      <TurnContext key={conv.id} scope={{ kind: 'chat', conversationId: conv.id }} />
     </aside>
   )
 }

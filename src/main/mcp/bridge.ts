@@ -36,7 +36,7 @@ export function createToolBridge(deps: { registry: ToolRegistry }): ToolBridge {
 
   /** The tools an external engine gets: everything for this turn except MCP tools, which it is given directly. */
   const toolsFor = async (ctx: TurnContext) =>
-    (await deps.registry.forTurn(ctx)).filter((t) => !t.name.startsWith('mcp__'))
+    (await deps.registry.forTurn(ctx)).filter((t) => !t.name.startsWith('mcp__') && (!ctx.admittedTools || ctx.admittedTools.has(t.name)))
 
   const mcpServerFor = (ctx: TurnContext) => {
     const server = new Server({ name: 'faibots', version: '0.1.0' }, { capabilities: { tools: {} } })

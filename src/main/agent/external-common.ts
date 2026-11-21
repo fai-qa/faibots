@@ -14,13 +14,14 @@ const HISTORY_FOR_NEW_SESSION = 30
 /** New messages sent in one turn (a bot just added to a long group chat sees the newest ones). */
 const MAX_NEW_MESSAGES = 50
 
-export function turnPrompt(turn: EngineTurn, store: Pick<Store, 'entries'>, freshSession: boolean): { text: string; newEntries: Entry[] } {
+export function turnPrompt(turn: EngineTurn, store: Pick<Store, 'entries'>, freshSession: boolean): { text: string; newEntries: Entry[]; replayedEntries: Entry[] } {
   const conversationId = turn.conversation.id
   const seen = turn.context.lastSeenSeq
   const fresh = store.entries
     .since(conversationId, seen)
     .filter((e) => e.seq <= turn.upToSeq && e.kind === 'message' && !(e.author.kind === 'bot' && e.author.botId === turn.bot.id))
 
+  let replayedEntries: Entry[] = []
   const parts: string[] = []
   if (freshSession && seen > 0) {
     // Everything the new session has not heard, except the new messages themselves
@@ -30,6 +31,7 @@ export function turnPrompt(turn: EngineTurn, store: Pick<Store, 'entries'>, fres
       .since(conversationId, 0)
       .filter((e) => e.seq <= turn.upToSeq && e.kind === 'message' && !freshIds.has(e.id))
       .slice(-HISTORY_FOR_NEW_SESSION)
+    replayedEntries = earlier
     if (earlier.length > 0) {
       parts.push(`Earlier in this conversation:\n\n${entriesAsText(earlier, turn.nameOf, turn.bot.id)}`, '---', 'New messages:')
     }
@@ -38,7 +40,7 @@ export function turnPrompt(turn: EngineTurn, store: Pick<Store, 'entries'>, fres
   if (shown.length < fresh.length) parts.push(`(${fresh.length - shown.length} earlier messages are not shown.)`)
   parts.push(shown.length > 0 ? entriesAsText(shown, turn.nameOf, turn.bot.id) : NO_NEW_MESSAGES)
   if (turn.turnNote) parts.push(turn.turnNote)
-  return { text: parts.join('\n\n'), newEntries: fresh }
+  return { text: parts.join('\n\n'), newEntries: fresh, replayedEntries }
 }
 
 /** Folders holding the attachments of these entries (so the engine may read them without asking). */

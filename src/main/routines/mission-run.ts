@@ -296,6 +296,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         botId: chief.id,
         text: [draftTask(project, notes.manifest, deliverable), instruction && `Reviewed project instruction v${instruction.version}: ${instruction.instruction}\nRequired output text: ${instruction.requiredText}`].filter(Boolean).join('\n\n'),
         trigger: missionTrigger(project, artifact),
+        projectRun: { projectId: project.id, runId: run.id },
         readProjectNote: notes.read,
         manifestLite: { sources: notes.manifest }
       })
@@ -348,6 +349,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       const reviewTurn = await runtime.runAutomated({
         botId: chief.id,
         text: reviewTask(`@${reviewer.handle}`, message),
+        projectRun: { projectId: project.id, runId: run.id },
         trigger: missionTrigger(project, artifact)
       })
 

@@ -108,14 +108,17 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
         if (signal.aborted) return
       }
 
-      const start = () =>
-        adapter.startTurn({
+      const start = () => {
+        turn.disclose?.(tools.map(({ name }) => ({ name, exposedAs: name })), entries,
+          ['Host tools outside the faibots catalog are unavailable on this route.'])
+        return adapter.startTurn({
           modelId: route.modelId,
           ...(route.effort && { effort: route.effort }),
           system: turn.system,
           messages: withTurnNote(messages, turn.turnNote),
           tools
         })
+      }
       let modelTurn = start()
       let retriedTooLong = false
 

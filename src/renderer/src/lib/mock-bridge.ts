@@ -773,6 +773,7 @@ export function createMockBridge(): FaiBotsBridge {
     'improvement:propose': desktopContent, 'improvement:review': desktopContent, 'improvement:trial': desktopContent,
     'improvement:publish': desktopContent, 'improvement:rollback': desktopContent,
     'content:project': desktopContent, 'content:select': desktopContent, 'content:revoke': desktopContent, 'content:restore': desktopContent,
+    'context:turns': desktopContent,
     'session:project': desktopContent, 'session:open': desktopContent, 'session:lookup': desktopContent, 'session:history': desktopContent,
     'handoff:options': desktopContent, 'handoff:send': desktopContent, 'handoff:resume': desktopContent, 'handoff:read': desktopContent,
     'content:read-source': desktopContent, 'content:share': desktopContent, 'content:revise': desktopContent, 'content:read-page': desktopContent, 'content:rerun': desktopContent, 'content:evaluate': desktopContent,

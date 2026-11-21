@@ -78,7 +78,7 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
     const workspace = turn.toolContext.workspaceDir
     const bot = deps.store.bots.get(turn.bot.id) ?? turn.bot
     const shellMode: PermissionMode | undefined = bot.toolPermissions['shell'] ?? deps.store.settings.get().toolPermissions['shell']
-    const { text, newEntries } = turnPrompt(turn, deps.store, !resume)
+    const { text, newEntries, replayedEntries } = turnPrompt(turn, deps.store, !resume)
 
     const bridge = await deps.bridge.open(turn.toolContext)
     const token = /^Bearer\s+(.+)$/i.exec(bridge.headers['Authorization'] ?? bridge.headers['authorization'] ?? '')?.[1] ?? ''
@@ -239,6 +239,12 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
     try {
       mkdirSync(workspace, { recursive: true })
       const thread = resume ? codex.resumeThread(resume, threadOptions) : codex.startThread(threadOptions)
+      turn.disclose?.(turn.tools.filter((t) => !t.name.startsWith('mcp__')).map(({ name }) => ({
+        name, exposedAs: `mcp__${BRIDGE_SERVER}__${name}`, hostApproval: desktopTools.includes(name) ? 'app' : 'cli-default'
+      })), [...replayedEntries, ...newEntries], [
+        'Connector tools are unavailable through the Codex bridge. The CLI may withhold tools under its default approval policy.',
+        `Codex shell sandbox: ${threadOptions.sandboxMode}. CLI approvals, web search, apps and plugins are disabled. Other host tools are not inventoried by faibots.`
+      ])
       const { events } = await thread.runStreamed(input, { signal: turn.signal })
       for await (const event of events) {
         handle(event)

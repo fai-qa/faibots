@@ -1,5 +1,6 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
+import { TURN_CONTEXT_SCHEMA } from './turn-context-schema'
 import { DELEGATION_ATTEMPT_SCHEMA } from './delegation-attempt-schema'
 import { ARTIFACT_SAVE_SCHEMA } from './artifact-save-schema'
 import { workBriefSchema } from './work-brief-schema'
@@ -337,5 +338,6 @@ export const MIGRATIONS: string[] = [
   SESSION_SCHEMA,
   ESCALATION_SCHEMA,
   ARTIFACT_SAVE_SCHEMA,
-  DELEGATION_ATTEMPT_SCHEMA
+  DELEGATION_ATTEMPT_SCHEMA,
+  TURN_CONTEXT_SCHEMA
 ]
