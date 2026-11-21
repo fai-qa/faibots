@@ -82,6 +82,7 @@ export interface TurnOutcome {
   posts: Entry[]
   error?: string
   needsReconciliation?: boolean
+  lateReply?: string
 }
 
 interface TurnRequest {
@@ -493,6 +494,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const timer = setTimeout(() => timeout.abort(), this.exchangeTimeoutMs)
     let failure: 'failed' | 'reconciliation_required' = 'reconciliation_required'
     let reply: string
+    let lateReply: string | undefined
     try {
       const outcome = await this.scheduleTurn(exchange.id, target.id, {
         trigger: 'agent',
@@ -503,6 +505,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
         root: { ...root, parentAssignmentId: id }
       })
+      lateReply = outcome.lateReply
       reply = truncateText(this.deps.secrets.redact(outcome.posts.map((p) => p.text).join('\n\n').trim()), MAX_RESULT_CHARS)
       const partial = reply || undefined
       if (ctx.signal.aborted) throw new CollabError('Cancelled.', partial, exchange.id)
@@ -522,14 +525,22 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const text = this.deps.secrets.redact(error instanceof Error ? error.message : String(error))
       const partial = error instanceof CollabError && error.partial ? this.deps.secrets.redact(error.partial) : undefined
       const work = this.delegations.get(id)
-      if (ctx.signal.aborted && work?.state === 'reconciliation_required') throw new CollabError(work.receipt?.text ?? text, partial, exchange.id)
+      if (work?.state === 'reconciliation_required') {
+        if (lateReply) this.delegations.retainLate(lease, lateReply)
+        throw new CollabError(work.receipt?.text ?? text, partial, exchange.id)
+      }
       const resultEntry = this.delegations.finish(lease, failure, { text, ...(partial && { partial }) })
+      if (lateReply) this.delegations.retainLate(lease, lateReply)
       if (resultEntry) this.emitEntry(resultEntry)
       this.wakeBriefs()
       if (!card) this.emitEntry(store.entries.get(parent.id)!)
       throw error
     } finally {
       clearTimeout(timer)
+    }
+    if (this.delegations.get(id)?.state === 'reconciliation_required') {
+      this.delegations.retainLate(lease, reply)
+      throw new CollabError('The delegation was already closed. Its late reply remains a separate observation.', undefined, exchange.id)
     }
     const resultEntry = this.delegations.finish(lease, 'answered', { text: reply, responder: this.deps.secrets.redact(`${target.name} (@${target.handle})`) })
     if (resultEntry) this.emitEntry(resultEntry)
@@ -712,6 +723,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const members = this.membersOf(conversation)
     const turnId = randomUUID()
     if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
+    let lateBuffer = ''
     const recorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
@@ -721,6 +733,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.userRequest && { replyToId: req.userRequest.id }),
         ...(wakeEntry && { replyToId: wakeEntry.id }),
         signal,
+        ...(req.assignment && { onLateText: (delta: string) => {
+          if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
+        } }),
         ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId } }),
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
       }
@@ -852,7 +867,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       endedAt: Date.now(),
       ...(error && { error })
     })
-    return { ...outcome, turnId }
+    return { ...outcome, turnId, ...(lateBuffer && { lateReply: secrets.redact(lateBuffer).slice(0, 4000) }) }
   }
 
   private async runTool(

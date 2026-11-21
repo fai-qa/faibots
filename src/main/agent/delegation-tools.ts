@@ -17,7 +17,10 @@ const job = z.object({
 })
 const workId = z.string().min(1)
 const refuse = (message: string) => ({ ...errorResult(message), refusedBeforeRun: true })
-const summary = (work: Work) => `${work.id} · ${work.state}${work.receipt ? '\n' + work.receipt.text : ''}`
+const summary = (work: Work) => [
+  `${work.id} · ${work.state}`, work.receipt?.text,
+  work.lateReturn && `Late observation (unconfirmed): ${work.lateReturn.text}`
+].filter(Boolean).join('\n')
 
 interface Active {
   stop: AbortController
@@ -36,10 +39,20 @@ export class BackgroundAssignments {
   private active = new Map<string, Active>()
   constructor(private repo: Repo, private registry: ToolRegistry, private store: Store, private emit: (entry: Entry) => void) {}
 
-  abort(id: string): void { this.active.get(id)?.stop.abort() }
+  abort(id: string): void {
+    const active = this.active.get(id)
+    if (!active) return
+    if (active.lease && this.repo.get(id)?.state === 'assigned') {
+      const entry = this.repo.finish(active.lease, 'reconciliation_required', {
+        text: 'Cancellation requested. Completed actions remain recorded. Check the exchange for effects that were still in progress.'
+      })
+      if (entry) this.emit(entry)
+    }
+    active.stop.abort()
+  }
   isDetached(id: string): boolean { return this.active.has(id) }
   stopChat(id: string): void {
-    for (const active of this.active.values()) if (active.parentId === id) active.stop.abort()
+    for (const [assignmentId, active] of this.active) if (active.parentId === id) this.abort(assignmentId)
   }
   admitted(lease: DelegationLease, exchangeId: string): void {
     const active = this.active.get(lease.id)
@@ -114,11 +127,7 @@ export class BackgroundAssignments {
           if (work.state !== 'assigned') return textResult(summary(work))
           const current = this.active.get(input.id)
           if (!current?.lease) return errorResult('This assignment has no live worker. Its effects need reconciliation.')
-          const entry = this.repo.finish(current.lease, 'reconciliation_required', {
-            text: 'Cancellation requested. Completed actions remain recorded. Check the exchange for effects that were still in progress.'
-          })
-          current.stop.abort()
-          if (entry) this.emit(entry)
+          this.abort(input.id)
           return textResult(`Assignment ${work.id}: reconciliation_required. Cancellation requested; completed effects remain recorded.`)
         } }),
       defineTool({ ...common, name: 'group_work_snapshot', description: 'Show current pending, completed, failed and uncertain assignments originating in this group, including nested work.',

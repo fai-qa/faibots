@@ -34,11 +34,12 @@ export const backgroundAnchor = (id: string) => `faibots:assignment:${id}`
 const resultNonce = (id: string) => `faibots:assignment-result:${id}`
 
 export function createDelegationRepo(db: Db, entries: EntryRepo) {
-  const select = `select d.*, p.conversation_id as parent_id, q.conversation_id as exchange_id
-    from delegations d join entries p on p.id = parent_entry_id join entries q on q.id = question_id`
+  const select = `select d.*, a.late_text,a.observed_at, p.conversation_id as parent_id, q.conversation_id as exchange_id
+    from delegations d left join delegation_attempts a on a.assignment_id=d.id join entries p on p.id = parent_entry_id join entries q on q.id = question_id`
   function read(row: Row) {
     return {
       id: str(row.id), callerId: str(row.caller_id), childId: str(row.child_id), parentId: str(row.parent_id),
+      lateReturn: row.late_text == null ? undefined : { text: str(row.late_text), observedAt: Number(row.observed_at) },
       inputHash: str(row.input_hash), parentEntryId: str(row.parent_entry_id), exchangeId: str(row.exchange_id),
       state: str(row.state) as 'assigned' | Terminal, receipt: parseJson<Receipt | undefined>(row.receipt, undefined)
     }
@@ -126,6 +127,7 @@ export function createDelegationRepo(db: Db, entries: EntryRepo) {
         db.prepare(`insert into delegations(id,caller_id,child_id,input_hash,parent_entry_id,question_id,
           state,lease,created_at,updated_at) values(?,?,?,?,?,?,'assigned',?,?,?)`)
           .run(identity.id, identity.callerId, identity.childId, identity.inputHash, parent.id, question.id, lease.token, now, now)
+        db.prepare('insert into delegation_attempts(assignment_id,original_lease) values (?,?)').run(identity.id, lease.token)
         return { lease, parent, question } as const
       })
     },
@@ -144,6 +146,16 @@ export function createDelegationRepo(db: Db, entries: EntryRepo) {
         const work = get(lease.id)!
         if (entries.get(work.parentEntryId)?.kind === 'event') return present(work, false)
       })
+    },
+    retainLate(lease: DelegationLease, text: string) {
+      const bounded = text.trim().slice(0, 4000)
+      if (!bounded) return false
+      // An observation cannot change the official result, settle an effect, deliver a message or wake a parent.
+      const saved = db.prepare(`update delegation_attempts set late_text=?, observed_at=?
+        where assignment_id=? and original_lease=? and observed_at is null
+        and exists (select 1 from delegations where id=? and state='reconciliation_required')`)
+        .run(bounded, Date.now(), lease.id, lease.token, lease.id)
+      return saved.changes === 1
     },
     acknowledge(id: string, parentEntryId: string) {
       db.prepare(`update delegations set delivered_at = ? where id = ? and parent_entry_id = ?

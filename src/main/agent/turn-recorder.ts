@@ -32,6 +32,8 @@ export interface RecorderOptions {
    * post budget of the group round is spent: nothing more is posted (earlier messages stay) and
    * onRefused stops the turn.
    */
+  /** A delegated worker may retain a bounded, separately scoped observation after cancellation. */
+  onLateText?(delta: string): void
   reservePost?(): boolean
   onRefused?(): void
 }
@@ -130,6 +132,7 @@ export class TurnRecorder {
   }
 
   phase(phase: BotPhase, activity?: string): void {
+    if (this.opts.signal?.aborted) return
     this.phaseNow = { phase, ...(activity && { activity }) }
     this.deps.live.set(this.opts.bot.id, this.opts.conversation.id, phase, activity)
   }
@@ -140,7 +143,11 @@ export class TurnRecorder {
 
   /** Stream text into the current message (created on the first non-blank text). */
   textDelta(delta: string): void {
-    if (this.refused || !delta || this.opts.signal?.aborted) return
+    if (this.refused || !delta) return
+    if (this.opts.signal?.aborted) {
+      this.opts.onLateText?.(delta)
+      return
+    }
     if (!this.current) {
       this.pending += delta
       if (!this.pending.trim()) return
