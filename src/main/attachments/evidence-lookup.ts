@@ -1,4 +1,5 @@
 import type { EvidenceCitation, ProjectAnswer, SessionSource } from '@shared/project-sessions'
+import { UnreadablePdf } from './pdf-text'
 
 type Findings = Pick<ProjectAnswer, 'citations' | 'conflicts' | 'omissions' | 'status'>
 const normalize = (text: string) =>
@@ -31,8 +32,9 @@ export function lookupEvidence(
     let contents: string
     try {
       contents = read(source)
-    } catch {
-      omissions.push(`${source.name} r${source.revision} could not be verified or read.`)
+    } catch (error) {
+      omissions.push(error instanceof UnreadablePdf ? `${source.name} r${source.revision}: ${error.message}` :
+        `${source.name} r${source.revision} could not be verified or read.`)
       continue
     }
     const lines = contents.split(/\r?\n/)

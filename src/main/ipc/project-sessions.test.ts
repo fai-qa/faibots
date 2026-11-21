@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { Services } from '../contracts'
 import { createAttachmentStore } from '../attachments/attachments'
+import { pdfFixture } from '../attachments/testing/pdf-fixture'
 import { createSnapshotService } from '../attachments/snapshots'
 import { openStore, type PlatformStore } from '../store'
 import { projectSessionHandlers } from './project-sessions'
@@ -32,7 +33,7 @@ function fixture() {
   const services = { dataDir: root, attachments, providers } as unknown as Services
   const handlers = projectSessionHandlers(services, store)
   const scope = (id: string) => handlers['session:project']({ projectId: id }).address
-  const attach = (projectId: string, name: string, text: string) => {
+  const attach = (projectId: string, name: string, text: string | Buffer) => {
     const path = join(root, name)
     writeFileSync(path, text)
     return createSnapshotService({
@@ -52,6 +53,19 @@ function fixture() {
     })
   return { a, b, scope, attach, start, ask, complete, services, handlers }
 }
+
+it('finds lines in selected PDF text, cites the original revision and explains unreadable scans', async () => {
+  const { a, start, ask, attach, complete } = fixture()
+  const source = attach(a.id, 'notice.pdf', pdfFixture('Venue: Cedar', 'Session: Wednesday'))
+  attach(a.id, 'scan.pdf', pdfFixture(''))
+  const session = start(a.id)
+  const answer = await ask(a.id, session.id, 'Session')
+  expect(answer.status).toBe('found')
+  expect(answer.citations).toMatchObject([{ line: 3, excerpt: 'Session: Wednesday', source: { sourceId: source.id, sha256: source.sha256 } }])
+  expect(answer.omissions).toHaveLength(1)
+  expect(answer.omissions[0]).toMatch(/scan.pdf r1.*no readable text layer/)
+  expect(complete).not.toHaveBeenCalled()
+})
 
 it('continues saved results after reopening the database; fresh and incompatible sessions never reuse private or external history', async () => {
   const { a, b, scope, start, ask, handlers, services, attach } = fixture()

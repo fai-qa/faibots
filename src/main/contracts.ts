@@ -441,7 +441,7 @@ export interface RecipeService {
 export interface AttachmentStore {
   /** Copy files into <dataDir>/attachments and describe them. */
   ingest(paths: string[]): Attachment[]
-  read(attachment: Attachment): Buffer
+  read(attachment: Attachment, expectedSize?: number): Buffer
 }
 
 // ---------------------------------------------------------------------------

@@ -3,9 +3,10 @@ import type { Id } from '@shared/domain'
 import type { Services } from '../contracts'
 import type { PlatformStore } from '../store'
 import { createSnapshotService } from '../attachments/snapshots'
-import { readSourceSnapshot, revisionText } from '../attachments/project-reads'
+import { prepareNoteReader, revisionText } from '../attachments/project-reads'
 
-type Handlers = { [C in keyof ContentInvoke]: (req: ContentInvoke[C]['req']) => ContentInvoke[C]['res'] }
+type Handlers = { [C in keyof ContentInvoke]: (req: ContentInvoke[C]['req']) =>
+  C extends 'content:read-source' ? Promise<ContentInvoke[C]['res']> : ContentInvoke[C]['res'] }
 
 export function projectContentHandlers(s: Services, store: PlatformStore): Handlers {
   const changed = (projectId: Id) => s.bus.emit('journey:changed', { projectId })
@@ -55,10 +56,10 @@ export function projectContentHandlers(s: Services, store: PlatformStore): Handl
       }).attach(projectId, [path], itemId)
       refreshGrants(itemId)
     },
-    'content:read-source': ({ projectId, sourceId }) => {
-      const source = store.projectContent.check(projectId, store.projectContent.pin(projectId, sourceId))
-      if (source.kind === 'pdf') throw new Error('Text preview is available for Markdown and plain text.')
-      return { text: readSourceSnapshot(s.dataDir, s.attachments, source).toString('utf8'), sha256: source.sha256 }
+    'content:read-source': async ({ projectId, sourceId }) => {
+      const pin = store.projectContent.pin(projectId, sourceId)
+      const read = await prepareNoteReader(store, projectId, [pin], s.dataDir, s.attachments)
+      return { text: read(pin), sha256: pin.sha256 }
     },
     'content:read-page': ({ projectId, pageId }) => readPage(projectId, pageId),
     'content:rerun': ({ projectId, runId }) => ({ runId: s.missions.start(projectId, runId).id }),

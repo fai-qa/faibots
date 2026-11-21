@@ -134,7 +134,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                   </Button>
                 }
               >
-                Use Markdown (.md) or plain text (.txt) notes up to 10 MB each. fai reads what you
+                Use Markdown, plain text or PDFs with a readable text layer, up to 10 MB each. fai reads what you
                 attach here.
               </EmptyState>
             )}

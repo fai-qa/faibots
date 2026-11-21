@@ -12,6 +12,8 @@ import { createNativeEngine } from '../agent/native-engine'
 import { ScriptedAdapter, callTools, say, type ScriptedStep } from '../agent/testing/scripted-adapter'
 import { fileTools } from '../tools/builtin/files'
 import { createAttachmentStore } from '../attachments/attachments'
+import { pdfFixture } from '../attachments/testing/pdf-fixture'
+import { createSnapshotService } from '../attachments/snapshots'
 import { projectContentHandlers } from '../ipc/project-content'
 import { improvementHandlers } from '../ipc/project-improvements'
 import type { MissionRunService, Services } from '../contracts'
@@ -19,7 +21,7 @@ import {
   createMissionRunService, DELIVERABLE_PATH, DEFAULT_PROPOSAL_RUBRIC, reviewMessageFor, reviewVerdictOf
 } from './mission-run'
 
-const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+const sha = (text: string | Buffer) => createHash('sha256').update(text).digest('hex')
 const DRAFT = '# Proposal\n\nGrounded in the notes: ship the smallest useful version first.\n'
 const NOTE_BODY = '# Launch notes\n\nShip the desktop app behind the verified checklist.\n'
 const REVIEW_MESSAGE = /<<<REVIEW MESSAGE\n([\s\S]*?)REVIEW MESSAGE>>>/
@@ -35,7 +37,7 @@ describe('mission run (M1c)', () => {
   })
 
   /** Harness with the native engine driven by a scripted adapter, file tools, and a real attachment store. */
-  const setup = () => {
+  const setup = (name = 'launch-notes.md', contents: string | Buffer = NOTE_BODY) => {
     const adapter = new ScriptedAdapter()
     h = createHarness({
       engines: (services, providers) => ({
@@ -54,12 +56,9 @@ describe('mission run (M1c)', () => {
     const reviewer = h.bot('Iris')
     const project = h.services.store.projects.create({ name: 'Launch', description: 'Ship the desktop app.' })
     mkdirSync(h.services.dataDir, { recursive: true })
-    const notePath = join(h.services.dataDir, 'launch-notes.md')
-    writeFileSync(notePath, NOTE_BODY)
-    const note = attachments.ingest([notePath])[0]!
-    h.services.store.projectSources.insert({
-      projectId: project.id, attachmentId: note.id, name: note.name, sha256: sha(NOTE_BODY), sizeBytes: Buffer.byteLength(NOTE_BODY), kind: 'md'
-    })
+    const notePath = join(h.services.dataDir, name)
+    writeFileSync(notePath, contents)
+    createSnapshotService({ attachments, projects: h.services.store.projects, projectSources: h.services.store.projectSources }).attach(project.id, [notePath])
     return { adapter, missions, projectId: project.id, chiefId: chief.id, reviewerId: reviewer.id }
   }
 
@@ -79,13 +78,49 @@ describe('mission run (M1c)', () => {
   }
 
   /** The chief sends the run-specific brief, source evidence and draft verbatim. */
-  const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT, source = NOTE_BODY): ScriptedStep => (events, signal) => {
+  const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT, source: string | Buffer = NOTE_BODY): ScriptedStep => (events, signal) => {
     const message = REVIEW_MESSAGE.exec(latestTask(harness, chiefId))![1]!.trim()
     expect(message).toContain(DEFAULT_PROPOSAL_RUBRIC)
     expect(message).toContain(draft.trim())
     expect(message).toContain(sha(source))
     return callTools([{ id: 'send-1', name: 'send_to_agent', input: { to: 'iris', message } }])(events, signal)
   }
+
+  it('drafts using a virtual PDF note and gives the reviewer its text and original snapshot hash', async () => {
+    const bytes = pdfFixture('Venue: Cedar')
+    const { adapter, missions, projectId, chiefId } = setup('notice.pdf', bytes)
+    const draft = '# Workshop\nVenue: Cedar'
+    let path: string
+    adapter.push(
+      (events, signal) => callTools([{ id: 'source', name: 'read_file', input: { path } }])(events, signal),
+      (events, signal) => {
+        expect(JSON.stringify(adapter.toolResults)).toContain('Venue: Cedar')
+        return writeDraft(h!,chiefId,draft)(events,signal)
+      },
+      say('Draft saved.'),
+      (events, signal) => {
+        expect(latestTask(h!,chiefId)).toContain('Venue: Cedar')
+        return reviewDispatch(h!,chiefId,draft,bytes)(events,signal)
+      },
+      say('VERDICT: accepted — the selected note identifies the venue.'),
+      endTurn
+    )
+    const started = missions.start(projectId)
+    path = `mission-${started.id}/project-notes/1-notice.pdf`
+    await missions.idle()
+    expect(missions.runs(projectId)[0]).toMatchObject({ status: 'complete' })
+    const artifact = h!.services.store.artifacts.listByProject(projectId)[0]!
+    expect(h!.services.store.artifacts.revisions(artifact.id)[0]?.provenance.sources)
+      .toEqual([expect.objectContaining({ name: 'notice.pdf', revision: 1, sha256: sha(bytes) })])
+  })
+
+  it('records an explicit scan failure before calling a model', async () => {
+    const { adapter, missions, projectId } = setup('scan.pdf', pdfFixture(''))
+    missions.start(projectId)
+    await missions.idle()
+    expect(missions.runs(projectId)[0]).toMatchObject({ status: 'failed', error: expect.stringMatching(/Page 1 has no readable text layer/) })
+    expect(adapter.specs).toHaveLength(0)
+  })
 
   it('happy path: draft -> host revision -> one reviewer exchange -> accepted review -> complete', async () => {
     const { adapter, missions, projectId, chiefId, reviewerId } = setup()

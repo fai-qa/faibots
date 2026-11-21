@@ -15,7 +15,7 @@ import type {
   ProjectSource, ReviewDecisionKind
 } from '@shared/domain'
 import type { AttachmentStore, EventBus, MissionRunService, Runtime } from '../contracts'
-import { readSourceSnapshot, revisionText } from '../attachments/project-reads'
+import { prepareNoteReader, revisionText } from '../attachments/project-reads'
 import type { ProjectInstruction } from '@shared/project-improvements'
 import { createProjectImprovements } from '../store/project-improvements'
 import { transaction } from '../store/db'
@@ -134,14 +134,15 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
   }
 
   /** Source paths are virtual. Every read goes through the current project grant. */
-  const missionNotes = (run: JourneyRun, sources: ProjectSource[]) => {
+  const missionNotes = async (run: JourneyRun, sources: ProjectSource[]) => {
     const pins = store.projectContent.pins(run.projectId, run.id)
     const selected = sources.map((source, i) => ({
       path: `mission-${run.id}/${SOURCES_DIR}/${i + 1}-${safeFileName(source.name)}`,
       name: source.name, sha256: source.sha256, pin: pins[i]!
     }))
-    const read = (pinned: (typeof selected)[number]) =>
-      readSourceSnapshot(dataDir, attachments, store.projectContent.check(run.projectId, pinned.pin)).toString('utf8')
+    const readNote = await prepareNoteReader(store, run.projectId, pins, dataDir, attachments)
+    for (const pin of pins) store.projectContent.check(run.projectId, pin)
+    const read = (pinned: (typeof selected)[number]) => readNote(pinned.pin)
     return {
       manifest: selected.map(({path,name,sha256}) => ({path,name,sha256})),
       read(path: string) {
@@ -287,7 +288,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         return
       }
       mkdirSync(join(pinnedRoot, runFolder))
-      const notes = missionNotes(run, sources)
+      const notes = await missionNotes(run, sources)
       saves.intent(run,pinnedRoot,{ projectId: project.id, sources: notes.provenance,
         note: `First draft from ${sources.length} selected source${sources.length === 1 ? '' : 's'} (mission run ${run.id}).` })
 
@@ -424,7 +425,6 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         ? store.projectContent.pins(projectId, baseline.runId).map(pin => store.projectContent.check(projectId, pin))
         : store.projectContent.library(projectId).filter(item => item.readable && item.selected).map(item => item.source)
       if (sources.length === 0) throw new Error('Attach at least one note before starting the mission.')
-      if (sources.some((s) => s.kind === 'pdf')) throw new Error('Copy PDF notes into a .txt or .md file for this proposal flow.')
       if (repo.listByProject(projectId, 10).some((r) => RUNNING_STATUSES.includes(r.status))) {
         throw new Error('A mission for this project is already running.')
       }

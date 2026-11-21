@@ -1,6 +1,6 @@
 import type { ProjectAnswer, SessionInvoke, SessionSource } from '@shared/project-sessions'
 import { lookupEvidence } from '../attachments/evidence-lookup'
-import { readSourceSnapshot } from '../attachments/project-reads'
+import { prepareNoteReader, readSourceSnapshot } from '../attachments/project-reads'
 import type { Services } from '../contracts'
 import type { RuntimeProviders } from '../providers/provider-service'
 import type { PlatformStore } from '../store'
@@ -12,17 +12,16 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
   let repo: ReturnType<typeof createProjectSessions> | undefined
   const sessions = () => (repo ??= createProjectSessions(store, services.dataDir))
   const active = new Map<string, { signature: string; result: Promise<ProjectAnswer> }>()
-  const read = (projectId: string, pin: SessionSource) => {
+  const verify = (projectId: string, pin: SessionSource) => {
     const source = store.projectContent.check(projectId, pin)
-    if (source.kind === 'pdf') throw new Error('Text retrieval is unavailable for PDF.')
-    return readSourceSnapshot(services.dataDir, services.attachments, source).toString('utf8')
+    readSourceSnapshot(services.dataDir, services.attachments, source)
   }
   async function lookup(req: Lookup): Promise<ProjectAnswer> {
     const session = sessions().ready(req, req.sessionId)
-    const history = sessions().historyAt(req, session.id, read).history
-    const existing = history.find((entry) => entry.id === req.requestId)
     const query = req.query.trim()
-    if (existing) {
+    if (store.db.prepare('select 1 from project_answers where id=?').get(req.requestId)) {
+      const existing = sessions().historyAt(req, session.id, verify).history.find((entry) => entry.id === req.requestId)
+      if (!existing) throw new Error('That request ID is already in use.')
       if (
         existing.query !== query ||
         existing.sessionId !== session.id ||
@@ -31,12 +30,14 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
         throw new Error('This request ID already belongs to a different request.')
       return existing
     }
-    if (store.db.prepare('select 1 from project_answers where id=?').get(req.requestId))
-      throw new Error('That request ID is already in use.')
-    const evidence = lookupEvidence(query, session.sources, (source) => read(req.projectId, source))
+    const read = await prepareNoteReader(store, req.projectId, session.sources, services.dataDir, services.attachments, true)
+    // Selection and grants may change while local PDF extraction is running.
+    sessions().ready(req, session.id)
+    const evidence = lookupEvidence(query, session.sources, read)
     const verifiedSources = new Set(evidence.citations.map((citation) => citation.source.sourceId))
     let modelReply: string | undefined
     if (req.useModel && evidence.status === 'found') {
+      const history = sessions().historyAt(req, session.id, verify).history
       const chief = store.bots.get(session.ownerId)!
       const providers = services.providers as RuntimeProviders
       const route = providers.resolve(chief.model)
@@ -62,9 +63,9 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
       })
       // A model request yields to the UI. Recheck the owner, selection and bytes before disclosure.
       sessions().ready(req, session.id)
-      for (const citation of evidence.citations) read(req.projectId, citation.source)
+      for (const citation of evidence.citations) verify(req.projectId, citation.source)
       for (const entry of history) {
-        sessions().checkAnswer(req.projectId, entry, session.sources, read)
+        sessions().checkAnswer(req.projectId, entry, session.sources, verify)
         for (const id of entry.verifiedSourceIds) verifiedSources.add(id)
       }
     }
@@ -88,9 +89,9 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
   }
   return {
     'session:project': ({ projectId }: { projectId: string }) => sessions().list(projectId),
-    'session:open': (req: SessionInvoke['session:open']['req']) => sessions().open(req, read),
+    'session:open': (req: SessionInvoke['session:open']['req']) => sessions().open(req, verify),
     'session:history': (req: SessionInvoke['session:history']['req']) =>
-      sessions().historyAt(req, req.sessionId, read),
+      sessions().historyAt(req, req.sessionId, verify),
     'session:lookup': (req: Lookup) => {
       if (
         typeof req.query !== 'string' ||
