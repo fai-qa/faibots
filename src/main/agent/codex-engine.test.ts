@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CodexOptions, Input, ThreadEvent, ThreadOptions } from '@openai/codex-sdk'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -57,10 +59,12 @@ describe('Codex engine', () => {
   let fake: ReturnType<typeof fakeCodex>
   let bot: Bot
   let savedKey: string | undefined
+  let diskProfile: string | undefined
 
   const setup = (turns: Turn[], botExtra: Partial<Bot> = {}, apiKey?: string) => {
     fake = fakeCodex(turns)
     h = createHarness({
+      diskProfile,
       engines: (services, providers) => ({
         codex: createCodexEngine({ store: services.store, bridge: services.bridge, providers, codex: fake.make })
       })
@@ -79,6 +83,8 @@ describe('Codex engine', () => {
     else process.env['OPENAI_API_KEY'] = savedKey
     await h.runtime.shutdown()
     h.cleanup()
+    if (diskProfile) rmSync(diskProfile, { recursive: true, force: true })
+    diskProfile = undefined
   })
 
   const entries = (conversationId: string): Entry[] => h.services.store.entries.page(conversationId, { limit: 100 }).entries
@@ -138,6 +144,48 @@ describe('Codex engine', () => {
   const resumedOk: ThreadEvent[] = [{ type: 'turn.started' }, agentMessage('m', 'ok')]
   const UPDATED = /^Updated instructions \(these replace any earlier instructions\)/
   const ctx = (id: string) => h.services.store.botContext.get(id, bot.id)
+
+  // Only the two anonymous thread checkpoints from the real CLI receipt are replayed.
+  const counted = (id: string, input: number, output: number): ThreadEvent[] => [
+    ...done(id),
+    { type: 'turn.completed', usage: { input_tokens: input, output_tokens: output,
+      cached_input_tokens: 0, cache_write_input_tokens: 0, reasoning_output_tokens: 0 } }
+  ]
+  const usageRows = () => h.services.store.db.prepare(
+    'select input_tokens,output_tokens,codex_usage_state from turns order by rowid'
+  ).all()
+
+  it('charges the difference between Codex receipts after reopening the database and runtime', async () => {
+    diskProfile = mkdtempSync(join(tmpdir(), 'faibots-usage-'))
+    const dm = setup([counted('case', 74_811, 471)])
+    await h.send(dm.id, 'Draft')
+    await h.runtime.shutdown()
+    h.cleanup()
+    fake = fakeCodex([counted('case', 139_090, 1_086)])
+    h = createHarness({ diskProfile, engines: (s, providers) => ({
+      codex: createCodexEngine({ store: s.store, bridge: s.bridge, providers, codex: fake.make })
+    }) })
+    await h.send(dm.id, 'Review')
+    expect(fake.runs[0]?.resumed).toBe('case')
+    expect(usageRows()).toEqual([
+      { input_tokens: 74_811, output_tokens: 471, codex_usage_state: 'measured' },
+      { input_tokens: 64_279, output_tokens: 615, codex_usage_state: 'measured' }
+    ])
+    expect(h.services.store.turns.summary(0, Date.now()+1).rows).toMatchObject([{ inputTokens: 139_090, outputTokens: 1_086 }])
+  })
+
+  it('rebaselines after a legacy resume, a counter reset or an unfinished turn, then counts a fresh thread normally', async () => {
+    const first = counted('old', 74_811, 471), second = counted('old', 139_090, 1_086)
+    const dm = setup([first, second, first, done('old'), second, counted('fresh', 74_811, 471)])
+    h.services.store.botContext.set({ ...ctx(dm.id), engineSessionId: 'old' })
+    for (const prompt of ['Import', 'Continue', 'Reset counters', 'Interrupted receipt', 'Resume']) await h.send(dm.id, prompt)
+    h.services.store.botContext.clearConversation(dm.id)
+    await h.send(dm.id, 'Start fresh')
+    expect(usageRows().map(r=>[r.codex_usage_state,r.input_tokens,r.output_tokens])).toEqual([
+      ['unknown',0,0], ['measured',64_279,615], ['unknown',0,0], ['unknown',0,0], ['unknown',0,0], ['measured',74_811,471]
+    ])
+    expect(h.services.store.turns.summary(0,Date.now()+1).rows[0]?.unreportedTurns).toBe(4)
+  })
 
   it('resends the system block on a resumed thread only after it changed', async () => {
     const dm = setup([done('t1'), resumedOk, resumedOk, resumedOk])

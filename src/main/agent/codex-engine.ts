@@ -205,14 +205,27 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
       }
     }
 
+    // Codex exec maps turn.completed to the thread's latest total (JSONL processor,
+    // CLI 0.90, 0.110 and 0.163). Snapshot before invalidating the durable checkpoint.
+    let threadId = resume
+    let previous = resume ? turn.context.codexUsageBaseline : { threadId: '', inputTokens: 0, outputTokens: 0 }
+    if (resume && previous?.threadId !== resume) previous = undefined
+    if (previous && (!Number.isSafeInteger(previous.inputTokens) || !Number.isSafeInteger(previous.outputTokens) ||
+      previous.inputTokens < 0 || previous.outputTokens < 0)) previous = undefined
+    let started = false
+    let completed = false
     const handle = (event: ThreadEvent) => {
       switch (event.type) {
         case 'thread.started':
+          if (threadId && event.thread_id !== threadId) previous = undefined
+          threadId = event.thread_id
           turn.saveContext({ engineSessionId: event.thread_id, engineBinding: sessionBinding('codex', route) })
           return
         case 'turn.started':
           // Codex has accepted the input, so the block it carried is delivered: only now remember it.
-          turn.saveContext({ engineBinding: sessionBinding('codex', route), systemHash: hash })
+          started = true
+          // A killed or cancelled process may have consumed tokens and emitted no final receipt.
+          turn.saveContext({ engineBinding: sessionBinding('codex', route), systemHash: hash, codexUsageBaseline: undefined })
           recorder.phase('thinking')
           return
         case 'item.started':
@@ -224,9 +237,22 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         case 'item.completed':
           onItem('completed', event.item)
           return
-        case 'turn.completed':
-          recorder.addUsage({ inputTokens: event.usage.input_tokens, outputTokens: event.usage.output_tokens })
+        case 'turn.completed': {
+          if (completed) return
+          completed = true
+          const { input_tokens: inputTokens, output_tokens: outputTokens } = event.usage
+          const valid = Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens) &&
+            inputTokens >= 0 && outputTokens >= 0 && (inputTokens > 0 || outputTokens > 0)
+          const unchanged = previous && inputTokens === previous.inputTokens && outputTokens === previous.outputTokens
+          const comparable = valid && !unchanged && previous && inputTokens >= previous.inputTokens && outputTokens >= previous.outputTokens
+          recorder.recordCodexUsage(comparable && previous ? {
+            inputTokens: inputTokens - previous.inputTokens, outputTokens: outputTokens - previous.outputTokens
+          } : undefined)
+          turn.saveContext({
+            codexUsageBaseline: valid && threadId && !unchanged ? { threadId, inputTokens, outputTokens } : undefined
+          })
           return
+        }
         case 'turn.failed':
           error ??= new ProviderError(`Codex: ${event.error.message}`)
           return
@@ -253,6 +279,7 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
     } catch (err) {
       if (!turn.signal.aborted) error ??= new ProviderError(err instanceof Error ? err.message.slice(0, 600) : String(err))
     } finally {
+      if (started && !completed) recorder.recordCodexUsage()
       bridge.close()
       recorder.endText()
     }

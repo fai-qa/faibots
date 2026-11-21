@@ -474,7 +474,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const exchange = found ??
         store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
       const question = store.entries.append({
-        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id },
+        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id }, meta: { turnId: ctx.turnId },
         text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
       })
       return { parent, question }
@@ -733,6 +733,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const recorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
+        turnId,
         bot,
         conversation,
         members,
@@ -761,7 +762,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (signal.aborted) return { status: 'cancelled', posts: [] }
     const startedAt = this.now().getTime()
     if ((req.trigger === 'agent' || req.trigger === 'routine') &&
-      !store.turns.reserveAutomatic({ id: turnId, botId, startedAt })) {
+      !store.turns.reserveAutomatic({ id: turnId, botId, startedAt, rootTurnId: req.root?.turnId ?? turnId })) {
       const limit = store.bots.get(botId)?.dailyRunLimit ?? bot.dailyRunLimit
       const limited = `${bot.name} reached its daily limit of ${limit} automatic run${limit === 1 ? '' : 's'}. Raise it in ${bot.name}'s Profile, or wait until tomorrow.`
       if (req.trigger === 'routine') this.systemEvent(conversationId, limited)
@@ -884,6 +885,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (active.unresolvedActions.size) outcome.needsReconciliation = true
     store.turns.record({
       id: turnId,
+      rootTurnId: req.root?.turnId ?? turnId,
       botId,
       conversationId,
       conversationKind: conversation.kind,
@@ -891,6 +893,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       status: outcome.status === 'error' || outcome.status === 'cancelled' || outcome.status === 'sent' ? outcome.status : 'pass',
       providerId: route.provider.id,
       modelId: route.modelId,
+      ...(route.engine === 'codex' && { codexUsageState: 'unknown' as const }),
       ...recorder.usageTotals,
       startedAt,
       endedAt: Date.now(),

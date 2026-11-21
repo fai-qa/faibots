@@ -121,6 +121,8 @@ export interface BotContextState {
   engineBinding?: string
   /** Codex: hash of the last system block delivered to the thread. */
   systemHash?: string
+  /** Last valid cumulative counters from this exact Codex CLI thread. */
+  codexUsageBaseline?: { threadId: string; inputTokens: number; outputTokens: number }
 }
 
 export interface BotContextRepo {
@@ -144,6 +146,7 @@ export interface ProviderRepo {
 /** One bot turn that reached a model, as the turn log keeps it. */
 export interface TurnRecord {
   id?: Id
+  rootTurnId?: Id
   botId: Id
   conversationId: Id
   conversationKind: Conversation['kind']
@@ -153,6 +156,7 @@ export interface TurnRecord {
   modelId: string
   inputTokens: number
   outputTokens: number
+  codexUsageState?: 'measured' | 'unknown'
   startedAt: number
   endedAt: number
   error?: string
@@ -160,7 +164,7 @@ export interface TurnRecord {
 
 export interface TurnLogRepo {
   /** Persist a daily slot before automatic work. False also rejects reused IDs/missing bots. */
-  reserveAutomatic(input: { id: Id; botId: Id; startedAt: number }): boolean
+  reserveAutomatic(input: { id: Id; botId: Id; startedAt: number; rootTurnId?: Id }): boolean
   record(turn: TurnRecord): void
   /** Automatic reservations plus legacy logged turns at/after `since`, without double counting. */
   automaticRunsSince(botId: Id, since: number): number

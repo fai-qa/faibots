@@ -339,5 +339,14 @@ export const MIGRATIONS: string[] = [
   ESCALATION_SCHEMA,
   ARTIFACT_SAVE_SCHEMA,
   DELEGATION_ATTEMPT_SCHEMA,
-  TURN_CONTEXT_SCHEMA
+  TURN_CONTEXT_SCHEMA,
+  /* 18: Codex exec reports cumulative thread usage. Older turn values remain as observed. */ `
+  alter table bot_context add column codex_usage_baseline text;
+  alter table turns add column codex_usage_state text check(codex_usage_state in ('measured','unknown'));
+  alter table turns add column root_turn_id text;
+  alter table automatic_run_admissions add column root_turn_id text;
+  create index turns_by_root on turns(root_turn_id);
+  create index admissions_by_root on automatic_run_admissions(root_turn_id);
+  create index entries_by_turn on entries(json_extract(meta,'$.turnId')) where json_valid(meta);
+  `
 ]

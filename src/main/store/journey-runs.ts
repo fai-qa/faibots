@@ -33,9 +33,16 @@ const toRun = (r: Row): JourneyRun => ({
 })
 
 export function createJourneyRunRepo(db: Db): JourneyRunRepo {
+  const legacyCodex = db.prepare(`select 1 from project_run_turns r join turns t on t.id=r.turn_id
+    join providers p on p.id=t.provider_id where r.run_id=? and p.kind='codex' and t.codex_usage_state is null limit 1`)
+  const decode = (row: Row) => {
+    const run = toRun(row)
+    if (run.budgets.b3 && legacyCodex.get(run.id)) run.budgets.b3.legacyCodex = true
+    return run
+  }
   const get = (id: Id) => {
     const row = db.prepare('select * from journey_runs where id = ?').get(id)
-    return row ? toRun(row) : undefined
+    return row ? decode(row) : undefined
   }
   return {
     start(input) {
@@ -73,7 +80,7 @@ export function createJourneyRunRepo(db: Db): JourneyRunRepo {
     listByProject(projectId, limit = 30) {
       const rows = db.prepare('select * from journey_runs where project_id = ? order by started_at desc, rowid desc limit ?')
         .all(projectId, Math.max(1, Math.min(Math.round(limit), 100)))
-      return rows.map(toRun)
+      return rows.map(decode)
     },
     closeInterrupted(now) {
       return Number(db.prepare(`update journey_runs set status = 'failed', error = 'Interrupted: faibots stopped before the run finished.', ended_at = ? where status in ('working', 'waiting_review')`)

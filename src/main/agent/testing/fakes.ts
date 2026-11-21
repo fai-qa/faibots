@@ -115,9 +115,9 @@ export type TestServices = Omit<Services, 'providers' | 'runtime' | 'routines' |
   bridge: ReturnType<typeof stubBridge>
 }
 
-export function createTestServices(opts: { homeDir?: string } = {}): TestServices & { cleanup(): void } {
+export function createTestServices(opts: { homeDir?: string; databasePath?: string } = {}): TestServices & { cleanup(): void } {
   const homeDir = opts.homeDir ?? mkdtempSync(join(tmpdir(), 'faibots-runtime-'))
-  const store = openStore(':memory:', { homeDir, userName: 'Alex' })
+  const store = openStore(opts.databasePath ?? ':memory:', { homeDir, userName: 'Alex' })
   store.settings.update({ workspaceRoot: join(homeDir, 'workspaces'), userName: 'Alex' })
   const bus = fakeBus()
   const secrets = fakeSecrets()
@@ -259,11 +259,12 @@ export function createHarness(
   opts: {
     runtime?: CreateRuntimeOptions
     providers?: Partial<ProviderServiceDeps>
+    diskProfile?: string
     /** Build real engines from the harness services (the fake engine covers the rest). */
     engines?: (services: TestServices, providers: RuntimeProviders) => Partial<Record<EngineKind, TurnEngine>>
   } = {}
 ): Harness {
-  const services = createTestServices()
+  const services = createTestServices(opts.diskProfile ? { homeDir: opts.diskProfile, databasePath: join(opts.diskProfile, 'faibots.db') } : {})
   const providers = createProviderService({ store: services.store, secrets: services.secrets, bus: services.bus, ...opts.providers })
   const provider = providers.save({
     kind: 'openai-compatible',

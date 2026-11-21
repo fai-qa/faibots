@@ -214,7 +214,7 @@ export interface Entry {
   /** Idempotency key for user sends. */
   clientNonce?: string
   /** Model/engine metadata for bot messages. */
-  meta?: { providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number }
+  meta?: { providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number; turnId?: Id }
   /** Set on the message FaiBots posts for an automatic run (author is 'system'). */
   trigger?: EntryTrigger
   createdAt: number
@@ -674,7 +674,7 @@ export interface JourneyRunBudgets {
   /** B2: turns that ended in error, and the error rate over B1. */
   b2?: { errors: number; rate: number }
   /** B3: tokens used, and how many turns reported zero tokens (unknown usage stays separate). */
-  b3?: { inputTokens: number; outputTokens: number; zeroTokenTurns: number }
+  b3?: { inputTokens: number; outputTokens: number; zeroTokenTurns: number; legacyCodex?: boolean }
   /** B4: wall-clock time, both the span and the sum of turn durations. */
   b4?: { wallMs: number; totalMs: number }
   /** B5: bot message entries written during the run. */
@@ -724,6 +724,8 @@ export interface UsageRow {
   errors: number
   inputTokens: number
   outputTokens: number
+  unreportedTurns?: number
+  legacyCodexTurns?: number
 }
 
 export interface UsageSummary {

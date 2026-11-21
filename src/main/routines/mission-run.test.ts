@@ -122,6 +122,37 @@ describe('mission run (M1c)', () => {
     expect(adapter.specs).toHaveLength(0)
   })
 
+  it('counts only the current mission when the reviewer exchange is reused and unrelated work shares the chief DM', async () => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const store = h!.services.store
+    const reviews = () => say('VERDICT: accepted — the notes support it.')
+    for (const repeat of [false, true]) {
+      adapter.push(writeDraft(h!, chiefId), say('Draft saved.'), reviewDispatch(h!, chiefId),
+        (events, signal) => {
+          if (repeat) {
+            const conversationId = store.conversations.findDm(chiefId)!.id
+            const id = 'unrelated-automatic-turn', startedAt = Date.now()
+            expect(store.turns.reserveAutomatic({ id, botId: chiefId, startedAt })).toBe(true)
+            store.turns.record({ id, botId: chiefId, conversationId, conversationKind: 'dm', trigger: 'routine', status: 'error',
+              providerId: h!.providerId, modelId: 'another-job', inputTokens: 99999, outputTokens: 99999, startedAt, endedAt: startedAt + 50000 })
+            store.entries.append({ conversationId, kind: 'message', author: { kind: 'bot', botId: chiefId }, text: 'Independent job',
+              meta: { turnId: id }, mentions: [], mentionsEveryone: false, isStreaming: false, attachments: [] })
+          }
+          return reviews()(events, signal)
+        }, endTurn)
+      missions.start(projectId)
+      await missions.idle()
+    }
+    expect(store.conversations.findExchange(chiefId, reviewerId)).toBeDefined()
+    const [second, first] = missions.runs(projectId)
+    expect(first?.status).toBe('complete')
+    expect(second?.status).toBe('complete')
+    expect(second!.budgets).toMatchObject({
+      b1: 3, b2: { errors: 0 }, b3: first!.budgets.b3, b5: first!.budgets.b5, b6: first!.budgets.b6, b7: 1, b11: 3
+    })
+    expect(second!.budgets.b4!.wallMs).toBeLessThan(50000)
+  })
+
   it('happy path: draft -> host revision -> one reviewer exchange -> accepted review -> complete', async () => {
     const { adapter, missions, projectId, chiefId, reviewerId } = setup()
     adapter.push(

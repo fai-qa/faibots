@@ -176,6 +176,7 @@ interface BotTotals {
   errors: number
   inputTokens: number
   outputTokens: number
+  unreportedTurns: number
   providerIds: Set<Id>
 }
 
@@ -193,13 +194,15 @@ export function UsageSection() {
   const rows: UsageRow[] = usage.data?.rows ?? []
 
   const totals = useMemo(() => {
-    const t = { turns: 0, automaticTurns: 0, inputTokens: 0, outputTokens: 0, errors: 0 }
+    const t = { turns: 0, automaticTurns: 0, inputTokens: 0, outputTokens: 0, errors: 0, unreportedTurns: 0, legacyCodexTurns: 0 }
     for (const r of rows) {
       t.turns += r.turns
       t.automaticTurns += r.automaticTurns
       t.inputTokens += r.inputTokens
       t.outputTokens += r.outputTokens
       t.errors += r.errors
+      t.unreportedTurns += r.unreportedTurns ?? 0
+      t.legacyCodexTurns += r.legacyCodexTurns ?? 0
     }
     return t
   }, [rows])
@@ -207,10 +210,11 @@ export function UsageSection() {
   const perBot = useMemo(() => {
     const map = new Map<Id, BotTotals>()
     for (const r of rows) {
-      const b = map.get(r.botId) ?? { botId: r.botId, turns: 0, automaticTurns: 0, errors: 0, inputTokens: 0, outputTokens: 0, providerIds: new Set<Id>() }
+      const b = map.get(r.botId) ?? { botId: r.botId, turns: 0, automaticTurns: 0, errors: 0, inputTokens: 0, outputTokens: 0, unreportedTurns: 0, providerIds: new Set<Id>() }
       b.turns += r.turns
       b.automaticTurns += r.automaticTurns
       b.errors += r.errors
+      b.unreportedTurns += r.unreportedTurns ?? 0
       b.inputTokens += r.inputTokens
       b.outputTokens += r.outputTokens
       if (r.providerId) b.providerIds.add(r.providerId)
@@ -261,10 +265,12 @@ export function UsageSection() {
       <div className="grid grid-cols-4 gap-3">
         <Stat label="Turns" value={totals.turns.toLocaleString()} />
         <Stat label="Automatic runs" value={totals.automaticTurns.toLocaleString()} hint="Routines and bot-to-bot" />
-        <Stat label="Tokens in" value={compactNumber(totals.inputTokens)} />
-        <Stat label="Tokens out" value={compactNumber(totals.outputTokens)} />
+        <Stat label="Tokens in" value={totals.turns && totals.unreportedTurns === totals.turns ? 'Unknown' : compactNumber(totals.inputTokens)} />
+        <Stat label="Tokens out" value={totals.turns && totals.unreportedTurns === totals.turns ? 'Unknown' : compactNumber(totals.outputTokens)} />
       </div>
 
+      {totals.unreportedTurns > 0 && <p className="text-xs text-fg-3">Token totals exclude unreported usage from {totals.unreportedTurns} turns.</p>}
+      {totals.legacyCodexTurns > 0 && <p className="text-xs text-fg-3">Historical Codex counts from {totals.legacyCodexTurns} turns may include earlier tokens from the same chat.</p>}
       {days > 1 && <DailyBars data={daily} />}
 
       {usage.error && <p className="text-[12px] text-danger-fg">Couldn't load usage: {usage.error}</p>}
@@ -300,10 +306,10 @@ export function UsageSection() {
                     <td className="px-3 py-2 text-right tabular-nums text-fg">{b.turns.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-fg-2">{b.automaticTurns.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-fg-2" title={b.inputTokens.toLocaleString()}>
-                      {compactNumber(b.inputTokens)}
+                      {b.unreportedTurns === b.turns ? 'Unknown' : compactNumber(b.inputTokens)}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-fg-2" title={b.outputTokens.toLocaleString()}>
-                      {compactNumber(b.outputTokens)}
+                      {b.unreportedTurns === b.turns ? 'Unknown' : compactNumber(b.outputTokens)}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-fg-3">{b.errors || '–'}</td>
                   </tr>

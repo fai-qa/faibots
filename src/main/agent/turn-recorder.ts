@@ -19,6 +19,7 @@ export interface RecorderDeps {
 }
 
 export interface RecorderOptions {
+  turnId?: Id
   bot: Bot
   conversation: Conversation
   /** Bots that can be @mentioned from this conversation (its members). */
@@ -84,6 +85,7 @@ export class TurnRecorder {
   private refused = false
   private phaseNow: { phase: BotPhase; activity?: string } | undefined
   private usage = { inputTokens: 0, outputTokens: 0 }
+  private codexUsageState?: 'measured' | 'unknown'
 
   constructor(
     private readonly deps: RecorderDeps,
@@ -110,7 +112,8 @@ export class TurnRecorder {
   private append(entry: Omit<Entry, 'id' | 'seq' | 'createdAt' | 'updatedAt'>): Entry | undefined {
     let stored: Entry
     try {
-      stored = this.deps.store.entries.append(entry)
+      stored = this.deps.store.entries.append(this.opts.turnId
+        ? { ...entry, meta: { ...entry.meta, turnId: this.opts.turnId } } : entry)
     } catch {
       return undefined
     }
@@ -193,8 +196,13 @@ export class TurnRecorder {
   }
 
   /** Tokens this turn used so far, summed over its model calls (for the turn log). */
-  get usageTotals(): { inputTokens: number; outputTokens: number } {
-    return { ...this.usage }
+  get usageTotals(): { inputTokens: number; outputTokens: number; codexUsageState?: 'measured' | 'unknown' } {
+    return { ...this.usage, ...(this.codexUsageState && { codexUsageState: this.codexUsageState }) }
+  }
+
+  recordCodexUsage(delta?: { inputTokens: number; outputTokens: number }): void {
+    this.addUsage(delta)
+    if (this.codexUsageState !== 'unknown') this.codexUsageState = delta ? 'measured' : 'unknown'
   }
 
   addUsage(usage: { inputTokens?: number; outputTokens?: number } | undefined): void {

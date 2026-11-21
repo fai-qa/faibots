@@ -22,7 +22,8 @@ function describeBudgets(b: JourneyRunBudgets): string {
   const parts: string[] = []
   if (b.b1 !== undefined) parts.push(plural(b.b1, 'turn'))
   if (b.b2 !== undefined) parts.push(plural(b.b2.errors, 'error'))
-  if (b.b3 !== undefined) parts.push(`${(b.b3.inputTokens + b.b3.outputTokens).toLocaleString()} tokens`)
+  if (b.b3 !== undefined) parts.push(b.b3.legacyCodex ? 'Unverified historical token total' :
+    b.b3.zeroTokenTurns > 0 ? 'Token usage partially reported' : `${(b.b3.inputTokens + b.b3.outputTokens).toLocaleString()} tokens`)
   if (b.b4 !== undefined) parts.push(`${took(b.b4.wallMs)} wall time`)
   if (b.b5 !== undefined) parts.push(plural(b.b5, 'bot message'))
   if (b.b7 !== undefined) parts.push(plural(b.b7, 'send_to_agent'))
@@ -57,9 +58,10 @@ function BudgetChips({ budgets }: { budgets: JourneyRunBudgets }) {
   if (b.b3 !== undefined)
     chips.push({
       key: 'B3 · Tokens',
-      value: `${b.b3.inputTokens.toLocaleString()} in · ${b.b3.outputTokens.toLocaleString()} out${
+      value: b.b3.zeroTokenTurns > 0 && !b.b3.inputTokens && !b.b3.outputTokens ? 'Unreported' :
+        `${b.b3.inputTokens.toLocaleString()} in · ${b.b3.outputTokens.toLocaleString()} out${
         b.b3.zeroTokenTurns > 0 ? ` · ${b.b3.zeroTokenTurns} unreported` : ''
-      }`
+      }${b.b3.legacyCodex ? ' · historical Codex counts may overlap' : ''}`
     })
   if (b.b4 !== undefined) chips.push({ key: 'B4 · Wall time', value: `${took(b.b4.wallMs)} (turns ${took(b.b4.totalMs)})` })
   if (b.b5 !== undefined) chips.push({ key: 'B5 · Bot messages', value: b.b5.toLocaleString() })

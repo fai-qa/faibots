@@ -11,7 +11,7 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
-  Artifact, Bot, Conversation, EntryTrigger, Id, JourneyRun, JourneyRunBudgets, ManifestLiteSource, Project,
+  Artifact, Bot, EntryTrigger, Id, JourneyRun, JourneyRunBudgets, ManifestLiteSource, Project,
   ProjectSource, ReviewDecisionKind
 } from '@shared/domain'
 import type { AttachmentStore, EventBus, MissionRunService, Runtime } from '../contracts'
@@ -161,55 +161,32 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
     }
   }
 
-  /** Conversations the run reached: the chief's dm plus the exchanges it opened, direct and chained. */
-  const runConversations = (rootDmId: Id, since: number): Id[] => {
-    const ids = new Set<Id>([rootDmId])
-    for (const conversation of store.conversations.list()) {
-      if (conversation.kind !== 'exchange' || conversation.createdAt < since) continue
-      let current: Conversation | undefined = conversation
-      for (let depth = 0; current?.origin && depth < 10; depth++) {
-        if (current.origin.conversationId === rootDmId) {
-          ids.add(conversation.id)
-          break
-        }
-        const next = store.conversations.get(current.origin.conversationId)
-        if (!next || next === current) break
-        current = next
-      }
-    }
-    return [...ids]
-  }
-
   /** B1-B11, counted exactly from the run's rows (first-journey.md FJ-10). */
   const computeBudgets = (input: {
     run: JourneyRun
     sources: ProjectSource[]
-    dmId: Id
     revision?: { bytes: number; sha256: string }
     revisions: number
   }): JourneyRunBudgets => {
-    const { run, sources, dmId, revision, revisions } = input
-    const since = run.startedAt
-    const until = now() + 1
-    const conversations = runConversations(dmId, since)
-    const placeholders = conversations.map(() => '?').join(', ')
-
-    const turns = store.db
-      .prepare(`select * from turns where started_at >= ? and started_at < ? and conversation_id in (${placeholders})`)
-      .all(since, until, ...conversations)
+    const { run, sources, revision, revisions } = input
+    // Root ownership survives repeated work in the same DM or reviewer exchange.
+    const roots = 'select turn_id from project_run_turns where run_id=?'
+    const ownedTurns = 'select id from turns where root_turn_id in (' + roots + ')'
+    const turns = store.db.prepare('select * from turns where root_turn_id in (' + roots + ')').all(run.id)
     const b1 = turns.length
     const errors = turns.filter((t) => t['status'] === 'error').length
     const inputTokens = turns.reduce((n, t) => n + Number(t['input_tokens'] ?? 0), 0)
     const outputTokens = turns.reduce((n, t) => n + Number(t['output_tokens'] ?? 0), 0)
-    const zeroTokenTurns = turns.filter((t) => !Number(t['input_tokens'] ?? 0) && !Number(t['output_tokens'] ?? 0)).length
+    const zeroTokenTurns = turns.filter((t) => t['codex_usage_state'] === 'unknown' ||
+      (t['codex_usage_state'] !== 'measured' && !Number(t['input_tokens'] ?? 0) && !Number(t['output_tokens'] ?? 0))).length
     const starts = turns.map((t) => Number(t['started_at'])).filter((n) => Number.isFinite(n))
     const ends = turns.map((t) => Number(t['ended_at'])).filter((n) => Number.isFinite(n))
     const wallMs = starts.length && ends.length ? Math.max(...ends) - Math.min(...starts) : 0
     const totalMs = turns.reduce((n, t) => n + (Number(t['ended_at'] ?? 0) - Number(t['started_at'] ?? 0)), 0)
 
     const entries = store.db
-      .prepare(`select * from entries where created_at >= ? and created_at < ? and conversation_id in (${placeholders}) order by seq`)
-      .all(since, until, ...conversations)
+      .prepare(`select * from entries where json_valid(meta) and json_extract(meta,'$.turnId') in (${ownedTurns}) order by seq`)
+      .all(run.id)
     const botMessages = entries.filter((e) => {
       if (e['kind'] !== 'message') return false
       try {
@@ -237,8 +214,8 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
     }
 
     const admissions = store.db
-      .prepare('select count(*) as n from automatic_run_admissions where started_at >= ? and started_at < ?')
-      .get(since, until) as { n: number }
+      .prepare('select count(*) as n from automatic_run_admissions where root_turn_id in (' + roots + ')')
+      .get(run.id) as { n: number }
 
     const sourceBytes = sources.reduce((n, s) => n + s.sizeBytes, 0)
     return {
@@ -323,7 +300,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       const revision = saves.link(run.id)
       const revisionBudget = { bytes: observed.bytes, sha256: observed.sha256 }
       const budgets = () =>
-        computeBudgets({ run, sources, dmId: draft.conversationId, revision: revisionBudget, revisions: store.artifacts.revisions(artifact.id).length })
+        computeBudgets({ run, sources, revision: revisionBudget, revisions: store.artifacts.revisions(artifact.id).length })
 
       if (!reviewer) {
         // Optional reviewer (FJ-03): no bot review happened, so nothing may look accepted.
