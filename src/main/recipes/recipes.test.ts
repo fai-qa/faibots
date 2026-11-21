@@ -85,7 +85,7 @@ describe('RecipeService', () => {
     } as unknown as BotRecipe)
     expect(bot.name).toBe('Mini')
     expect(bot.mcpServerIds).toBe('all')
-    expect(() => recipes.importRecipe({ format: 'something-else' } as unknown as BotRecipe)).toThrow(/not a FaiBots bot recipe/)
+    expect(() => recipes.importRecipe({ format: 'something-else' } as unknown as BotRecipe)).toThrow(/not a faibots bot recipe/)
   })
 
   it('leaves out connectors the user does not have', () => {

@@ -15,7 +15,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: Luci
   { id: 'providers', label: 'Models & providers', icon: Cpu, description: 'Where your bots get their models, and how each route is paid for.' },
   { id: 'connectors', label: 'Connectors', icon: Plug, description: 'MCP servers that give bots tools like GitHub, Notion or your files.' },
   { id: 'permissions', label: 'Permissions', icon: ShieldCheck, description: 'What every bot may do without asking. Each bot can override these.' },
-  { id: 'background', label: 'Background & routines', icon: AlarmClock, description: 'Keep FaiBots running so routines can work, and let other apps start them.' },
+  { id: 'background', label: 'Background & routines', icon: AlarmClock, description: 'Keep faibots running so routines can work, and let other apps start them.' },
   { id: 'usage', label: 'Usage', icon: ChartColumn, description: 'Turns and tokens per bot, from every model call your bots made.' },
   { id: 'appearance', label: 'Appearance', icon: Palette, description: 'Theme and colours.' },
   { id: 'workspace', label: 'Workspace', icon: Folder, description: 'Where bots keep their files, and how long chats stay in context.' },
@@ -40,7 +40,7 @@ function SettingsPanel({ section }: { section: SettingsSection }) {
         ref={ref}
         role="dialog"
         aria-modal="true"
-        aria-label="FaiBots settings"
+        aria-label="faibots settings"
         tabIndex={-1}
         className="pop-in flex h-[min(780px,90vh)] w-[min(1000px,94vw)] overflow-hidden rounded-[16px] bg-elevated shadow-modal outline-none"
       >

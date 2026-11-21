@@ -47,7 +47,7 @@ export function App() {
   if (status === 'error') {
     return (
       <BootScreen>
-        <div className="text-[15px] font-semibold text-fg">Couldn't start FaiBots</div>
+        <div className="text-[15px] font-semibold text-fg">Couldn't start faibots</div>
         <p className="max-w-[380px] text-[12.5px] text-fg-3 selectable">{bootError}</p>
         <Button variant="primary" onClick={() => window.location.reload()}>
           Try again
@@ -66,7 +66,7 @@ function BootScreen({ children }: { children?: React.ReactNode }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 bg-pane">
       <Character shape="squircle" color="black" size={44} state={children ? 'waiting' : 'thinking'} seed="boot" />
-      {children ?? <div className="text-[12.5px] text-fg-3">Starting FaiBots…</div>}
+      {children ?? <div className="text-[12.5px] text-fg-3">Starting faibots…</div>}
     </div>
   )
 }

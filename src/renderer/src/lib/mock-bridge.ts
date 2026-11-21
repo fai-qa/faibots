@@ -768,7 +768,7 @@ export function createMockBridge(): FaiBotsBridge {
   }
 
   const handlers: Handlers = {
-    'app:info': () => ({ name: 'FaiBots', version: '0.1.0', dataDir: DATA_DIR, platform: 'browser preview (sample data)' }),
+    'app:info': () => ({ name: 'faibots', version: '0.1.0', dataDir: DATA_DIR, platform: 'browser preview (sample data)' }),
 
     // Bots ------------------------------------------------------------------
     'bots:list': () => db.bots,

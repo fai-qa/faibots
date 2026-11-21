@@ -13,6 +13,8 @@ const sourceRoot = resolve(__dirname, '..')
 const notes = join(sourceRoot, 'examples', 'workshop-notes.md')
 const modelId = 'proposal-fixture'
 const projectName = 'Community Workshop Smoke Test'
+const chatQuestion = 'Which column identifies the owner in the sample task list?'
+const chatAnswer = 'The Assignee column identifies the owner.'
 const hash = (value) => createHash('sha256').update(value).digest('hex')
 const proposal = [
   '# Workshop proposal',
@@ -31,6 +33,7 @@ function fixtureResponse(messages) {
   const prompt = textOf(messages[promptIndex])
   const result = messages.slice(promptIndex + 1).findLast((message) => message.role === 'tool')
 
+  if (prompt.includes(chatQuestion)) return chatAnswer
   if (prompt.includes('<<<REVIEW MESSAGE')) {
     if (result) return 'Review received.'
     return {
@@ -94,6 +97,55 @@ async function startFixture() {
   return { server, baseUrl: `http://127.0.0.1:${server.address().port}/v1` }
 }
 
+async function configureModel(invoke, profile, baseUrl) {
+  const provider = await invoke('providers:save', {
+    kind: 'openai-compatible', label: 'Local fixture', baseUrl,
+    defaultModelId: modelId, enabled: true
+  })
+  assert.equal((await invoke('providers:test', { id: provider.id })).ok, true)
+  await invoke('settings:update', { workspaceRoot: join(profile, 'workspaces') })
+  return { providerId: provider.id, modelId }
+}
+
+async function checkDirectChat(invoke, mode, profile, baseUrl) {
+  const proofPath = join(profile, 'chat-proof.json')
+  if (mode === 'chat') {
+    const model = await configureModel(invoke, profile, baseUrl)
+    await invoke('bots:create', { name: 'Coordinator', handle: 'coordinator', model, isPrimary: true })
+    await invoke('bots:create', { name: 'Editor', handle: 'editor', model, notify: false })
+  }
+  const bots = await invoke('bots:list')
+  const primary = bots.find((bot) => bot.isPrimary)
+  const editor = bots.find((bot) => bot.handle === 'editor')
+  assert.equal(primary?.handle, 'coordinator')
+  assert(editor && editor.id !== primary.id)
+  const dm = await invoke('conv:open-dm', { botId: editor.id })
+  assert.equal(dm.kind, 'dm')
+  assert.deepEqual(dm.botIds, [editor.id])
+  const conversationId = dm.id
+  if (mode === 'chat') {
+    await invoke('conv:send', {
+      conversationId, text: chatQuestion, clientNonce: 'smoke-direct-message',
+      mentions: [], mentionsEveryone: false, attachmentPaths: []
+    })
+  }
+  const deadline = Date.now() + 20_000
+  let userMessage, reply
+  do {
+    const { entries } = await invoke('conv:entries', { conversationId })
+    userMessage = entries.find((entry) => entry.kind === 'message' && entry.author.kind === 'user' && entry.text === chatQuestion)
+    reply = entries.find((entry) => entry.author.kind === 'bot' && entry.author.botId === editor.id &&
+      entry.kind === 'message' && !entry.isStreaming && entry.text === chatAnswer)
+    if (reply || mode === 'chat-reopen') break
+    await delay(150)
+  } while (Date.now() < deadline)
+  assert(userMessage && reply && reply.seq > userMessage.seq, 'Expected the user message followed by the editor reply')
+  const proof = { conversationId, editorId: editor.id, userEntryId: userMessage.id, replyId: reply.id }
+  if (mode === 'chat') writeFileSync(proofPath, JSON.stringify(proof))
+  else assert.deepEqual(proof, JSON.parse(readFileSync(proofPath, 'utf8')))
+  console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for the editor DM`)
+}
+
 function runDesktop() {
   const { app } = require('electron')
   const [mode, profile, baseUrl] = process.argv.slice(-3)
@@ -106,16 +158,15 @@ function runDesktop() {
       )
       try {
         assert.equal((await invoke('app:info')).platform, 'win32')
+        if (mode === 'chat' || mode === 'chat-reopen') {
+          await checkDirectChat(invoke, mode, profile, baseUrl)
+          app.quit()
+          return
+        }
         const proofPath = join(profile, 'smoke-proof.json')
         let project
         if (mode === 'draft') {
-          const provider = await invoke('providers:save', {
-            kind: 'openai-compatible', label: 'Local fixture', baseUrl,
-            defaultModelId: modelId, enabled: true
-          })
-          assert.equal((await invoke('providers:test', { id: provider.id })).ok, true)
-          await invoke('settings:update', { workspaceRoot: join(profile, 'workspaces') })
-          const model = { providerId: provider.id, modelId }
+          const model = await configureModel(invoke, profile, baseUrl)
           await invoke('bots:create', { name: 'Proposal Drafter', handle: 'proposal-drafter', model, isPrimary: true })
           await invoke('bots:create', { name: 'Proposal Reviewer', handle: 'proposal-reviewer', model, notify: false })
           project = await invoke('projects:create', { name: projectName, description: 'Fictional workshop example' })
@@ -159,18 +210,20 @@ function runDesktop() {
 
 async function runSmoke() {
   assert.equal(process.platform, 'win32')
-  const profile = mkdtempSync(join(tmpdir(), 'faibots-desktop-'))
-  mkdirSync(join(profile, 'workspaces'))
   const electron = process.env.FAIBOTS_SMOKE_ELECTRON || require('electron')
   const { server, baseUrl } = await startFixture()
   try {
-    for (const mode of ['draft', 'reopen']) {
-      const exitCode = await new Promise((done, fail) => {
-        const child = spawn(electron, [__filename, mode, profile, baseUrl], { stdio: 'inherit', timeout: 65_000 })
-        child.once('error', fail)
-        child.once('close', done)
-      })
-      assert.equal(exitCode, 0, `Electron did not complete the ${mode} check`)
+    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen']]) {
+      const profile = mkdtempSync(join(tmpdir(), 'faibots-desktop-'))
+      mkdirSync(join(profile, 'workspaces'))
+      for (const mode of stages) {
+        const exitCode = await new Promise((done, fail) => {
+          const child = spawn(electron, [__filename, mode, profile, baseUrl], { stdio: 'inherit', timeout: 65_000 })
+          child.once('error', fail)
+          child.once('close', done)
+        })
+        assert.equal(exitCode, 0, `Electron did not complete the ${mode} check`)
+      }
     }
   } finally {
     server.closeAllConnections()

@@ -26,7 +26,7 @@ export const NO_NEW_MESSAGES = '(No new messages since your last reply.)'
 
 export function speakerName(author: Entry['author'], bots: (id: Id) => Bot | undefined, userName: string): string {
   if (author.kind === 'user') return userName.trim() || 'User'
-  if (author.kind === 'system') return 'FaiBots'
+  if (author.kind === 'system') return 'faibots'
   return bots(author.botId)?.name ?? 'A deleted bot'
 }
 
@@ -54,7 +54,7 @@ const STARTED_BY: Record<RoutineRunTrigger, string> = {
   schedule: 'on its schedule',
   manual: 'by the user with Run now',
   webhook: 'by a webhook call from another app',
-  'catch-up': 'late, because FaiBots was closed at the planned time'
+  'catch-up': 'late, because faibots was closed at the planned time'
 }
 
 /** A message as the bot reads it. A routine's message also says who started it and how. */
@@ -62,7 +62,7 @@ export function messageBody(entry: Entry): string {
   const text = entry.text.trim()
   if (!entry.trigger) return text
   if (entry.trigger.kind === 'mission') {
-    return `Mission run for the project "${entry.trigger.projectName}", started automatically by FaiBots (deliverable "${entry.trigger.artifactName}"). Nobody is watching live, so finish the task and report the result in your reply.\n\n${text}`
+    return `Mission run for the project "${entry.trigger.projectName}", started automatically by faibots (deliverable "${entry.trigger.artifactName}"). Nobody is watching live, so finish the task and report the result in your reply.\n\n${text}`
   }
   return `Routine "${entry.trigger.routineName}", started automatically ${STARTED_BY[entry.trigger.via]}. Nobody is watching live, so finish the task and report the result in your reply.\n\n${text}`
 }

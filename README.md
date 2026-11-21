@@ -1,6 +1,6 @@
 # faibots desktop preview
 
-faibots is a Windows desktop app from fai.qa for working with a small AI team. Set up bots with their own roles and model routes, attach project notes, and run a mission. The app saves the proposal and the reviewer's decision so you can inspect both before deciding what to use.
+faibots is a local Windows workspace for running your own team of AI bots. Give each bot a role and model, talk to it directly or bring several bots into a group chat. Bots can ask each other for help. You control which tools and connectors they can use, and which actions need your approval.
 
 ## Run from source
 
@@ -11,18 +11,20 @@ npm ci
 npm run dev
 ```
 
-Open **Settings → Providers** to configure a supported model you already have access to. Use **Test connection** before starting a mission. Model availability and sign-in are provider-specific.
+Model availability and sign-in depend on your provider.
 
 If Electron exits immediately on Windows, run `npm run prestart` to download the locked runtime. Copy `node_modules/electron/dist` to a standalone folder outside `node_modules`, set `ELECTRON_EXEC_PATH` in your current PowerShell session to the copied `electron.exe`, then run `npm run dev` again. Keep sandboxing enabled. [Electron's Windows launch issue](https://github.com/electron/electron/issues/54614)
 
-## Try the proposal workflow
+## Try your first bot
 
-1. Create a visible **Proposal Drafter** as the primary bot. Assign a working model and tell it to draft only from the selected project notes.
-2. Create a **Proposal Reviewer**, assign a working model, and tell it to review the supplied notes and draft in the chat. The mission uses another visible bot with a model as the reviewer. In the reviewer's **Tools** tab, set `read_file` to **Never** for this sample. The reviewer receives the selected evidence as part of the task.
-3. Create a project, attach [the fictional workshop notes](examples/workshop-notes.md), and select **Start the mission**.
-4. Open **Artifacts & review** and expand **Latest revision**. Read the review decision, then decide whether the draft is useful.
+1. In **Settings → Models & providers**, add a provider you already use and test the connection.
+2. Choose **New Bot**, give it a name and role, and select its model in the bot’s profile.
+3. Open its chat and give it a small task. Close and reopen the app to pick up the conversation.
+4. To work with two bots, create a second bot and use **New chat** to select both. Mention the bot you want to answer.
 
-Use Markdown or plain-text notes. Model calls may send the selected text and draft to your configured provider. Local app records stay on your computer. Your provider and any connector you configure have their own data policies.
+A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
+
+Chats and settings are stored on your computer. A model request sends the conversation context it needs to the provider you configured. Tools and connectors can access additional information according to their permissions.
 
 ## Checks
 
@@ -34,7 +36,7 @@ npm run build
 
 The desktop app uses Electron. The optional browser UI preview uses example data. Routines require the desktop process to be running. This release is a source preview. Build configuration is included for maintainers preparing a Windows installer.
 
-On Windows, `npm run prestart` followed by `node tests/windows-desktop-smoke.cjs` checks the built desktop app with a local model fixture. It checks proposal creation, review, and reopening without credentials.
+On Windows, `npm run prestart` followed by `node tests/windows-desktop-smoke.cjs` checks the built desktop app with a local model fixture. It exercises the desktop runtime with fictional data and checks that records survive reopening.
 
 ## Licensing
 

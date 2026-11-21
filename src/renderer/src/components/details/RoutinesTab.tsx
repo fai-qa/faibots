@@ -16,6 +16,8 @@ import { invoke } from '../../lib/bridge'
 import { duration, relative, upcoming } from '../../lib/format'
 import { useAsync } from '../../lib/hooks'
 import { attempt, openBot, run, saveSettings } from '../../store/actions'
+import { modelSetupIssue } from '../../lib/providers'
+import { ModelSetupPrompt } from './ModelPicker'
 import { useData } from '../../store/data'
 import { confirmDialog, toast, useUi } from '../../store/ui'
 import { EmptyState, Spinner } from '../ui/Badge'
@@ -28,6 +30,8 @@ export function RoutinesTab({ bot }: { bot: Bot }) {
   const version = useData((s) => s.versions.routines[bot.id] ?? 0)
   const settings = useData((s) => s.settings)
   const routines = useAsync(() => invoke('routines:list', { botId: bot.id }), [bot.id, version])
+  const providers = useData((s) => s.providers)
+  const setup = modelSetupIssue(bot.model, providers)
   const [editing, setEditing] = useState<Routine | 'new' | null>(null)
   const list = routines.data ?? []
 
@@ -42,9 +46,10 @@ export function RoutinesTab({ bot }: { bot: Bot }) {
         </Button>
       </div>
 
+      {setup && <ModelSetupPrompt key={bot.id} bot={bot} issue={setup} />}
       {settings && !settings.background.keepRunning && list.some((r) => r.enabled && r.schedule.kind !== 'manual') && (
         <Notice>
-          Routines only run while FaiBots is open.{' '}
+          Routines only run while faibots is open.{' '}
           <button
             type="button"
             className="font-medium text-fg underline underline-offset-2"
@@ -83,7 +88,7 @@ export function RoutinesTab({ bot }: { bot: Bot }) {
       ) : (
         <ul className="space-y-2.5">
           {list.map((r) => (
-            <RoutineCard key={r.id} routine={r} bot={bot} version={version} onEdit={() => setEditing(r)} onChanged={routines.reload} />
+            <RoutineCard key={r.id} routine={r} bot={bot} ready={!setup} version={version} onEdit={() => setEditing(r)} onChanged={routines.reload} />
           ))}
         </ul>
       )}
@@ -97,6 +102,7 @@ export function RoutinesTab({ bot }: { bot: Bot }) {
       {editing && (
         <RoutineEditor
           bot={bot}
+          ready={!setup}
           routine={editing === 'new' ? undefined : editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
@@ -121,12 +127,14 @@ function RoutineCard({
   routine,
   bot,
   version,
+  ready,
   onEdit,
   onChanged
 }: {
   routine: Routine
   bot: Bot
   version: number
+  ready: boolean
   onEdit: () => void
   onChanged: () => void
 }) {
@@ -139,7 +147,7 @@ function RoutineCard({
     if (await attempt('routines:save', { ...routine, enabled }, "Couldn't change the routine.")) onChanged()
   }
   const runNow = async () => {
-    if (await attempt('routines:run-now', { id: routine.id }, "Couldn't start the run.")) toast(`Started “${routine.name}”`, 'success')
+    await attempt('routines:run-now', { id: routine.id }, "Couldn't start the run.")
   }
   const remove = async () => {
     const ok = await confirmDialog({
@@ -168,13 +176,13 @@ function RoutineCard({
           <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-fg">{routine.name}</span>
           {routine.webhookEnabled && <Webhook size={13} className="shrink-0 text-fg-4" aria-label="Webhook on" />}
           {routine.schedule.kind !== 'manual' && (
-            <Toggle size="sm" label={`Schedule for ${routine.name}`} checked={routine.enabled} onChange={(v) => void toggle(v)} />
+            <Toggle size="sm" label={`Schedule for ${routine.name}`} checked={routine.enabled} disabled={!ready && !routine.enabled} onChange={(v) => void toggle(v)} />
           )}
         </div>
         <p className="mt-0.5 pl-[22px] text-[11.5px] text-fg-3">{when}</p>
         <p className="mt-1.5 line-clamp-2 pl-[22px] text-[12px] leading-snug text-fg-2">{routine.prompt}</p>
         <div className="mt-2 flex items-center gap-1 pl-[18px]">
-          <Button size="sm" variant="ghost" icon={Play} onClick={() => void runNow()} disabled={running}>
+          <Button size="sm" variant="ghost" icon={Play} onClick={() => void runNow()} disabled={running || !ready}>
             {running ? 'Running…' : 'Run now'}
           </Button>
           <IconButton size="sm" icon={Pencil} label="Edit routine" onClick={onEdit} />
@@ -187,7 +195,7 @@ function RoutineCard({
             className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-[11.5px] text-fg-3 hover:bg-hover hover:text-fg"
           >
             {last ? <RunStatusIcon status={last.status} /> : null}
-            {last ? (last.status === 'running' ? 'Running' : `Last run ${relative(last.startedAt)}`) : 'No runs yet'}
+            {last ? (last.status === 'running' ? 'Running' : `${STATUS_LABEL[last.status]} · ${relative(last.startedAt)}`) : 'No runs yet'}
             <ChevronDown size={12} className={clsx('transition-transform', open && 'rotate-180')} />
           </button>
         </div>
@@ -262,7 +270,7 @@ type Mode = 'daily' | 'interval' | 'manual'
 const DAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-function RoutineEditor({ bot, routine, onClose, onSaved }: { bot: Bot; routine?: Routine; onClose: () => void; onSaved: () => void }) {
+function RoutineEditor({ bot, routine, ready, onClose, onSaved }: { bot: Bot; routine?: Routine; ready: boolean; onClose: () => void; onSaved: () => void }) {
   const initial = routine?.schedule ?? { kind: 'daily', time: '08:00', days: WEEKDAYS }
   const [name, setName] = useState(routine?.name ?? '')
   const [prompt, setPrompt] = useState(routine?.prompt ?? '')
@@ -290,6 +298,7 @@ function RoutineEditor({ bot, routine, onClose, onSaved }: { bot: Bot; routine?:
     preview = ''
   }
 
+  const startsSchedule = mode !== 'manual' && (!routine || routine.schedule.kind === 'manual')
   const save = async () => {
     setSaving(true)
     setError(null)
@@ -301,7 +310,7 @@ function RoutineEditor({ bot, routine, onClose, onSaved }: { bot: Bot; routine?:
         prompt,
         schedule: schedule(),
         webhookEnabled: webhook,
-        ...(routine && { enabled: routine.enabled })
+        enabled: startsSchedule && !ready ? false : (routine?.enabled ?? true)
       })
       // A new webhook needs its token once; show it before closing.
       if (webhook && !saved.hasWebhookToken) {
@@ -340,6 +349,7 @@ function RoutineEditor({ bot, routine, onClose, onSaved }: { bot: Bot; routine?:
       }
     >
       <div className="space-y-4">
+        {!ready && startsSchedule && <Notice>This schedule will be saved off. Set up the bot’s model, then turn on its schedule.</Notice>}
         <Field label="Name">
           <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning brief" maxLength={80} autoFocus data-autofocus />
         </Field>
@@ -489,7 +499,7 @@ function WebhookTokenDialog({ name, token, onClose }: { name: string; token: { t
   return (
     <Dialog
       title={`Webhook for “${name}”`}
-      description="Copy the token now: FaiBots keeps only a fingerprint of it and cannot show it again."
+      description="Copy the token now: faibots keeps only a fingerprint of it and cannot show it again."
       onClose={onClose}
       width={600}
       footer={

@@ -113,7 +113,7 @@ export function AppearanceSection() {
   if (!s) return null
   return (
     <div className="max-w-[620px] divide-y divide-line-soft rounded-xl border border-line-soft px-4">
-      <SettingRow title="Theme" description="Pick the light or dark look for FaiBots, or follow your system.">
+      <SettingRow title="Theme" description="Pick the light or dark look for faibots, or follow your system.">
         <Segmented
           label="Theme"
           value={s.theme}
@@ -213,7 +213,7 @@ export function AboutSection() {
         </div>
       </dl>
       <p className="text-[12.5px] text-fg-3">
-        Everything stays on this computer. FaiBots only talks to the model providers and connectors you add.
+        Everything stays on this computer. faibots only talks to the model providers and connectors you add.
       </p>
       <Button
         icon={Copy}

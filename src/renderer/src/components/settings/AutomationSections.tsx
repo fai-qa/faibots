@@ -30,11 +30,11 @@ export function BackgroundSection() {
       <div className="divide-y divide-line-soft rounded-xl border border-line-soft px-4">
         <SettingRow
           title="Keep running in the tray"
-          description="Closing the window hides FaiBots next to the clock, so routines and webhooks keep working. Quit from the tray icon."
+          description="Closing the window hides faibots next to the clock, so routines and webhooks keep working. Quit from the tray icon."
         >
           <Toggle label="Keep running in the tray" checked={bg.keepRunning} onChange={(keepRunning) => void saveSettings({ background: { ...bg, keepRunning } })} />
         </SettingRow>
-        <SettingRow title="Start when you sign in" description="Opens FaiBots in the tray when you sign in to this computer. Works in the installed app.">
+        <SettingRow title="Start when you sign in" description="Opens faibots in the tray when you sign in to this computer. Works in the installed app.">
           <Toggle
             label="Start when you sign in"
             checked={bg.openAtLogin}

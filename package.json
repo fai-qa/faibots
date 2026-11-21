@@ -1,6 +1,6 @@
 {
   "name": "faibots",
-  "productName": "FaiBots",
+  "productName": "faibots",
   "version": "0.1.0",
   "description": "Local, model-agnostic multi-bot desktop agent. Bring your own models and MCP connectors.",
   "author": "Fahed",

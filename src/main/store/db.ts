@@ -53,7 +53,7 @@ export function schemaVersion(db: Db): number {
 export function migrate(db: Db, migrations: string[] = MIGRATIONS): void {
   const current = schemaVersion(db)
   if (current > migrations.length) {
-    throw new Error(`Database schema v${current} is newer than this app (v${migrations.length}). Update FaiBots.`)
+    throw new Error(`Database schema v${current} is newer than this app (v${migrations.length}). Update faibots.`)
   }
   for (let v = current; v < migrations.length; v++) {
     transaction(db, () => {

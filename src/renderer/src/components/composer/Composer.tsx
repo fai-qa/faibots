@@ -10,6 +10,8 @@ import { basename, plainPreview } from '../../lib/format'
 import { useData } from '../../store/data'
 import { reportError } from '../../store/actions'
 import { setDraft, toast, useUi, type Draft } from '../../store/ui'
+import { modelSetupIssue } from '../../lib/providers'
+import { ModelSetupPrompt } from '../details/ModelPicker'
 import { MentionMenu, mentionOptions, type MentionOption } from './MentionMenu'
 
 const MAX_ATTACHMENTS = 6
@@ -32,6 +34,9 @@ interface ComposerProps {
 
 export function Composer({ draftKey, placeholder, members, allowEveryone, busy, onSend, onStop, conversationId, disabled, autoFocus = true }: ComposerProps) {
   const draft = useUi((s) => s.drafts[draftKey]) ?? EMPTY
+  const providers = useData((s) => s.providers)
+  const directBot = !allowEveryone && members.length === 1 ? members[0] : undefined
+  const setup = directBot && modelSetupIssue(directBot.model, providers)
   const focusTick = useUi((s) => s.focusComposer)
   const ref = useRef<HTMLTextAreaElement>(null)
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null)
@@ -84,7 +89,7 @@ export function Composer({ draftKey, placeholder, members, allowEveryone, busy, 
   }
 
   const send = () => {
-    if (disabled) return
+    if (disabled || setup) return
     if (!draft.text.trim() && draft.attachmentPaths.length === 0) return
     const toSend = draft
     setDraft(draftKey, EMPTY)
@@ -121,10 +126,15 @@ export function Composer({ draftKey, placeholder, members, allowEveryone, busy, 
     })
   }
 
-  const canSend = !disabled && (draft.text.trim().length > 0 || draft.attachmentPaths.length > 0)
+  const canSend = !disabled && !setup && (draft.text.trim().length > 0 || draft.attachmentPaths.length > 0)
 
   return (
     <div className="mx-auto w-full max-w-[820px] px-5 pb-4">
+      {setup && directBot && (
+        <div className="mb-2">
+          <ModelSetupPrompt key={directBot.id} bot={directBot} issue={setup} />
+        </div>
+      )}
       <div
         className={clsx(
           'relative rounded-card border border-line-strong bg-pane shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-[border-color,box-shadow] duration-150 focus-within:border-fg-4 focus-within:shadow-[0_2px_10px_-4px_rgb(0_0_0/0.12)]',
@@ -226,7 +236,7 @@ export function Composer({ draftKey, placeholder, members, allowEveryone, busy, 
             </ToolbarButton>
           )}
           <span className="flex-1" />
-          <span className="mr-2 hidden text-2xs text-fg-4 lg:inline">Enter to send, Shift+Enter for a new line</span>
+          {!setup && <span className="mr-2 hidden text-2xs text-fg-4 lg:inline">Enter to send, Shift+Enter for a new line</span>}
           {busy && onStop && (
             <button
               type="button"

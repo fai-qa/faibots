@@ -25,7 +25,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; compact?: bo
       <div className="flex h-full min-h-[240px] flex-1 flex-col items-center justify-center gap-3 bg-pane p-8 text-center">
         <Character shape="blob" color="gray" size={56} state="waiting" />
         <div className="text-[15px] font-semibold text-fg">Something went wrong</div>
-        <p className="max-w-[380px] text-[12.5px] text-fg-3">FaiBots hit an unexpected error while drawing this screen. Reloading usually fixes it.</p>
+        <p className="max-w-[380px] text-[12.5px] text-fg-3">faibots hit an unexpected error while drawing this screen. Reloading usually fixes it.</p>
         <div className="flex gap-2">
           <button type="button" onClick={() => window.location.reload()} className="h-8 rounded-lg bg-ink px-3 text-ui font-medium text-on-ink">
             Reload

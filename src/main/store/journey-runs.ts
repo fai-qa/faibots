@@ -76,7 +76,7 @@ export function createJourneyRunRepo(db: Db): JourneyRunRepo {
       return rows.map(toRun)
     },
     closeInterrupted(now) {
-      return Number(db.prepare(`update journey_runs set status = 'failed', error = 'Interrupted: FaiBots stopped before the run finished.', ended_at = ? where status in ('working', 'waiting_review')`)
+      return Number(db.prepare(`update journey_runs set status = 'failed', error = 'Interrupted: faibots stopped before the run finished.', ended_at = ? where status in ('working', 'waiting_review')`)
         .run(now).changes)
     }
   }

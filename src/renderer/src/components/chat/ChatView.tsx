@@ -47,7 +47,7 @@ export function ChatView({ conv }: { conv: Conversation }) {
       <div className="flex flex-col items-center text-center">
         <BotAvatar bot={members[0]} size={64} />
         <div className={`bot-${members[0].avatar.color} mt-3 text-[15px] font-semibold text-bot-fg`}>{members[0].name}</div>
-        <p className="mt-1 max-w-[320px] text-[12.5px] text-fg-3">{members[0].description || 'Say hello, or ask for something specific.'}</p>
+        <p className="mt-1 max-w-[320px] text-[12.5px] text-fg-3">{members[0].description || (members[0].model.providerId ? 'Say hello, or ask for something specific.' : 'Set up a model to start chatting.')}</p>
       </div>
     ) : conv.kind === 'group' ? (
       <div className="flex flex-col items-center text-center">

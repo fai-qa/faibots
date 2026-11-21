@@ -1,5 +1,6 @@
 // Provider kinds, their labels and the billing route each one uses.
 
+import { kindInfo as providerKind, resolveModelId } from '@shared/provider-catalog'
 import type { BillingRoute, ModelRoute, ProviderConfig, ProviderKind } from '@shared/domain'
 
 export interface ProviderKindInfo {
@@ -122,6 +123,27 @@ export const BILLING_LABELS: Record<BillingRoute, { label: string; hint: string 
   'api-key': { label: 'API key', hint: 'Billed per token to your API account' },
   local: { label: 'Local', hint: 'Runs on your own machine' },
   unknown: { label: 'Unknown', hint: 'Test the provider to find out how it is billed' }
+}
+
+export interface ModelSetupIssue {
+  message: string
+  action: string
+  target: 'profile' | 'providers'
+}
+
+/** Check configuration only. The provider's live connection is tested separately. */
+export function modelSetupIssue(route: ModelRoute, providers: ProviderConfig[]): ModelSetupIssue | undefined {
+  const provider = providers.find((item) => item.id === route.providerId)
+  if (!provider) {
+    if (providers.length === 0) return { message: 'Add a model provider to get started.', action: 'Open provider settings', target: 'providers' }
+    if (!providers.some((item) => item.enabled)) return { message: 'All model providers are off.', action: 'Manage providers', target: 'providers' }
+    return { message: 'Choose a provider for this bot.', action: 'Choose provider', target: 'profile' }
+  }
+  if (!provider.enabled) return { message: `${provider.label} is turned off.`, action: 'Manage providers', target: 'providers' }
+  if (providerKind(provider.kind).needsApiKey && !provider.hasApiKey) {
+    return { message: `${provider.label} needs an API key.`, action: 'Manage providers', target: 'providers' }
+  }
+  if (!resolveModelId(provider, route.modelId)) return { message: 'Choose a model for this bot.', action: 'Choose model', target: 'profile' }
 }
 
 export function routeLabel(route: ModelRoute | null | undefined, providers: ProviderConfig[]): string {

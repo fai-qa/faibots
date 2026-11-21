@@ -13,7 +13,7 @@ const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 
 const handle = vi.fn()
 vi.mock('electron', () => ({
-  app: { getName: () => 'FaiBots', getVersion: () => '0.1.0' },
+  app: { getName: () => 'faibots', getVersion: () => '0.1.0' },
   BrowserWindow: class {},
   ipcMain: { handle: (...args: unknown[]) => handle(...args) },
   dialog: {},

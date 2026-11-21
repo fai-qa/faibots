@@ -1,12 +1,13 @@
 // Which provider and model a bot thinks with, and how that route is billed.
 
+import { useState } from 'react'
 import type { Bot, ModelRoute } from '@shared/domain'
 import { invoke } from '../../lib/bridge'
 import { useData } from '../../store/data'
 import { useUi } from '../../store/ui'
 import { updateBot } from '../../store/actions'
 import { useAsync, useDraftValue } from '../../lib/hooks'
-import { billingFor, kindInfo } from '../../lib/providers'
+import { billingFor, kindInfo, type ModelSetupIssue } from '../../lib/providers'
 import { BillingBadge, Spinner } from '../ui/Badge'
 import { Field, Select, TextInput } from '../ui/Field'
 import { Segmented } from '../ui/Toggle'
@@ -20,6 +21,24 @@ const EFFORTS: { value: Effort; label: string }[] = [
   { value: 'high', label: 'High' },
   { value: 'max', label: 'Max' }
 ]
+
+export function ModelSetupPrompt({ bot, issue }: { bot: Bot; issue: ModelSetupIssue }) {
+  const [picking, setPicking] = useState(false)
+  return (
+    <div className="space-y-2 text-[12.5px] text-fg-2">
+      <p>
+        {issue.message}{' '}
+        <button type="button" className="font-medium text-accent-fg underline underline-offset-2" onClick={() => {
+          if (issue.target === 'providers') useUi.setState({ settingsSection: 'providers' })
+          else setPicking(true)
+        }}>
+          {issue.action}
+        </button>
+      </p>
+      {picking && issue.target === 'profile' && <ModelPicker bot={bot} />}
+    </div>
+  )
+}
 
 export function ModelPicker({ bot }: { bot: Bot }) {
   const providers = useData((s) => s.providers)
