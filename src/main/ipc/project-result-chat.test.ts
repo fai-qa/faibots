@@ -13,6 +13,7 @@ import {
   projectResultOrigin,
   queueProjectResult
 } from '../store/project-result-requests'
+import { workScope } from '../store/work-scope'
 import { workBriefs } from '../store/work-briefs'
 import { projectSessionHandlers } from './project-sessions'
 
@@ -282,4 +283,15 @@ it('uses the owner’s explicit Reply action for a new instruction and live evid
   )
   await h.runtime.idle()
   expect(h.engine.turns).toHaveLength(3)
+})
+
+it('shows only the linked project inputs on the work card and withdraws their titles when access changes', async () => {
+  const { store, dm, project, request, source, start } = await fixture()
+  const entry = queueProjectResult(store, h.services, dm.id, request)
+  const work = workBriefs(store.db).start(dm.id, entry.id, 'test-turn', 'Check the entrance', 'One sentence', 'Matches the selected source')
+  const display = () => workScope(store, h.services, dm.id, work.id)
+  expect(display()).toEqual({ inputs: ['Your original message', project.name + ' / ' + start.label, 'fixture-notes.md · revision 1, line 1'], withheld: false })
+  expect(() => workScope(store, h.services, 'another-chat', work.id)).toThrow(/this chat/)
+  store.projectContent.select(project.id, store.projectContent.pin(project.id, source.id).itemId, false)
+  expect(display()).toEqual({ inputs: ['Your original message'], withheld: true })
 })
