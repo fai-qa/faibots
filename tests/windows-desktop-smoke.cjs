@@ -158,6 +158,8 @@ function runDesktop() {
       )
       try {
         assert.equal((await invoke('app:info')).platform, 'win32')
+        assert.equal(await window.webContents.executeJavaScript('document.title'), 'faibots')
+        assert.equal(window.getTitle(), 'faibots')
         if (mode === 'chat' || mode === 'chat-reopen') {
           await checkDirectChat(invoke, mode, profile, baseUrl)
           app.quit()
