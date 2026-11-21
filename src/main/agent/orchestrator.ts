@@ -676,7 +676,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup })
       const mcpTools = new Map<string, { serverId: Id; remoteName: string }>()
       for (const t of turnTools) if (t.serverId && t.remoteName) mcpTools.set(t.name, { serverId: t.serverId, remoteName: t.remoteName })
+      const userEntry = unseen.findLast((entry) => entry.author.kind === 'user')
       const toolContext: Omit<ToolContext, 'callId'> = {
+        ...(userEntry && { userEntryId: userEntry.id }),
         bot,
         conversation,
         turnId,

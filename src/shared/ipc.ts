@@ -1,3 +1,4 @@
+import type { WorkBrief, WorkReply } from './work-brief'
 // Typed contract between the renderer and the main process.
 // Every request/response channel and every push event is declared here once;
 // the preload bridge only forwards names that appear in INVOKE_CHANNELS / EVENT_CHANNELS.
@@ -97,6 +98,8 @@ export interface ArtifactWithRevisions {
 }
 
 export interface InvokeMap extends ContentInvoke {
+  'work:list': { req: { conversationId: Id }; res: WorkBrief[] }
+  'work:decide': { req: WorkReply & { conversationId: Id }; res: WorkBrief }
   'app:info': { req: void; res: AppInfo }
 
   // Bots
@@ -220,6 +223,7 @@ export interface InvokeMap extends ContentInvoke {
 }
 
 export interface EventMap {
+  'work:changed': { conversationId: Id }
   'app:ready': { at: number }
   /** An entry was created or replaced (also fires when streaming finishes). */
   'conv:entry': { entry: Entry }
@@ -249,6 +253,7 @@ export type EventChannel = keyof EventMap
 
 export const INVOKE_CHANNELS = [
   ...CONTENT_CHANNELS,
+  'work:list', 'work:decide',
   'app:info',
   'bots:list', 'bots:create', 'bots:update', 'bots:delete', 'bots:export-recipe', 'bots:import-recipe',
   'conv:list', 'conv:open-dm', 'conv:create-group', 'conv:update', 'conv:delete', 'conv:entries',
@@ -271,6 +276,7 @@ export const INVOKE_CHANNELS = [
 ] as const satisfies readonly InvokeChannel[]
 
 export const EVENT_CHANNELS = [
+  'work:changed',
   'app:ready', 'conv:entry', 'conv:delta', 'conv:changed', 'conv:deleted', 'bot:state',
   'bots:changed', 'skills:changed', 'memory:changed', 'mcp:changed', 'routines:changed', 'journey:changed',
   'providers:changed', 'settings:changed',

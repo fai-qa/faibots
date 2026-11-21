@@ -312,6 +312,8 @@ export interface ToolResult {
 }
 
 export interface ToolContext {
+  /** User message actually included in this turn. Used to identify a durable work brief. */
+  userEntryId?: Id
   bot: Bot
   conversation: Conversation
   /** Resolve a selected virtual project note in this turn, checking its current access. */
