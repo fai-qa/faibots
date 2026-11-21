@@ -7,6 +7,7 @@
 import type { MissionRunService, ProviderService, RoutineService, Runtime, Services, WebhookHost } from './contracts'
 import { workBriefTools } from './agent/work-brief-tools'
 import { createRuntime } from './agent'
+import { escalationTool } from './agent/escalation-tool'
 import { createProviderService } from './providers/provider-service'
 import { createMissionRunService } from './routines/mission-run'
 import { routineTools } from './routines/routine-tools'
@@ -25,6 +26,7 @@ export function createRuntimeServices(deps: Omit<Services, 'providers' | 'runtim
   const runtime = createRuntime({ ...deps, store: deps.store as PlatformStore, providers })
   for (const tool of runtime.assignments.tools()) deps.tools.register(tool)
   for (const tool of workBriefTools(deps.store as PlatformStore, deps.bus)) deps.tools.register(tool)
+  deps.tools.register(escalationTool(deps.store as PlatformStore, deps))
   const routines = createRoutineService({ store: deps.store, runtime, bus: deps.bus })
   for (const tool of routineTools(routines)) deps.tools.register(tool)
   const missions = createMissionRunService({ store: deps.store as PlatformStore, runtime, attachments: deps.attachments, dataDir: deps.dataDir, bus: deps.bus })

@@ -262,6 +262,10 @@ export class TurnRecorder {
 
   private finishTool(callId: string, entry: Entry, patch: Partial<ToolCallInfo>): void {
     const toolCall: ToolCallInfo = { ...entry.toolCall!, ...patch }
+    // The source DM owns the selected words. Copying them into a tool card would bypass future grant checks.
+    if (toolCall.toolName === 'read_handoff' && patch.resultText !== undefined) {
+      toolCall.resultText = toolCall.status === 'done' ? 'Handoff checked against current access.' : 'The handoff could not be read.'
+    }
     const updated = this.update(entry.id, { toolCall, text: toolCall.title })
     this.tools.set(callId, updated ?? { ...entry, toolCall })
   }

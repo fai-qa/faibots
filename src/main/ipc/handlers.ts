@@ -14,6 +14,7 @@ import { deliverWorkReplies } from '../agent/work-brief-tools'
 import { projectContentHandlers } from './project-content'
 import { projectSessionHandlers } from './project-sessions'
 import { improvementHandlers } from './project-improvements'
+import { escalationHandlers } from './escalations'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
 
@@ -39,6 +40,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
     },
     ...projectSessionHandlers(s, store),
     ...improvementHandlers(s, store),
+    ...escalationHandlers(s, store),
     'app:info': () => ({
       name: app.getName(),
       version: app.getVersion(),

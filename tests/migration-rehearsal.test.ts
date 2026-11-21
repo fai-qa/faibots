@@ -12,6 +12,7 @@ import { MIGRATIONS } from '../src/main/store/schema'
 import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
 import { SESSION_SCHEMA } from '../src/main/store/session-schema'
 import { PROJECT_IMPROVEMENTS_SCHEMA } from '../src/main/store/project-improvements-schema'
+import { ESCALATION_SCHEMA } from '../src/main/store/escalation-schema'
 
 import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
 
@@ -27,6 +28,7 @@ const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
 const IMPROVEMENTS_VERSION = MIGRATIONS.indexOf(PROJECT_IMPROVEMENTS_SCHEMA) + 1
+const ESCALATION_VERSION = MIGRATIONS.indexOf(ESCALATION_SCHEMA) + 1
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
@@ -38,6 +40,7 @@ const TABLES: { name: string; since: number; cols: string[]; order: string }[] =
   { name: 'chief_decisions', since: BRIEF_VERSION, cols: ['work_id','revision','decision','note','pending_reply'], order: 'work_id,revision' },
   { name: 'chief_wakes', since: BRIEF_VERSION, cols: ['work_id','revision','state','entry_id'], order: 'work_id,revision' },
   { name: 'chief_work_turns', since: BRIEF_VERSION, cols: ['turn_id','work_id','work_revision'], order: 'turn_id' },
+  { name: 'specialist_escalations', since: ESCALATION_VERSION, cols: ['id','signature','source_chat','specialist_id','chief_chat','chief_id','work_id','scope','pins','question','excerpts','destination_entry','created_at','work_revision'], order: 'id' },
   { name: 'session_hosts', since: SESSION_VERSION, cols: ['host_key','host_id'], order: 'host_id' },
   { name: 'session_environments', since: SESSION_VERSION, cols: ['host_id','root_key','environment_id'], order: 'environment_id' },
   { name: 'project_sessions', since: SESSION_VERSION, cols: ['id','project_id','host_id','environment_id','owner_id','label','mode','parent_id','engine','sources','created_at'], order: 'id' },
@@ -131,6 +134,9 @@ function seed(db: DatabaseSync, v: number): void {
       state, engine, system_hash, receipt, delivered_at, created_at, updated_at)
       values (?, ?, ?, ?, ?, ?, 'answered', 'native', ?, '{"text":"synthetic reply"}', 3, 1, 2)`,
       `work-${t}`, `bot-${t}`, 'bot-v1', 'c'.repeat(64), `entry-${t}`, 'entry-v1', 'd'.repeat(64))
+  }
+  if (v >= ESCALATION_VERSION) {
+    run("insert into specialist_escalations values (?,'signature',?,?,?, ?,null,null,'[]','question','[]',?,1,null)", `handoff-${t}`, `conv-${t}`, `bot-${t}`, `conv-${t}`, `bot-${t}`, `entry-${t}`)
   }
   if (v >= SESSION_VERSION) {
     run('insert into session_hosts values (?,?)', `key-${t}`, `host-${t}`)

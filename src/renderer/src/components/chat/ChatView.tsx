@@ -15,6 +15,8 @@ import { FindBar } from './FindBar'
 import { PresenceLine } from './PresenceLine'
 import { WorkBriefPanel } from './WorkBriefPanel'
 import { Transcript } from './Transcript'
+import { SpecialistHandoff } from './SpecialistHandoff'
+import { isMockBridge } from '../../lib/bridge'
 
 export function ChatView({ conv }: { conv: Conversation }) {
   const botMap = useData((s) => s.botMap)
@@ -66,6 +68,7 @@ export function ChatView({ conv }: { conv: Conversation }) {
     <section className="flex h-full min-w-0 flex-1 flex-col bg-pane" aria-label={conversationTitle(conv, botMap)}>
       <ChatHeader conv={conv} />
       {conv.kind === 'dm' && members[0]?.isPrimary && <WorkBriefPanel key={conv.id} conversationId={conv.id} />}
+      {!isMockBridge() && conv.kind === 'dm' && members[0] && !members[0].isPrimary && <SpecialistHandoff key={conv.id} conversationId={conv.id}/>}
       {readOnly && <ExchangeBanner conv={conv} />}
       <div className="relative flex min-h-0 flex-1 flex-col">
         {findOpen && <FindBar scrollRef={scrollRef} conversationId={conv.id} />}

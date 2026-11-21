@@ -225,7 +225,7 @@ export function createToolRegistry(deps: {
         if (isConnector && !(await granted())) return revoked()
         return dispatch()
       }
-      if (ctx.actionId) return executeAction({ actions: deps.store.actions, ctx, def, input, finalize, authorize })
+      if (ctx.actionId && !def.requiresLiveRead) return executeAction({ actions: deps.store.actions, ctx, def, input, finalize, authorize })
       try { return finalize(await authorize(() => def.execute(input, ctx))) }
       catch (err) { return finalize(errorResult(`${name} failed: ${err instanceof Error ? err.message : String(err)}`)) }
     }

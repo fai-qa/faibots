@@ -8,6 +8,7 @@ import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
 import { SESSION_SCHEMA } from './session-schema'
 import { PROJECT_IMPROVEMENTS_SCHEMA } from './project-improvements-schema'
+import { ESCALATION_SCHEMA } from './escalation-schema'
 
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
@@ -334,6 +335,7 @@ export const MIGRATIONS: string[] = [
   workBriefSchema,
   ASSIGNMENT_BUDGET_SCHEMA,
   SESSION_SCHEMA,
+  ESCALATION_SCHEMA,
   ARTIFACT_SAVE_SCHEMA,
   DELEGATION_ATTEMPT_SCHEMA
 ]
