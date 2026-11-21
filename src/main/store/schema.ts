@@ -4,6 +4,7 @@ import { workBriefSchema } from './work-brief-schema'
 import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
+import { SESSION_SCHEMA } from './session-schema'
 
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
@@ -327,5 +328,6 @@ export const MIGRATIONS: string[] = [
   `,
   PROJECT_CONTENT_SCHEMA,
   workBriefSchema,
-  ASSIGNMENT_BUDGET_SCHEMA
+  ASSIGNMENT_BUDGET_SCHEMA,
+  SESSION_SCHEMA
 ]

@@ -17,6 +17,7 @@ import { Badge, EmptyState, Spinner } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { StatusChip } from './StatusChip'
 import { ProjectSpace } from './ProjectSpace'
+import { ProjectSessions } from './ProjectSessions'
 import { RunDetails } from './RunDetails'
 import { AgentTrail, type TrailStep } from '../ui/agent-trail-clean'
 
@@ -100,6 +101,8 @@ export function ProjectView({ projectId }: { projectId: string }) {
               Created {formatFull(project.createdAt)} · {plural(sourceCount, 'note')} selected
             </p>
           </header>
+
+          {!isMockBridge() && <ProjectSessions key={projectId + ':' + journeyVersion} projectId={projectId} />}
 
           {/* Notes ------------------------------------------------------------------ */}
           {isMockBridge() ? <section aria-label="Notes">

@@ -10,6 +10,7 @@ import { migrate, openDatabase, schemaVersion } from '../src/main/store/db'
 import { MIGRATIONS } from '../src/main/store/schema'
 
 import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
+import { SESSION_SCHEMA } from '../src/main/store/session-schema'
 
 import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
 
@@ -18,6 +19,7 @@ import { workBriefSchema } from '../src/main/store/work-brief-schema'
 const BRIEF_VERSION = MIGRATIONS.indexOf(workBriefSchema) + 1
 const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
+const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
@@ -27,6 +29,11 @@ const TABLES: { name: string; since: number; cols: string[]; order: string }[] =
   { name: 'chief_decisions', since: BRIEF_VERSION, cols: ['work_id','revision','decision','note','pending_reply'], order: 'work_id,revision' },
   { name: 'chief_wakes', since: BRIEF_VERSION, cols: ['work_id','revision','state','entry_id'], order: 'work_id,revision' },
   { name: 'chief_work_turns', since: BRIEF_VERSION, cols: ['turn_id','work_id'], order: 'turn_id' },
+  { name: 'session_hosts', since: SESSION_VERSION, cols: ['host_key','host_id'], order: 'host_id' },
+  { name: 'session_environments', since: SESSION_VERSION, cols: ['host_id','root_key','environment_id'], order: 'environment_id' },
+  { name: 'project_sessions', since: SESSION_VERSION, cols: ['id','project_id','host_id','environment_id','owner_id','label','mode','parent_id','engine','sources','created_at'], order: 'id' },
+  { name: 'project_answers', since: SESSION_VERSION, cols: ['id','session_id','query','payload','created_at'], order: 'id' },
+  { name: 'project_history_selection', since: SESSION_VERSION, cols: ['session_id','answer_id'], order: 'session_id,answer_id' },
   { name: 'project_spaces', since: CONTENT_VERSION, cols: ['id', 'project_id', 'name'], order: 'id' },
   { name: 'library_items', since: CONTENT_VERSION, cols: ['id', 'owner_id'], order: 'id' },
   { name: 'library_revisions', since: CONTENT_VERSION, cols: ['item_id', 'revision', 'source_id'], order: 'item_id,revision' },
@@ -112,6 +119,13 @@ function seed(db: DatabaseSync, v: number): void {
       state, engine, system_hash, receipt, delivered_at, created_at, updated_at)
       values (?, ?, ?, ?, ?, ?, 'answered', 'native', ?, '{"text":"synthetic reply"}', 3, 1, 2)`,
       `work-${t}`, `bot-${t}`, 'bot-v1', 'c'.repeat(64), `entry-${t}`, 'entry-v1', 'd'.repeat(64))
+  }
+  if (v >= SESSION_VERSION) {
+    run('insert into session_hosts values (?,?)', `key-${t}`, `host-${t}`)
+    run('insert into session_environments values (?,?,?)', `host-${t}`, `root-${t}`, `env-${t}`)
+    run("insert into project_sessions values (?,?,?,?,?,'Example','fresh',null,'local','[]',1)", `sess-${t}`, `proj-${t}`, `host-${t}`, `env-${t}`, `bot-${t}`)
+    run("insert into project_answers values (?,?,'question','{}',2)", `answer-${t}`, `sess-${t}`)
+    run('insert into project_history_selection values (?,?)', `sess-${t}`, `answer-${t}`)
   }
   if (v >= CONTENT_VERSION) {
     // The project insert already created its Space. Seed every other content row explicitly.

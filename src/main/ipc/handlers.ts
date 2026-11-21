@@ -12,6 +12,7 @@ import { revisionText } from '../attachments/project-reads'
 import { workBriefs } from '../store/work-briefs'
 import { deliverWorkReplies } from '../agent/work-brief-tools'
 import { projectContentHandlers } from './project-content'
+import { projectSessionHandlers } from './project-sessions'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
 
@@ -35,6 +36,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       await deliverWorkReplies(store, s.runtime)
       return result
     },
+    ...projectSessionHandlers(s, store),
     'app:info': () => ({
       name: app.getName(),
       version: app.getVersion(),
