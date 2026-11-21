@@ -13,6 +13,9 @@ import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema
 
 import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
 
+import { workBriefSchema } from '../src/main/store/work-brief-schema'
+
+const BRIEF_VERSION = MIGRATIONS.indexOf(workBriefSchema) + 1
 const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const LATEST = MIGRATIONS.length
@@ -20,6 +23,10 @@ const LATEST = MIGRATIONS.length
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name: 'chief_work', since: BRIEF_VERSION, cols: ['id','conversation_id','user_entry_id','objective','revision','state'], order: 'id' },
+  { name: 'chief_decisions', since: BRIEF_VERSION, cols: ['work_id','revision','decision','note','pending_reply'], order: 'work_id,revision' },
+  { name: 'chief_wakes', since: BRIEF_VERSION, cols: ['work_id','revision','state','entry_id'], order: 'work_id,revision' },
+  { name: 'chief_work_turns', since: BRIEF_VERSION, cols: ['turn_id','work_id'], order: 'turn_id' },
   { name: 'project_spaces', since: CONTENT_VERSION, cols: ['id', 'project_id', 'name'], order: 'id' },
   { name: 'library_items', since: CONTENT_VERSION, cols: ['id', 'owner_id'], order: 'id' },
   { name: 'library_revisions', since: CONTENT_VERSION, cols: ['item_id', 'revision', 'source_id'], order: 'item_id,revision' },
@@ -116,6 +123,12 @@ function seed(db: DatabaseSync, v: number): void {
     run('insert into space_pages values (?,?,?,?,1)', `page-${t}`, `jr-${t}`, `rev-${t}`, `dec-${t}`)
     run("insert into project_evaluations values (?,'complete','accepted',?,'user',1,2)", `jr-${t}`, `rev-${t}`)
     run("insert into evaluation_trials values (?,?,?,'passed','accepted',3,'verified','accepted')", v, `jr-${t}`, `jr-${t}`)
+  }
+  if (v >= BRIEF_VERSION) {
+    run("insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at) values (?,?,?,'brief','draft','review','active',3,1)", `brief-${t}`,`conv-${t}`,`entry-${t}`)
+    run("insert into chief_decisions values (?,2,'answer','two copies',1,1)", `brief-${t}`)
+    run("insert into chief_wakes values (?,2,'finished',?)",`brief-${t}`,`entry-${t}`)
+    run("insert into chief_work_turns values (?,?)",`turn-${t}`,`brief-${t}`)
   }
   if (v >= BUDGET_VERSION) run(`insert into assignment_admissions values (?, ?, ?, ?, 1)`, `work-${t}`, `root-${t}`, `conv-${t}`, 'work-v8')
 }

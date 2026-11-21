@@ -9,6 +9,8 @@ import { assertRemovableBot } from '../store/bots'
 import { createSnapshotService } from '../attachments/snapshots'
 import { encryptionAvailable, pickFiles } from '../platform/electron'
 import { revisionText } from '../attachments/project-reads'
+import { workBriefs } from '../store/work-briefs'
+import { deliverWorkReplies } from '../agent/work-brief-tools'
 import { projectContentHandlers } from './project-content'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
@@ -25,6 +27,14 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
 
   return {
     ...projectContentHandlers(s, store),
+    'work:list': ({ conversationId }) => workBriefs(store.db).list(conversationId),
+    'work:decide': async (req) => {
+      const result = workBriefs(store.db).decide(req.conversationId, req)
+      if (req.decision === 'cancel') s.runtime.cancelBrief(req.id)
+      s.bus.emit('work:changed', { conversationId: req.conversationId })
+      await deliverWorkReplies(store, s.runtime)
+      return result
+    },
     'app:info': () => ({
       name: app.getName(),
       version: app.getVersion(),

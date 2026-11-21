@@ -5,6 +5,7 @@
 // runtime.shutdown() before mcp.shutdown(), bridge.shutdown() and store.close().
 
 import type { MissionRunService, ProviderService, RoutineService, Runtime, Services, WebhookHost } from './contracts'
+import { workBriefTools } from './agent/work-brief-tools'
 import { createRuntime } from './agent'
 import { createProviderService } from './providers/provider-service'
 import { createMissionRunService } from './routines/mission-run'
@@ -23,6 +24,7 @@ export function createRuntimeServices(deps: Omit<Services, 'providers' | 'runtim
   const providers = createProviderService({ store: deps.store, secrets: deps.secrets, bus: deps.bus })
   const runtime = createRuntime({ ...deps, store: deps.store as PlatformStore, providers })
   for (const tool of runtime.assignments.tools()) deps.tools.register(tool)
+  for (const tool of workBriefTools(deps.store as PlatformStore, deps.bus)) deps.tools.register(tool)
   const routines = createRoutineService({ store: deps.store, runtime, bus: deps.bus })
   for (const tool of routineTools(routines)) deps.tools.register(tool)
   const missions = createMissionRunService({ store: deps.store as PlatformStore, runtime, attachments: deps.attachments, dataDir: deps.dataDir, bus: deps.bus })

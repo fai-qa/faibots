@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import type { EventBus, Runtime } from '../contracts'
-import { workBriefs } from '../store/work-briefs'
+import { workBriefs, WorkRefusal } from '../store/work-briefs'
 import type { PlatformStore } from '../store'
-import { defineTool, textResult } from '../tools/define'
+import { defineTool, errorResult, textResult } from '../tools/define'
 
 /** Only the original fai chat can create or change its work; specialists can still give direct answers. */
 export function workBriefTools(store: PlatformStore, bus: EventBus) {
@@ -10,36 +10,54 @@ export function workBriefTools(store: PlatformStore, bus: EventBus) {
   const available = ({ bot, conversation }: { bot: { isPrimary: boolean }; conversation: { kind: string } }) =>
     bot.isPrimary && conversation.kind === 'dm'
   const changed = (conversationId: string) => bus.emit('work:changed', { conversationId })
-  return [
+  const tools = [
     defineTool({
       name: 'plan_work', description: 'Record a checkable brief for a substantial user request in this chat. Use once per original request; answer simple questions directly.',
       schema: z.object({ objective: z.string().trim().min(1).max(2000), deliverable: z.string().trim().min(1).max(2000), checks: z.string().trim().min(1).max(2000) }),
       source: 'faibots', defaultPermission: 'always', activityLabel: 'Recording the work brief', isAvailable: available,
       async execute(input, ctx) {
-        if (!ctx.userEntryId) throw new Error('Start a brief only from a user request in this chat.')
-        const brief = work.start(ctx.conversation.id, ctx.userEntryId, input.objective, input.deliverable, input.checks)
+        if (!ctx.userEntryId) throw new WorkRefusal('Start a brief only from a user request in this chat.')
+        const brief = work.start(ctx.conversation.id, ctx.userEntryId, ctx.turnId, input.objective, input.deliverable, input.checks)
         changed(ctx.conversation.id)
         return textResult(JSON.stringify(brief))
       }
     }),
     defineTool({
       name: 'review_work', description: 'Look up work in this chat, ask a consequential question or submit a result for the user to review. Never mark your own work accepted.',
-      schema: z.discriminatedUnion('action', [
-        z.object({ action: z.literal('list') }),
-        z.object({ action: z.literal('question'), id: z.string().min(1), revision: z.number().int().positive(), text: z.string().trim().min(1).max(4000) }),
-        z.object({ action: z.literal('result'), id: z.string().min(1), revision: z.number().int().positive(), text: z.string().trim().min(1).max(16000),
-          evidenceEntryIds: z.array(z.string().min(1)).max(32).optional() })
-      ]),
+      schema: z.object({
+        action: z.enum(['list', 'wait', 'resume', 'question', 'result']), id: z.string().min(1).optional(),
+        revision: z.number().int().positive().optional(), text: z.string().trim().min(1).max(16000).optional(),
+        evidenceEntryIds: z.array(z.string().min(1)).max(32).optional(), partial: z.boolean().optional()
+      }),
       source: 'faibots', defaultPermission: 'always', activityLabel: 'Reviewing work', isAvailable: available,
       async execute(input, ctx) {
         if (input.action === 'list') return textResult(JSON.stringify(work.list(ctx.conversation.id)))
+        if (!input.id) throw new WorkRefusal('Choose the brief by its ID.')
+        if (input.action === 'resume') return textResult(JSON.stringify(work.resume(ctx.conversation.id, input.id, ctx.turnId)))
+        if (input.action === 'wait') {
+          if (!input.revision) throw new WorkRefusal('Include the current revision.')
+          const brief = work.wait(ctx.conversation.id,input.id,input.revision,ctx.turnId)
+          changed(ctx.conversation.id)
+          return textResult(JSON.stringify(brief))
+        }
+        if (!input.text || !input.revision) throw new WorkRefusal('Include the current revision and the question or result.')
         const brief = work.submit(ctx.conversation.id, input.id, input.revision, input.action, input.text,
-          input.action === 'result' ? input.evidenceEntryIds ?? [] : [])
+          input.action === 'result' ? input.evidenceEntryIds ?? [] : [], ctx.turnId, input.action === 'result' && input.partial === true)
         changed(ctx.conversation.id)
         return textResult(JSON.stringify(brief))
       }
     })
   ]
+  return tools.map(tool => ({
+    ...tool,
+    async execute(input: unknown, ctx: Parameters<typeof tool.execute>[1]) {
+      try { return await tool.execute(input,ctx) }
+      catch (error) {
+        if (error instanceof WorkRefusal) return { ...errorResult(error.message), refusedBeforeRun: true }
+        throw error
+      }
+    }
+  }))
 }
 
 // If the app closes between recording an owner's answer and dispatching it, retry with the same chat nonce.

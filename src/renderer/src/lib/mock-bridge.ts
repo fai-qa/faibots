@@ -1349,6 +1349,8 @@ export function createMockBridge(): FaiBotsBridge {
     },
 
     // Journey (M1b preview) -------------------------------------------------
+    'work:list': () => [],
+    'work:decide': () => { throw new Error('Open the desktop app to review a work brief.') },
     'projects:list': () => journeyProjects,
     'projects:get': ({ id }) => {
       const p = journeyProjects.find((x) => x.id === id)

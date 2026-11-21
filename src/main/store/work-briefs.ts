@@ -1,60 +1,133 @@
 import { randomUUID } from 'node:crypto'
+import type { EntryRepo } from '../contracts'
 import type { WorkBrief, WorkReply, WorkState } from '@shared/work-brief'
 import { num, parseJson, str, transaction, type Db, type Row } from './db'
 
-export const workBriefSchema = `
-  create table chief_work (
-    id text primary key, conversation_id text not null, user_entry_id text not null unique,
-    objective text not null, deliverable text not null, checks text not null,
-    state text not null, revision integer not null, question text not null default '',
-    result text not null default '', evidence_ids text not null default '[]', updated_at integer not null
-  );
-  create index chief_work_chat on chief_work(conversation_id, updated_at);
-  create table chief_decisions (
-    work_id text not null references chief_work(id), revision integer not null, decision text not null,
-    note text not null, created_at integer not null, pending_reply integer not null,
-    primary key(work_id, revision)
-  );`
+export class WorkRefusal extends Error {}
 
 function read(row: Row): WorkBrief {
   return { id: str(row.id), conversationId: str(row.conversation_id), userEntryId: str(row.user_entry_id),
     objective: str(row.objective), deliverable: str(row.deliverable), checks: str(row.checks),
     state: str(row.state) as WorkState, revision: num(row.revision), question: str(row.question),
-    result: str(row.result), evidenceIds: parseJson<string[]>(row.evidence_ids, []), updatedAt: num(row.updated_at) }
+    result: str(row.result), partial: Boolean(row.partial), evidenceIds: parseJson<string[]>(row.evidence_ids, []), updatedAt: num(row.updated_at) }
 }
 
 export function workBriefs(db: Db) {
   function get(id: string, chat: string): WorkBrief {
     const row = db.prepare('select * from chief_work where id=? and conversation_id=?').get(id, chat)
-    if (!row) throw new Error('No such work in this chat.')
+    if (!row) throw new WorkRefusal('No such work in this chat.')
     return read(row)
+  }
+  function bindTurn(id: string, turnId: string) {
+    db.prepare('insert into chief_work_turns(turn_id,work_id) values(?,?) on conflict(turn_id) do nothing').run(turnId,id)
+    const row = db.prepare('select work_id from chief_work_turns where turn_id=?').get(turnId)
+    if (row?.work_id !== id) throw new WorkRefusal('This turn already belongs to another brief.')
+  }
+  function children(id: string) {
+    return db.prepare(`select d.id, d.state from chief_work_turns t join assignment_admissions a on a.root_turn_id=t.turn_id
+      join delegations d on d.id=a.assignment_id where t.work_id=? order by d.created_at,d.id`).all(id)
   }
   return {
     get,
+    rootForTurn(turnId: string) {
+      const bound = db.prepare(`select w.id,w.state,t.turn_id from chief_work_turns b join chief_work w on w.id=b.work_id
+        join chief_work_turns t on t.work_id=w.id where b.turn_id=? order by t.rowid limit 1`).get(turnId)
+      return bound && { id: str(bound.id), state: str(bound.state), rootTurnId: str(bound.turn_id) }
+    },
+    assignments(id: string) { return children(id).map(row => ({ id: str(row.id), state: str(row.state) })) },
+    wait(chat: string, id: string, revision: number, turnId: string) {
+      return transaction(db, () => {
+        const current = get(id,chat)
+        if (current.state !== 'active' || current.revision !== revision) throw new WorkRefusal('Review the current brief before waiting.')
+        bindTurn(id,turnId)
+        if (!children(id).length) throw new WorkRefusal('This brief has no admitted specialist assignments.')
+        db.prepare("insert into chief_wakes(work_id,revision,state) values(?,?,'pending')").run(id, revision)
+        db.prepare("update chief_work set state='waiting',revision=revision+1,updated_at=? where id=?").run(Date.now(),id)
+        return get(id,chat)
+      })
+    },
+    ready(entries: EntryRepo) {
+      return transaction(db, () => {
+        const waits = db.prepare(`select k.work_id,k.revision,w.conversation_id from chief_wakes k join chief_work w on w.id=k.work_id
+          where k.state='pending' and w.state='waiting' and w.revision=k.revision+1`).all()
+        for (const row of waits) {
+          const id = str(row.work_id)
+          const jobs = children(id)
+          if (jobs.some(job => job.state === 'assigned')) continue
+          const entry = entries.append({ conversationId: str(row.conversation_id), kind: 'message', author: {kind:'system'},
+            text: `Specialist returns for brief ${id}: ${jobs.map(job => job.id+' '+job.state).join(', ')}. Read their receipts and review the result.`,
+            clientNonce: `work-wake-${id}-${row.revision}`, mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false })
+          db.prepare("update chief_wakes set state='ready',entry_id=? where work_id=? and revision=?").run(entry.id,id,row.revision!)
+          db.prepare("update chief_work set state='active',revision=revision+1,updated_at=? where id=?").run(Date.now(),id)
+        }
+        return db.prepare(`select k.work_id,k.revision,k.entry_id,w.conversation_id from chief_wakes k join chief_work w on w.id=k.work_id
+          where k.state='ready' and w.state='active' and w.revision=k.revision+2`).all()
+          .map(row => ({ id:str(row.work_id), revision:num(row.revision), entryId:str(row.entry_id), chat:str(row.conversation_id) }))
+      })
+    },
+    claimWake(id: string, revision: number, turnId: string) {
+      return transaction(db,() => {
+        const changed = db.prepare(`update chief_wakes set state='started' where work_id=? and revision=? and state='ready'
+          and exists(select 1 from chief_work where id=? and state='active' and revision=?+2)`).run(id,revision,id,revision)
+        if (changed.changes) bindTurn(id,turnId)
+        return Boolean(changed.changes)
+      })
+    },
+    finishWake(id: string, revision: number, ok: boolean) {
+      db.prepare("update chief_wakes set state=? where work_id=? and revision=? and state='started'").run(ok?'finished':'interrupted',id,revision)
+    },
+    interrupted() {
+      return transaction(db,() => {
+        const rows = db.prepare(`select k.work_id,w.conversation_id from chief_wakes k join chief_work w on w.id=k.work_id where k.state='started'`).all()
+        db.prepare("update chief_wakes set state='interrupted' where state='started'").run()
+        return rows.map(r=>({ id:str(r.work_id), chat:str(r.conversation_id) }))
+      })
+    },
+    resume(chat: string, id: string, turnId: string) {
+      const current = get(id, chat)
+      if (current.state !== 'active') throw new WorkRefusal('This brief is waiting for the owner or is closed.')
+      bindTurn(id, turnId)
+      return current
+    },
     list(chat: string) {
       return db.prepare('select * from chief_work where conversation_id=? order by updated_at desc, rowid desc').all(chat).map(read)
     },
-    start(chat: string, entry: string, objective: string, deliverable: string, checks: string) {
+    start(chat: string, entry: string, turnId: string, objective: string, deliverable: string, checks: string) {
       const now = Date.now()
       return transaction(db, () => {
-        const source = db.prepare("select id from entries where id=? and conversation_id=? and kind='message' and json_extract(author,'$.kind')='user'").get(entry, chat)
-        if (!source) throw new Error('A work brief needs the original user request from this chat.')
+        const source = db.prepare("select id,client_nonce from entries where id=? and conversation_id=? and kind='message' and json_extract(author,'$.kind')='user'").get(entry, chat)
+        if (!source) throw new WorkRefusal('A work brief needs the original user request from this chat.')
+        const resumed = db.prepare(`select w.* from chief_decisions d join chief_work w on w.id=d.work_id
+          where w.conversation_id=? and 'work-'||w.id||'-'||d.revision=?`).get(chat, source.client_nonce ?? null)
+        if (resumed) {
+          if (resumed.state !== 'active') throw new WorkRefusal('This brief has already changed.')
+          bindTurn(str(resumed.id),turnId)
+          return read(resumed)
+        }
         db.prepare(`insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at)
           values(?,?,?,?,?,?,'active',1,?) on conflict(user_entry_id) do nothing`).run(randomUUID(), chat, entry, objective, deliverable, checks, now)
-        return read(db.prepare('select * from chief_work where user_entry_id=?').get(entry)!)
+        const brief = read(db.prepare('select * from chief_work where user_entry_id=?').get(entry)!)
+        bindTurn(brief.id,turnId)
+        return brief
       })
     },
-    submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[]) {
+    submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[], turnId: string, partial: boolean) {
       return transaction(db, () => {
         const current = get(id, chat)
-        if (current.state !== 'active' || current.revision !== revision) throw new Error('This brief changed. Read its current state before updating it.')
-        for (const evidence of evidenceIds) {
-          if (!db.prepare('select id from entries where id=? and conversation_id=?').get(evidence, chat)) throw new Error('The evidence is unavailable in this chat.')
+        if (current.state !== 'active' || current.revision !== revision) throw new WorkRefusal('This brief changed. Read its current state before updating it.')
+        bindTurn(id,turnId)
+        if (kind === 'result') {
+          const assigned = children(id)
+          if (assigned.some((child) => child.state === 'assigned')) throw new WorkRefusal('A required assignment is still running.')
+          if (!partial && assigned.some((child) => child.state !== 'answered')) throw new WorkRefusal('An assignment failed or is uncertain. Submit the useful partial result with its limit.')
         }
-        const result = db.prepare(`update chief_work set state=?, question=?, result=?, evidence_ids=?, revision=revision+1, updated_at=?
+        for (const evidence of evidenceIds) {
+          if (!db.prepare('select id from entries where id=? and conversation_id=?').get(evidence, chat)) throw new WorkRefusal('The evidence is unavailable in this chat.')
+        }
+        const result = db.prepare(`update chief_work set state=?, question=?, result=?, partial=?, evidence_ids=?, revision=revision+1, updated_at=?
           where id=? and revision=? and state='active'`).run(kind === 'question' ? 'needs_input' : 'review',
-          kind === 'question' ? text : '', kind === 'result' ? text : current.result, JSON.stringify(evidenceIds), Date.now(), id, revision)
-        if (!result.changes) throw new Error('The brief was updated in another session.')
+          kind === 'question' ? text : '', kind === 'result' ? text : current.result, partial ? 1 : 0, JSON.stringify(evidenceIds), Date.now(), id, revision)
+        if (!result.changes) throw new WorkRefusal('The brief was updated in another session.')
         return get(id, chat)
       })
     },
@@ -62,15 +135,15 @@ export function workBriefs(db: Db) {
       return transaction(db, () => {
         const current = get(reply.id, chat)
         const note = reply.note.trim()
-        if (note.length > 8000) throw new Error('Keep the decision under 8000 characters.')
+        if (note.length > 8000) throw new WorkRefusal('Keep the decision under 8000 characters.')
         const old = db.prepare('select decision,note from chief_decisions where work_id=? and revision=?').get(reply.id, reply.revision)
         if (old && old.decision === reply.decision && old.note === note) return current
-        if (current.revision !== reply.revision) throw new Error('This work has changed. Review its latest version.')
+        if (current.revision !== reply.revision) throw new WorkRefusal('This work has changed. Review its latest version.')
         const resume = reply.decision === 'answer' || reply.decision === 'request_changes'
-        const allowed = reply.decision === 'cancel' ? ['active','needs_input','review'] :
+        const allowed = reply.decision === 'cancel' ? ['active','waiting','needs_input','review'] :
           reply.decision === 'answer' ? ['needs_input'] : ['review']
-        if (!['answer','accept','request_changes','cancel'].includes(reply.decision) || !allowed.includes(current.state)) throw new Error('This decision does not apply to the current work.')
-        if (resume && !note) throw new Error('Enter your answer or requested change.')
+        if (!['answer','accept','request_changes','cancel'].includes(reply.decision) || !allowed.includes(current.state)) throw new WorkRefusal('This decision does not apply to the current work.')
+        if (resume && !note) throw new WorkRefusal('Enter your answer or requested change.')
         const next = resume ? 'active' : reply.decision === 'cancel' ? 'cancelled' : 'accepted'
         const now = Date.now()
         db.prepare('insert into chief_decisions(work_id,revision,decision,note,created_at,pending_reply) values(?,?,?,?,?,?)')

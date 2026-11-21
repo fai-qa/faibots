@@ -479,6 +479,7 @@ export interface Runtime {
    * sources as manifest-lite so the prompt can cite them.
    */
   runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
+  cancelBrief(workId: Id): void
   stop(conversationId: Id): void
   reset(conversationId: Id): void
   liveStates(): BotLiveState[]

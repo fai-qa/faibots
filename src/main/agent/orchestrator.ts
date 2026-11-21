@@ -45,6 +45,7 @@ import { errorResult } from '../tools/define'
 import { MAX_RESULT_CHARS, truncateText } from '../tools/registry'
 import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
+import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
 import { IncompleteTurnError, type TurnEngine } from './engine'
 import { speakerName } from './history'
@@ -95,6 +96,7 @@ interface TurnRequest {
   parentSignal?: AbortSignal
   cascade?: Cascade
   root?: AssignmentRoot
+  wake?: { id: string; revision: number; entryId: string }
   assignment?: { lease: DelegationLease; questionSeq: number; origin: NonNullable<Conversation['origin']> }
 }
 
@@ -105,6 +107,7 @@ interface ActiveTurn {
   recorder: TurnRecorder
   mustAnswer: boolean
   passed: boolean
+  abort: AbortController
   waiting: number
   beforeWaiting?: { phase: BotPhase; activity?: string }
   asks: number
@@ -172,6 +175,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly active = new Map<Id, ActiveTurn>()
   private readonly background = new Set<Promise<unknown>>()
   private readonly delegations: ReturnType<typeof createDelegationRepo>
+  private readonly briefs: ReturnType<typeof workBriefs>
+  private readonly scheduledWakes = new Set<string>()
   readonly assignments: BackgroundAssignments
   private readonly unsubscribe: () => void
   private readonly exchangeTimeoutMs: number
@@ -185,10 +190,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.live = new LiveStates(deps.bus)
     this.exchangeTimeoutMs = options.exchangeTimeoutMs ?? EXCHANGE_TIMEOUT_MS
     this.now = options.now ?? (() => new Date())
+    this.briefs = workBriefs(deps.store.db)
     this.delegations = createDelegationRepo(deps.store.db, deps.store.entries)
     this.assignments = new BackgroundAssignments(this.delegations, deps.tools, deps.store, (entry) => this.emitEntry(entry))
     this.delegations.recover()
     this.recoverInterruptedTurns()
+    for (const item of this.briefs.interrupted()) this.systemEvent(item.chat, `The app closed while fai was reviewing brief ${item.id}. Its returns are saved. Ask fai to continue reviewing them.`)
+    queueMicrotask(() => this.wakeBriefs())
     this.unsubscribe = deps.approvals.subscribe((event) => {
       const turn = this.active.get(event.ctx.turnId)
       if (event.state === 'pending') this.emitConversationAndRoot(event.ctx.conversation.id)
@@ -244,6 +252,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
       this.track(this.runCascade(conversation.id, entry))
     }
     return entry
+  }
+
+  cancelBrief(workId: Id): void {
+    for (const task of this.briefs.assignments(workId)) this.assignments.abort(task.id)
+    for (const turn of this.active.values()) {
+      const work = this.briefs.rootForTurn(turn.root.turnId) ?? this.briefs.rootForTurn(turn.turnId)
+      if (work?.id === workId) turn.abort.abort()
+    }
   }
 
   stop(conversationId: Id): void {
@@ -405,7 +421,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const card = candidate?.toolCall?.callId === ctx.callId ? candidate : undefined
     const id = ctx.actionId ?? nativeActionId(ctx)
     const detached = this.assignments.isDetached(id)
-    const root = asking?.root ?? { turnId: ctx.turnId, conversationId: ctx.conversation.id }
+    const inherited = asking?.root ?? { turnId: ctx.turnId, conversationId: ctx.conversation.id }
+    const work = this.briefs.rootForTurn(inherited.turnId) ?? this.briefs.rootForTurn(ctx.turnId)
+    if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
+    const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
     const inputHash = createHash('sha256').update(message.trim()).digest('hex')
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
       if (!this.delegations.reserve(id, root, MAX_ASKS_PER_CHAIN)) {
@@ -482,6 +501,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (ctx.signal.aborted && work?.state === 'reconciliation_required') throw new CollabError(work.receipt?.text ?? text, partial, exchange.id)
       const resultEntry = this.delegations.finish(lease, failure, { text, ...(partial && { partial }) })
       if (resultEntry) this.emitEntry(resultEntry)
+      this.wakeBriefs()
       if (!card) this.emitEntry(store.entries.get(parent.id)!)
       throw error
     } finally {
@@ -489,6 +509,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     }
     const resultEntry = this.delegations.finish(lease, 'answered', { text: reply, responder: this.deps.secrets.redact(`${target.name} (@${target.handle})`) })
     if (resultEntry) this.emitEntry(resultEntry)
+    this.wakeBriefs()
     if (!card) this.emitEntry(store.entries.get(parent.id)!)
     return { reply, exchange }
   }
@@ -613,6 +634,24 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // Turns
   // -------------------------------------------------------------------------------------------
 
+  private wakeBriefs(): void {
+    if (this.closed) return
+    for (const wake of this.briefs.ready(this.deps.store.entries)) {
+      if (this.scheduledWakes.has(wake.entryId)) continue
+      const chat = this.deps.store.conversations.get(wake.chat)
+      const bot = chat?.kind === 'dm' && this.deps.store.bots.get(chat.botIds[0]!)
+      if (!bot || !bot.isPrimary) continue
+      const entry = this.deps.store.entries.get(wake.entryId)
+      if (!entry) continue
+      this.scheduledWakes.add(wake.entryId)
+      this.emitEntry(entry)
+      this.deps.bus.emit('work:changed', { conversationId: wake.chat })
+      this.track(this.scheduleTurn(wake.chat,bot.id,{trigger:'agent',mustAnswer:true,inGroup:false,chain:[],wake}).then(outcome => {
+        this.briefs.finishWake(wake.id,wake.revision,outcome.status === 'sent' || outcome.status === 'pass')
+      }).finally(() => this.scheduledWakes.delete(wake.entryId)))
+    }
+  }
+
   private scheduleTurn(conversationId: Id, botId: Id, req: TurnRequest): Promise<TurnOutcome> {
     // Captured now, so a Stop also cancels turns still waiting in the queue.
     const stopSignal = this.runFor(conversationId).stop.signal
@@ -630,8 +669,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
 
     const context = store.botContext.get(conversationId, botId)
     // An assignment can only consume its own question. A second one may already be queued in this exchange.
-    const upToSeq = req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
-    const unseen = store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
+    const wakeEntry = req.wake ? store.entries.get(req.wake.entryId) : undefined
+    const upToSeq = wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+    const unseen = wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
 
@@ -647,6 +687,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const signal = AbortSignal.any([stopSignal, abort.signal, ...(req.parentSignal ? [req.parentSignal] : [])])
     const members = this.membersOf(conversation)
     const turnId = randomUUID()
+    if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
     const recorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
@@ -659,7 +700,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       }
     )
     const active: ActiveTurn = {
-      turnId, bot, conversationId, recorder, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
+      turnId, bot, conversationId, recorder, abort, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
       asks: 0, root: req.root ?? { turnId, conversationId }, unresolvedActions: new Set()
     }
 
@@ -678,7 +719,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (req.trigger === 'routine') this.systemEvent(conversationId, limited)
       return { status: 'limited', posts: [], error: limited }
     }
-    store.botContext.set({ ...context, lastSeenSeq: upToSeq })
+    store.botContext.set({ ...context, lastSeenSeq: Math.max(context.lastSeenSeq,upToSeq) })
 
     this.active.set(turnId, active)
     recorder.phase('reading')
@@ -690,7 +731,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup })
       const mcpTools = new Map<string, { serverId: Id; remoteName: string }>()
       for (const t of turnTools) if (t.serverId && t.remoteName) mcpTools.set(t.name, { serverId: t.serverId, remoteName: t.remoteName })
-      const userEntry = unseen.findLast((entry) => entry.author.kind === 'user')
+      const userEntry = [...unseen].reverse().find((entry) => entry.author.kind === 'user')
       const toolContext: Omit<ToolContext, 'callId'> = {
         ...(userEntry && { userEntryId: userEntry.id }),
         bot,
@@ -761,6 +802,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       this.live.idle(bot.id, conversationId)
     }
 
+    this.wakeBriefs()
     const posts = recorder.posts
     const outcome: TurnOutcome = error
       ? { status: 'error', posts, error }

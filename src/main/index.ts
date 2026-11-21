@@ -8,6 +8,7 @@ import { createSafeStorageCipher, encryptionAvailable, notify } from './platform
 import { createNotifier } from './platform/notifier'
 import { createTrayController, HIDDEN_ARG, setOpenAtLogin, type TrayController } from './platform/tray'
 import { createPlatformServices } from './platform-services'
+import { deliverWorkReplies } from './agent/work-brief-tools'
 import { createRuntimeServices } from './runtime-services'
 
 let mainWindow: BrowserWindow | null = null
@@ -181,6 +182,7 @@ function startServices(): Services {
   })
   applyBackgroundSettings(all, all.store.settings.get())
   all.routines.start()
+  void deliverWorkReplies(platform.store, all.runtime).catch((err) => console.warn('[work] Could not deliver pending owner reply', err instanceof Error ? err.message : 'unknown'))
   return all
 }
 

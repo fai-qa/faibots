@@ -36,6 +36,7 @@ export class BackgroundAssignments {
   private active = new Map<string, Active>()
   constructor(private repo: Repo, private registry: ToolRegistry, private store: Store, private emit: (entry: Entry) => void) {}
 
+  abort(id: string): void { this.active.get(id)?.stop.abort() }
   isDetached(id: string): boolean { return this.active.has(id) }
   stopChat(id: string): void {
     for (const active of this.active.values()) if (active.parentId === id) active.stop.abort()

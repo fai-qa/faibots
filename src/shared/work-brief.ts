@@ -1,4 +1,4 @@
-export type WorkState = 'active' | 'needs_input' | 'review' | 'accepted' | 'cancelled'
+export type WorkState = 'active' | 'waiting' | 'needs_input' | 'review' | 'accepted' | 'cancelled'
 export type WorkDecision = 'answer' | 'accept' | 'request_changes' | 'cancel'
 
 export interface WorkBrief {
@@ -11,6 +11,7 @@ export interface WorkBrief {
   state: WorkState
   revision: number
   question: string
+  partial: boolean
   result: string
   evidenceIds: string[]
   updatedAt: number

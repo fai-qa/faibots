@@ -29,7 +29,13 @@ import { promptText } from './prompt'
 const BRIDGE_TOKEN_ENV = 'FAIBOTS_BRIDGE_TOKEN'
 /** send_to_agent can wait 10 minutes and approvals longer; Codex's default MCP timeout is 60 s. */
 const TOOL_TIMEOUT_SEC = 30 * 60
-const DESKTOP_BRIDGE_TOOLS = '{ read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" } }'
+// These app tools keep their native permission checks, even when invoked by the subscription CLI.
+const desktopTools = [
+  'read_file', 'write_file', 'send_to_agent', 'list_bots', 'create_bot', 'pass_turn',
+  'assign_to_agent', 'assignment_status', 'wait_for_assignment', 'cancel_assignment', 'group_work_snapshot',
+  'plan_work', 'review_work'
+]
+const DESKTOP_BRIDGE_TOOLS = `{ ${desktopTools.map((tool) => `${tool} = { approval_mode = "approve" }`).join(', ')} }`
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp)$/i
 
 /** The slice of the Codex SDK the engine uses (tests pass a fake). */

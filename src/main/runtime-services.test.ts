@@ -36,6 +36,7 @@ describe('createRuntimeServices', () => {
       'update_memory', 'recall_memory', 'skill', 'update_skill',
       'send_to_agent', 'list_bots', 'create_bot', 'pass_turn',
       'assign_to_agent', 'assignment_status', 'wait_for_assignment', 'cancel_assignment', 'group_work_snapshot',
+      'plan_work', 'review_work',
       'create_routine', 'list_routines', 'delete_routine'
     ])
     expect(tools.find((t) => t.name === 'create_bot')).toMatchObject({ source: 'faibots', defaultPermission: 'ask' })
