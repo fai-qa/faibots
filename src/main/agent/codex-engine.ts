@@ -29,7 +29,7 @@ import { promptText } from './prompt'
 const BRIDGE_TOKEN_ENV = 'FAIBOTS_BRIDGE_TOKEN'
 /** send_to_agent can wait 10 minutes and approvals longer; Codex's default MCP timeout is 60 s. */
 const TOOL_TIMEOUT_SEC = 30 * 60
-const MISSION_BRIDGE_TOOLS = '{ read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" } }'
+const DESKTOP_BRIDGE_TOOLS = '{ read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" } }'
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp)$/i
 
 /** The slice of the Codex SDK the engine uses (tests pass a fake). */
@@ -91,11 +91,11 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
       ...(found && { codexPathOverride: found.path }),
       env: withPathDirs(codexEnv({ [BRIDGE_TOKEN_ENV]: token }), found?.pathDirs ?? []),
       configOverrides: [
-        `mcp_servers={ ${BRIDGE_SERVER} = { url = ${JSON.stringify(bridge.url)}, bearer_token_env_var = "${BRIDGE_TOKEN_ENV}", tool_timeout_sec = ${TOOL_TIMEOUT_SEC}, tools = ${MISSION_BRIDGE_TOOLS} } }`,
+        `mcp_servers={ ${BRIDGE_SERVER} = { url = ${JSON.stringify(bridge.url)}, bearer_token_env_var = "${BRIDGE_TOKEN_ENV}", tool_timeout_sec = ${TOOL_TIMEOUT_SEC}, tools = ${DESKTOP_BRIDGE_TOOLS} } }`,
         ...disabledServers.map((name) => `mcp_servers.${name}.enabled=false`),
         // Runtime-injected servers have no transport in the underlying user configuration.
         ...disabledRuntimeServers.map((name) => `mcp_servers.${name}={ enabled = false, url = "http://127.0.0.1:1/mcp" }`),
-        // These three tools still pass through FaiBots' registry and its workspace/approval rules.
+        // These app tools still pass through the faibots registry and its workspace/approval rules.
         // The CLI has no callback for its own MCP approval prompts.
         'features.apps=false',
         'features.plugins=false',
@@ -260,7 +260,12 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         turn.saveContext({ engineSessionId: undefined, engineBinding: undefined, systemHash: undefined })
         result = await attempt(turn, undefined)
       }
-      if (result.error && !turn.signal.aborted) throw result.error
+      if (result.error && !turn.signal.aborted) {
+        if (/model_not_found|model.+not supported when using Codex/i.test(result.error.message)) {
+          throw new ProviderError(`${result.error.message} Open the bot profile and choose a model listed for your Codex account.`)
+        }
+        throw result.error
+      }
     }
   }
 }

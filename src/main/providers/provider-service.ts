@@ -9,7 +9,7 @@ import type { EventBus, ProviderService, SecretVault, Store } from '../contracts
 import { createAiSdkAdapter, languageModelFactory, type AiSdkKind, type LanguageModelFactory } from './ai-sdk'
 import { createAnthropicAdapter, createAnthropicClient, describeAnthropicError, type AnthropicClientLike } from './anthropic'
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_MODEL_ALIAS, baseUrlOf, billingRoute, kindInfo, resolveModelId, type EngineKind } from './catalog'
-import { probeClaudeCode, probeCodex, type ClaudeCodeStatus, type CodexStatus } from './external'
+import { listCodexModels, probeClaudeCode, probeCodex, type ClaudeCodeStatus, type CodexStatus } from './external'
 import {
   CODEX_MODELS,
   LIST_TIMEOUT_MS,
@@ -51,6 +51,7 @@ export interface ProviderServiceDeps {
   fetch?: typeof fetch
   anthropicClient?: (opts: { apiKey: string; baseUrl?: string }) => AnthropicClientLike & AnthropicModelsClient
   languageModel?: (opts: { kind: AiSdkKind; apiKey?: string; baseUrl: string }) => LanguageModelFactory
+  codexModels?: () => Promise<ModelInfo[]>
   probes?: {
     claudeCode(): Promise<ClaudeCodeStatus>
     codex(hasStoredKey: boolean): Promise<CodexStatus>
@@ -123,7 +124,7 @@ export function createProviderService(deps: ProviderServiceDeps): RuntimeProvide
         return claudeCodeModelList(status.models)
       }
       case 'codex':
-        return CODEX_MODELS
+        return provider.hasApiKey || provider.baseUrl ? CODEX_MODELS : [...CODEX_MODELS, ...await (deps.codexModels ?? listCodexModels)()]
     }
   }
 

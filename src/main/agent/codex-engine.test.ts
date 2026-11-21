@@ -110,7 +110,7 @@ describe('Codex engine', () => {
     // Our prompt goes before the first message of the thread.
     expect(typeof run.input === 'string' && run.input).toMatch(/You ship small, tested changes\.[\s\S]*---\n\n\[Alex\] what is in my folder\?$/)
     expect(run.options.configOverrides).toEqual([
-      'mcp_servers={ faibots = { url = "http://127.0.0.1:1/mcp", bearer_token_env_var = "FAIBOTS_BRIDGE_TOKEN", tool_timeout_sec = 1800, tools = { read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" } } } }',
+      'mcp_servers={ faibots = { url = "http://127.0.0.1:1/mcp", bearer_token_env_var = "FAIBOTS_BRIDGE_TOKEN", tool_timeout_sec = 1800, tools = { read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" } } } }',
       'features.apps=false',
       'features.plugins=false',
       'features.skill_mcp_dependency_install=false',

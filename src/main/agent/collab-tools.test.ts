@@ -311,6 +311,40 @@ describe('list_bots, create_bot, pass_turn', () => {
     expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths | Model configured: test-model via Local test model')
   })
 
+  it('rechecks skills and permissions after listing and before creating an exchange', async () => {
+    const lead = h.bot('fai')
+    const editor = h.bot('Editor', { label: 'Copy editor' })
+    const dm = h.runtime.openDm(lead.id)
+    const checks = { requiredTools: ['read_file'], requiredSkills: ['brand-voice'] }
+    let listed: ToolResult | undefined, sent: ToolResult | undefined
+    h.engine.script(lead.handle, async (api) => {
+      listed = await api.tool('list_bots', checks)
+      h.services.tools.setPermission('read_file', 'never', editor.id)
+      sent = await api.tool('send_to_agent', { to: editor.handle, message: 'Edit the attached copy.', ...checks })
+    })
+    await h.send(dm.id, 'Find a qualified editor')
+    expect(text(listed!)).toContain('skill brand-voice unavailable')
+    expect(sent).toMatchObject({ isError: true, refusedBeforeRun: true })
+    expect(text(sent!)).toContain('tool read_file unavailable')
+    expect(h.services.store.conversations.findExchange(lead.id, editor.id)).toBeUndefined()
+  })
+
+  it('reports a model disabled after discovery without starting the specialist', async () => {
+    const lead = h.bot('fai')
+    const editor = h.bot('Editor')
+    const dm = h.runtime.openDm(lead.id)
+    let refusal: ToolResult | undefined
+    h.engine.script(lead.handle, async (api) => {
+      await api.tool('list_bots', {})
+      h.services.store.bots.update(editor.id, { model: { providerId: '', modelId: '' } })
+      refusal = await api.tool('send_to_agent', { to: editor.handle, message: 'Edit this copy.' })
+    })
+    await h.send(dm.id, 'Choose an editor')
+    expect(text(refusal!)).toContain('model needs setup')
+    expect(refusal?.refusedBeforeRun).toBe(true)
+    expect(h.services.store.conversations.findExchange(lead.id, editor.id)).toBeUndefined()
+  })
+
   it('create_bot asks first and creates nothing when denied', async () => {
     const a = h.bot('Alpha')
     const dm = h.runtime.openDm(a.id)
