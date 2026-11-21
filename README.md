@@ -45,6 +45,7 @@ On Windows, `npm run prestart` followed by `node tests/windows-desktop-smoke.cjs
 Maintainers can assemble a portable ZIP from the same checkout with Python 3.12 or later. After building the app, run these commands from the repository root on Windows. Choose a new ZIP filename for each build.
 
 ```powershell
+npm run prestart
 npx --no-install electron-builder --win --x64 --dir --publish never
 python -B scripts/package-windows-preview.py dist/win-unpacked dist/faibots-windows-x64.zip
 ```
