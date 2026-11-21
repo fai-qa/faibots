@@ -31,11 +31,14 @@ const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
 const IMPROVEMENTS_VERSION = MIGRATIONS.indexOf(PROJECT_IMPROVEMENTS_SCHEMA) + 1
 const ESCALATION_VERSION = MIGRATIONS.indexOf(ESCALATION_SCHEMA) + 1
+const RESULT_REQUEST_VERSION = 19
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name: 'project_result_requests', since: RESULT_REQUEST_VERSION,
+    cols: ['id','session_id','answer_id','owner_id','conversation_id','entry_id','instruction','state','turn_id'], order: 'id' },
   { name: 'turn_context_receipts', since: CONTEXT_VERSION, cols: ['turn_id','conversation_id','session_id','project_id','payload'], order: 'turn_id' },
   { name: 'delegation_attempts', since: ATTEMPT_VERSION, cols: ['assignment_id','original_lease','late_text','observed_at'], order: 'assignment_id' },
   { name: 'artifact_saves', since: SAVE_VERSION, cols: ['run_id','project_id','artifact_id','pinned_root','provenance','state','sha256','revision_id'], order: 'run_id' },
@@ -147,6 +150,10 @@ function seed(db: DatabaseSync, v: number): void {
     run("insert into project_sessions values (?,?,?,?,?,'Example','fresh',null,'local','[]',1)", `sess-${t}`, `proj-${t}`, `host-${t}`, `env-${t}`, `bot-${t}`)
     run("insert into project_answers values (?,?,'question','{}',2)", `answer-${t}`, `sess-${t}`)
     run('insert into project_history_selection values (?,?)', `sess-${t}`, `answer-${t}`)
+  }
+  if (v >= RESULT_REQUEST_VERSION) {
+    run("insert into project_result_requests(id,session_id,answer_id,owner_id,conversation_id,entry_id,instruction,state) values (?,?,?,?,?,?,?,'queued')",
+      `result-${t}`, `sess-${t}`, `answer-${t}`, `bot-${t}`, `conv-${t}`, `entry-${t}`, 'Summarize the selected evidence')
   }
   if (v >= CONTENT_VERSION) {
     // The project insert already created its Space. Seed every other content row explicitly.
