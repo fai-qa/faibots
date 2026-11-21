@@ -50,7 +50,7 @@ import { BackgroundAssignments } from './delegation-tools'
 import { IncompleteTurnError, type TurnEngine } from './engine'
 import { speakerName } from './history'
 import { LiveStates } from './live-state'
-import { parseMentions } from './mentions'
+import { resolveMentionHints } from './mentions'
 import { buildSystemPrompt, turnNote } from './prompt'
 import { SerialQueues } from './queue'
 import { routeMessage } from './router'
@@ -229,15 +229,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const attachments = req.attachmentPaths.length > 0 ? this.deps.attachments.ingest(req.attachmentPaths) : []
     if (!text && attachments.length === 0) throw new Error('Type a message or attach a file.')
 
-    const parsed = parseMentions(text, this.membersOf(conversation))
-    const mentions = unique([...req.mentions.filter((id) => conversation.botIds.includes(id)), ...parsed.ids])
+    const mentions = resolveMentionHints(text, this.membersOf(conversation), req.mentions, req.mentionsEveryone)
     const entry = store.entries.append({
       conversationId: conversation.id,
       kind: 'message',
       author: { kind: 'user' },
       text,
-      mentions,
-      mentionsEveryone: req.mentionsEveryone || parsed.everyone,
+      mentions: mentions.ids,
+      mentionsEveryone: mentions.everyone,
       ...(req.replyToId && { replyToId: req.replyToId }),
       attachments,
       isStreaming: false,

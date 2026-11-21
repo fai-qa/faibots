@@ -67,21 +67,7 @@ function mentionKeys(bot: Bot): string[] {
   return [bot.handle.toLowerCase(), name, name.replace(/\s+/g, ''), name.split(/\s+/)[0] ?? name]
 }
 
-/** Resolve @mentions in text against candidates. Ambiguous names match nobody. */
-export function resolveMentions(text: string, candidates: Bot[]): { ids: Id[]; everyone: boolean } {
-  const ids = new Set<Id>()
-  let everyone = false
-  for (const match of text.matchAll(/(^|[^\w@])@([\w][\w.-]*)/g)) {
-    const word = (match[2] ?? '').toLowerCase().replace(/[.-]+$/, '')
-    if (word === 'everyone' || word === 'all') {
-      everyone = true
-      continue
-    }
-    const hits = candidates.filter((b) => mentionKeys(b).includes(word))
-    if (hits.length === 1 && hits[0]) ids.add(hits[0].id)
-  }
-  return { ids: [...ids], everyone }
-}
+export { parseMentions as resolveMentions } from '@shared/mentions'
 
 /** Find a bot by "@handle" or name, as used in send_to_agent's `to`. */
 export function findBotByRef(ref: unknown, bots: Bot[]): Bot | undefined {
