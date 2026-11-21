@@ -33,7 +33,7 @@ export interface PlatformStore extends Store {
   onBotDeleted(listener: (deletion: BotDeletion) => void): () => void
 }
 
-export function createStore(opts: { dataDir: string; homeDir: string; userName?: string }): PlatformStore {
+export function createStore(opts: { dataDir: string; homeDir: string; userName?: string; defaultWorkspaceRoot?: string }): PlatformStore {
   mkdirSync(opts.dataDir, { recursive: true })
   const store = openStore(join(opts.dataDir, 'faibots.db'), opts)
   try {
@@ -62,10 +62,10 @@ export function createStore(opts: { dataDir: string; homeDir: string; userName?:
 }
 
 /** Open a store at an explicit path (':memory:' in tests). */
-export function openStore(path: string, opts: { homeDir: string; userName?: string }): PlatformStore {
+export function openStore(path: string, opts: { homeDir: string; userName?: string; defaultWorkspaceRoot?: string }): PlatformStore {
   const db = openDatabase(path)
   const listeners = new Set<(deletion: BotDeletion) => void>()
-  const settings = createSettingsRepo(db, defaultSettings(opts.homeDir, opts.userName))
+  const settings = createSettingsRepo(db, defaultSettings(opts.homeDir, opts.userName, opts.defaultWorkspaceRoot))
 
   const projectSources = createProjectSourceRepo(db)
   const bots = createBotRepo(db, settings, (deletion) => {

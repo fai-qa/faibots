@@ -102,12 +102,18 @@ function keepRunning(): boolean {
   }
 }
 
+// Portable and command-line profiles have their own workspace and Windows sign-in entry.
+function explicitProfile(): string | undefined {
+  const custom = process.argv.some((arg) => arg === '--user-data-dir' || arg.startsWith('--user-data-dir='))
+  return custom ? app.getPath('userData') : undefined
+}
+
 /** Tray, sign-in item, routine timer and webhook server follow the settings. */
 function applyBackgroundSettings(s: Services, settings: AppSettings): void {
   tray?.setVisible(settings.background.keepRunning)
   tray?.refresh()
   try {
-    setOpenAtLogin(settings.background.keepRunning && settings.background.openAtLogin)
+    setOpenAtLogin(settings.background.keepRunning && settings.background.openAtLogin, explicitProfile())
   } catch (err) {
     console.error('[main] could not change the sign-in item:', err instanceof Error ? err.message : err)
   }
@@ -147,6 +153,7 @@ function startServices(): Services {
     bus,
     cipher: createSafeStorageCipher(),
     homeDir: homedir(),
+    defaultWorkspaceRoot: explicitProfile() ? join(dataDir, 'workspaces') : undefined,
     canStoreSecrets: encryptionAvailable
   })
   const base = { ...platform, bus, dataDir }

@@ -27,12 +27,13 @@ export function createPlatformServices(deps: {
   bus: EventBus
   cipher: Cipher
   homeDir: string
+  defaultWorkspaceRoot?: string
   /** When false (OS encryption unavailable), the vault refuses new secrets; reads of existing entries still work. */
   canStoreSecrets?: () => boolean
 }): Omit<Services, 'providers' | 'runtime' | 'routines' | 'webhooks' | 'missions' | 'bus' | 'dataDir' | 'store'> & { store: PlatformStore } {
   const { dataDir, bus, cipher, homeDir } = deps
 
-  const store = createStore({ dataDir, homeDir, userName: osUserName() })
+  const store = createStore({ dataDir, homeDir, userName: osUserName(), defaultWorkspaceRoot: deps.defaultWorkspaceRoot })
   const secrets = createSecretVault({ db: store.db, cipher, filePath: join(dataDir, 'secrets.json'), canStore: deps.canStoreSecrets })
   const memory = createMemoryService(store.db, { bus })
   const skills = createSkillService({ dataDir, homeDir, store, bus })

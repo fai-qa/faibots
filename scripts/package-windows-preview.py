@@ -33,7 +33,8 @@ Find someone on my team to edit this line: "We make tools for small teams."
 If we need an editor, propose one. Bring me two versions here.
 
 The launcher opens a separate preview profile. If you used the previous
-Windows preview on this computer, it opens the same preview chats.
+Windows preview on this computer, quit that version first. This build opens
+the same chats and retains the workspace folder saved in its settings.
 """
 
 def assemble(app, target):

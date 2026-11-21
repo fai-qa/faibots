@@ -260,6 +260,18 @@ describe('store on disk', () => {
     reopened.close()
   })
 
+  it('keeps a fresh portable workspace inside its profile and preserves a chosen folder on upgrade', () => {
+    const portable = join(dir, 'workspaces')
+    const custom = join(dir, 'my-team')
+    const store = createStore({ dataDir: dir, homeDir: tmpdir(), defaultWorkspaceRoot: portable })
+    expect(store.settings.get().workspaceRoot).toBe(portable)
+    store.settings.update({ workspaceRoot: custom })
+    store.close()
+    const reopened = createStore({ dataDir: dir, homeDir: tmpdir(), defaultWorkspaceRoot: portable })
+    expect(reopened.settings.get().workspaceRoot).toBe(custom)
+    reopened.close()
+  })
+
   it('adopts an existing named fai, preserving its id, chosen handle, model and messages', () => {
     const old = openStore(join(dir, 'faibots.db'), { homeDir: dir })
     const atlas = old.bots.create({ name: 'Atlas', handle: 'fai', isPrimary: true })
