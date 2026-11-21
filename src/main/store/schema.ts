@@ -1,5 +1,6 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
+import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
 
@@ -323,5 +324,6 @@ export const MIGRATIONS: string[] = [
   );
   create index delegations_pending on delegations(id) where delivered_at is null;
   `,
-  PROJECT_CONTENT_SCHEMA
+  PROJECT_CONTENT_SCHEMA,
+  ASSIGNMENT_BUDGET_SCHEMA
 ]

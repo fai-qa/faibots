@@ -40,11 +40,12 @@ import type { EngineKind } from '../providers/catalog'
 import type { RuntimeProviders } from '../providers/provider-service'
 import type { ToolCallRequest } from '../providers/types'
 import type { PlatformStore } from '../store'
-import { createDelegationRepo, type DelegationLease } from '../store/delegations'
+import { backgroundAnchor, createDelegationRepo, type AssignmentRoot, type DelegationLease } from '../store/delegations'
 import { errorResult } from '../tools/define'
 import { MAX_RESULT_CHARS, truncateText } from '../tools/registry'
 import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
+import { BackgroundAssignments } from './delegation-tools'
 import { IncompleteTurnError, type TurnEngine } from './engine'
 import { speakerName } from './history'
 import { LiveStates } from './live-state'
@@ -93,8 +94,7 @@ interface TurnRequest {
   /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
   parentSignal?: AbortSignal
   cascade?: Cascade
-  /** Shared by a turn and every exchange it starts, however deep (bounds bot-to-bot fan-out). */
-  askBudget?: { left: number }
+  root?: AssignmentRoot
   assignment?: { lease: DelegationLease; questionSeq: number; origin: NonNullable<Conversation['origin']> }
 }
 
@@ -108,7 +108,7 @@ interface ActiveTurn {
   waiting: number
   beforeWaiting?: { phase: BotPhase; activity?: string }
   asks: number
-  askBudget: { left: number }
+  root: AssignmentRoot
   unresolvedActions: Set<string>
 }
 
@@ -172,6 +172,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly active = new Map<Id, ActiveTurn>()
   private readonly background = new Set<Promise<unknown>>()
   private readonly delegations: ReturnType<typeof createDelegationRepo>
+  readonly assignments: BackgroundAssignments
   private readonly unsubscribe: () => void
   private readonly exchangeTimeoutMs: number
   private readonly now: () => Date
@@ -185,6 +186,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.exchangeTimeoutMs = options.exchangeTimeoutMs ?? EXCHANGE_TIMEOUT_MS
     this.now = options.now ?? (() => new Date())
     this.delegations = createDelegationRepo(deps.store.db, deps.store.entries)
+    this.assignments = new BackgroundAssignments(this.delegations, deps.tools, deps.store, (entry) => this.emitEntry(entry))
     this.delegations.recover()
     this.recoverInterruptedTurns()
     this.unsubscribe = deps.approvals.subscribe((event) => {
@@ -245,6 +247,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   }
 
   stop(conversationId: Id): void {
+    this.assignments.stopChat(conversationId)
     const run = this.runs.get(conversationId)
     if (!run) return
     for (const cascade of run.cascades) cascade.stopped = true
@@ -395,23 +398,28 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (asking.asks >= MAX_ASKS_PER_TURN) {
         throw new CollabRefusal(`You already asked other bots ${MAX_ASKS_PER_TURN} times in this turn. Answer with what you have.`)
       }
-      if (asking.askBudget.left <= 0) {
-        throw new CollabRefusal(`Bots already asked each other ${MAX_ASKS_PER_CHAIN} times for this request. Answer with what you have.`)
-      }
-      asking.asks++
-      asking.askBudget.left--
     }
     // Bridge call IDs are independent of the engine's card IDs. Never bind a durable return
     // to an unrelated running card merely because it was the last one shown for this tool.
     const candidate = asking?.recorder.findToolEntry(ctx.callId, ['send_to_agent'])
     const card = candidate?.toolCall?.callId === ctx.callId ? candidate : undefined
     const id = ctx.actionId ?? nativeActionId(ctx)
+    const detached = this.assignments.isDetached(id)
+    const root = asking?.root ?? { turnId: ctx.turnId, conversationId: ctx.conversation.id }
     const inputHash = createHash('sha256').update(message.trim()).digest('hex')
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
+      if (!this.delegations.reserve(id, root, MAX_ASKS_PER_CHAIN)) {
+        throw new CollabRefusal(`Bots already asked each other ${MAX_ASKS_PER_CHAIN} times for this request, or this assignment was already admitted. Answer with what you have.`)
+      }
+      if (detached && this.delegations.list(from.id, ctx.conversation.id, true).length >= MAX_ASKS_PER_TURN) {
+        throw new CollabRefusal(`This chat already has ${MAX_ASKS_PER_TURN} background assignments running.`)
+      }
       const parent = card ?? store.entries.append({
         conversationId: ctx.conversation.id, kind: 'event', author: { kind: 'system' },
-        text: `Messaging ${target.name}`, mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
+        text: detached ? `Assigned ${target.name} background work (${id}).` : `Messaging ${target.name}`,
+        ...(detached && { clientNonce: backgroundAnchor(id) }), mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
       })
+      if (detached && (parent.kind !== 'event' || parent.author.kind !== 'system')) throw new CollabRefusal('The assignment anchor is already in use.')
       const origin = { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id }
       const found = store.conversations.findExchange(from.id, target.id)
       const exchange = found ??
@@ -430,11 +438,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
       throw new CollabError(work.receipt?.text ?? 'The delegated task is already running.', work.receipt?.partial, work.exchangeId)
     }
     const { lease, parent, question } = assignment
+    if (asking) asking.asks++
     const exchange = store.conversations.get(question.conversationId)!
     bus.emit('conv:changed', { conversation: exchange })
     if (card) asking?.recorder.annotateTool(card.id, { title: `Messaging ${target.name}`, exchangeConversationId: exchange.id })
     else this.emitEntry(parent)
     this.emitEntry(question)
+    this.assignments.admitted(lease, exchange.id)
 
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), this.exchangeTimeoutMs)
@@ -448,7 +458,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         assignment: { lease, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
-        ...(asking && { askBudget: asking.askBudget })
+        root: { ...root, parentAssignmentId: id }
       })
       reply = truncateText(this.deps.secrets.redact(outcome.posts.map((p) => p.text).join('\n\n').trim()), MAX_RESULT_CHARS)
       const partial = reply || undefined
@@ -468,13 +478,17 @@ export class Orchestrator implements Runtime, CollabRuntime {
     } catch (error) {
       const text = this.deps.secrets.redact(error instanceof Error ? error.message : String(error))
       const partial = error instanceof CollabError && error.partial ? this.deps.secrets.redact(error.partial) : undefined
-      this.delegations.finish(lease, failure, { text, ...(partial && { partial }) })
+      const work = this.delegations.get(id)
+      if (ctx.signal.aborted && work?.state === 'reconciliation_required') throw new CollabError(work.receipt?.text ?? text, partial, exchange.id)
+      const resultEntry = this.delegations.finish(lease, failure, { text, ...(partial && { partial }) })
+      if (resultEntry) this.emitEntry(resultEntry)
       if (!card) this.emitEntry(store.entries.get(parent.id)!)
       throw error
     } finally {
       clearTimeout(timer)
     }
-    this.delegations.finish(lease, 'answered', { text: reply, responder: this.deps.secrets.redact(`${target.name} (@${target.handle})`) })
+    const resultEntry = this.delegations.finish(lease, 'answered', { text: reply, responder: this.deps.secrets.redact(`${target.name} (@${target.handle})`) })
+    if (resultEntry) this.emitEntry(resultEntry)
     if (!card) this.emitEntry(store.entries.get(parent.id)!)
     return { reply, exchange }
   }
@@ -646,7 +660,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     )
     const active: ActiveTurn = {
       turnId, bot, conversationId, recorder, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
-      asks: 0, askBudget: req.askBudget ?? { left: MAX_ASKS_PER_CHAIN }, unresolvedActions: new Set()
+      asks: 0, root: req.root ?? { turnId, conversationId }, unresolvedActions: new Set()
     }
 
     if (!route) {

@@ -1,11 +1,122 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ToolResult } from '../contracts'
 import { createDelegationRepo } from '../store/delegations'
 import { createHarness, type Harness } from './testing/fakes'
 
 describe('durable send_to_agent', () => {
   let h: Harness
-  beforeEach(() => { h = createHarness() })
+  beforeEach(() => {
+    h = createHarness()
+    for (const tool of h.runtime.assignments.tools()) h.services.tools.register(tool)
+  })
   afterEach(async () => { await h.runtime.shutdown(); h.cleanup() })
+
+  const output = (result: ToolResult) => result.content.map((part) => part.type === 'text' ? part.text : '').join('')
+
+  it('keeps the chief chat responsive, reports nested room work, and delivers only one final result', async () => {
+    const chief = h.bot('fai', { isPrimary: true })
+    const colleague = h.bot('Colleague')
+    h.bot('Editor')
+    h.bot('Reviewer')
+    const group = h.group([chief, colleague], { turnPolicy: 'mentions', maxRounds: 1 })
+    const dm = h.runtime.openDm(chief.id)
+    const requests: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((ready) => { release = ready })
+    h.engine.script('fai', async (api) => {
+      const incoming = h.engine.turns.at(-1)!.newTexts.join(' ')
+      if (incoming.includes('start here')) {
+        const result = output(await api.tool('assign_to_agent', { to: 'editor', message: 'Ask the reviewer' }))
+        requests.push(result)
+        api.say('I assigned the work.')
+      } else {
+        const result = await api.tool('group_work_snapshot', {})
+        api.say(output(result))
+      }
+    }).script('editor', async (api) => {
+      await api.tool('send_to_agent', { to: 'reviewer', message: 'Check the date.' })
+      api.say('The date is correct.')
+    }).script('reviewer', async (api) => { await gate; api.say('Checked.') })
+    const send = (conversationId: string, text: string) => h.runtime.send({
+      conversationId, text, mentions: [chief.id], mentionsEveryone: false, attachmentPaths: [], clientNonce: text
+    })
+    try {
+      await send(group.id, '@fai start here')
+      await vi.waitFor(() => expect(requests[0]).toMatch(/Assignment [a-f\d]{64} is running/))
+      await vi.waitFor(() => expect(h.engine.turns.filter((turn) => turn.handle === 'reviewer')).toHaveLength(1))
+      await send(group.id, '@fai progress please')
+      await vi.waitFor(() => expect(h.transcript(group.id).some((line) => line.includes('Pending: 2'))).toBe(true))
+      const id = /Assignment ([a-f\d]{64})/.exec(requests[0]!)![1]!
+      const denied = await h.services.tools.execute('assignment_status', { id }, { bot: chief, conversation: dm,
+        chain: [], signal: new AbortController().signal, callId: 'lookup', turnId: 'other-chat', inGroup: false, workspaceDir: '' })
+      expect(output(denied)).toMatch(/No background assignment/)
+      const records = h.services.store.db.prepare('select * from assignment_admissions order by parent_assignment_id').all()
+      expect(records).toHaveLength(2)
+      expect(records[0]).toMatchObject({ assignment_id: id, root_conversation_id: group.id, parent_assignment_id: null })
+      expect(records[1]).toMatchObject({ root_turn_id: records[0]!.root_turn_id, parent_assignment_id: id })
+    } finally { release() }
+    await h.runtime.idle()
+    const results = () => h.services.store.entries.since(group.id, 0).filter((entry) => entry.clientNonce?.startsWith('faibots:assignment-result:'))
+    expect(results()).toHaveLength(1)
+    expect(results()[0]!.text).toContain('The date is correct.')
+    createDelegationRepo(h.services.store.db, h.services.store.entries).recover()
+    expect(results()).toHaveLength(1)
+  })
+
+  it('checks the current send permission and the requested specialist skills before async admission', async () => {
+    const chief = h.bot('fai', { isPrimary: true })
+    h.bot('Editor')
+    const dm = h.runtime.openDm(chief.id)
+    const replies: string[] = []
+    h.engine.script('fai', async (api) => {
+      replies.push(output(await api.tool('assign_to_agent', { to: 'editor', message: 'Do a check', requiredSkills: ['missing-skill'] })))
+    })
+    await h.send(dm.id, 'Ask')
+    expect(replies[0]).toMatch(/skill missing-skill unavailable/)
+    h.services.tools.setPermission('send_to_agent', 'never', chief.id)
+    await h.send(dm.id, 'Ask again')
+    expect(replies[1]).toMatch(/turned off/)
+    expect(h.services.store.db.prepare('select count(*) n from delegations').get()?.n).toBe(0)
+    expect(h.engine.turns.some((turn) => turn.handle === 'editor')).toBe(false)
+  })
+
+  it('cancels only the named child, preserving the sibling result and returning the original ID', async () => {
+    const chief = h.bot('fai', { isPrimary: true })
+    h.bot('Slow')
+    h.bot('Fast')
+    const dm = h.runtime.openDm(chief.id)
+    let slowId = ''
+    let fastId = ''
+    let cancel = ''
+    let wait = ''
+    h.engine.script('slow', async (api) => { await api.untilAborted() })
+      .script('fast', (api) => api.say('Finished already.'))
+      .script('fai', async (api) => {
+        const assign = async (to: string) => /Assignment ([a-f\d]{64})/.exec(output(await api.tool('assign_to_agent', { to, message: 'Check this' })))![1]!
+        slowId = await assign('slow')
+        fastId = await assign('fast')
+        wait = output(await api.tool('wait_for_assignment', { id: fastId, seconds: 2 }))
+        cancel = output(await api.tool('cancel_assignment', { id: slowId }))
+      })
+    await h.send(dm.id, 'Assign both')
+    expect(wait).toContain(fastId + ' · answered')
+    expect(cancel).toContain(slowId + ': reconciliation_required')
+    const repo = createDelegationRepo(h.services.store.db, h.services.store.entries)
+    expect(repo.get(slowId)).toMatchObject({ state: 'reconciliation_required' })
+    expect(repo.get(fastId)).toMatchObject({ state: 'answered', receipt: { text: 'Finished already.' } })
+    expect(h.services.store.entries.since(dm.id, 0).filter((entry) => entry.clientNonce?.startsWith('faibots:assignment-result:'))).toHaveLength(2)
+  })
+
+  it('refuses a spent root budget even through a fresh repository instance', () => {
+    const { db, entries } = h.services.store
+    const first = createDelegationRepo(db, entries)
+    const root = { turnId: 'root', conversationId: 'group' }
+    expect(first.reserve('parent', root, 2)).toBe(true)
+    expect(first.reserve('child', { ...root, parentAssignmentId: 'parent' }, 2)).toBe(true)
+    const reopened = createDelegationRepo(db, entries)
+    expect(reopened.reserve('another-child', { ...root, parentAssignmentId: 'child' }, 2)).toBe(false)
+    expect(reopened.reserve('unrelated', { ...root, turnId: 'other-root' }, 2)).toBe(true)
+  })
 
   it('returns two concurrent assignments from their own child turns and persists the execution identity', async () => {
     const chief = h.bot('Chief')

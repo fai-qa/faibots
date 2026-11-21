@@ -16,6 +16,11 @@ export interface DelegationLease {
   id: string
   token: string
 }
+export interface AssignmentRoot {
+  turnId: string
+  conversationId: string
+  parentAssignmentId?: string
+}
 
 type Terminal = 'answered' | 'failed' | 'reconciliation_required'
 interface Receipt {
@@ -25,6 +30,8 @@ interface Receipt {
 }
 
 const interrupted = 'The app closed before the delegated task returned a confirmed result. Check the exchange before retrying.'
+export const backgroundAnchor = (id: string) => `faibots:assignment:${id}`
+const resultNonce = (id: string) => `faibots:assignment-result:${id}`
 
 export function createDelegationRepo(db: Db, entries: EntryRepo) {
   const select = `select d.*, p.conversation_id as parent_id, q.conversation_id as exchange_id
@@ -53,26 +60,56 @@ export function createDelegationRepo(db: Db, entries: EntryRepo) {
       content: [{ type: 'text', text }], ...(work.state !== 'answered' && { isError: true }),
       display: { exchangeConversationId: work.exchangeId }
     }
+    const detached = parent.kind === 'event' && parent.author.kind === 'system' && parent.clientNonce === backgroundAnchor(work.id)
     if (parent.toolCall?.toolName === 'send_to_agent') {
       // A live native turn may already have added a more specific denial or warning.
       if (parent.toolCall.status === 'running') entries.update(parent.id, { toolCall: {
         ...parent.toolCall, status: result.isError ? 'error' : 'done',
         exchangeConversationId: work.exchangeId, resultText: resultPreview(result)
       } })
-      if (recoverAction && work.state === 'answered' && parent.toolCall.actionId === work.id) {
-        // The local child already returned. Close only this caller's exact action, without replay.
-        db.prepare(`update actions set state = 'completed', receipt = ?, attempt = null, updated_at = ?
-          where id = ? and bot_id = ? and conversation_id = ? and tool_name = 'send_to_agent'
-          and state in ('dispatched','recovering','unknown')`)
-          .run(JSON.stringify(result), Date.now(), work.id, work.callerId, work.parentId)
-      }
-    } else if (parent.kind === 'event') {
+    } else if (!detached && parent.kind === 'event') {
       entries.update(parent.id, { text: resultPreview(result) })
+    }
+    if (recoverAction && work.state === 'answered' && (parent.toolCall?.actionId === work.id || detached)) {
+      db.prepare(`update actions set state = 'completed', receipt = ?, attempt = null, updated_at = ?
+        where id = ? and bot_id = ? and conversation_id = ? and tool_name = 'send_to_agent'
+        and state in ('dispatched','recovering','unknown')`)
+        .run(JSON.stringify(result), Date.now(), work.id, work.callerId, work.parentId)
+    }
+    if (detached) {
+      return entries.append({ conversationId: work.parentId, kind: 'message', author: { kind: 'system' },
+        text: `Background assignment ${work.id} (${work.state}):\n\n${text}`, replyToId: parent.id,
+        clientNonce: resultNonce(work.id), mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false })
     }
   }
 
   return {
     get,
+    reserve(id: string, root: AssignmentRoot, limit: number) {
+      const added = db.prepare(`insert into assignment_admissions(assignment_id,root_turn_id,root_conversation_id,parent_assignment_id,created_at)
+        select ?,?,?,?,? where (select count(*) from assignment_admissions where root_turn_id = ?) < ?
+        on conflict(assignment_id) do nothing`).run(id, root.turnId, root.conversationId, root.parentAssignmentId ?? null, Date.now(), root.turnId, limit)
+      return added.changes === 1
+    },
+    groupSnapshot(groupId: string) {
+      // A delegation from before root budgets can still be shown in its directly recorded room.
+      const source = ` from delegations d join entries p on p.id = d.parent_entry_id
+        left join assignment_admissions a on a.assignment_id = d.id where coalesce(a.root_conversation_id,p.conversation_id) = ?`
+      const totals = db.prepare('select d.state,count(*) as n' + source + ' group by d.state').all(groupId)
+      const latest = db.prepare('select d.id,d.state,d.child_id' + source + ' order by d.created_at desc,d.id limit 20').all(groupId)
+      return { totals, latest }
+    },
+    list(callerId: string, parentId: string, activeOnly = false) {
+      return db.prepare(select + ` where d.caller_id = ? and p.conversation_id = ? and p.kind = 'event'
+        and p.client_nonce = 'faibots:assignment:' || d.id ${activeOnly ? "and d.state = 'assigned'" : ''}
+        order by d.created_at desc, d.id limit 30`).all(callerId, parentId).map(read)
+    },
+    scoped(id: string, callerId: string, parentId: string) {
+      const work = get(id)
+      if (!work || work.callerId !== callerId || work.parentId !== parentId) return undefined
+      const entry = entries.get(work.parentEntryId)
+      return entry?.kind === 'event' && entry.author.kind === 'system' && entry.clientNonce === backgroundAnchor(id) ? work : undefined
+    },
     assign(identity: Identity, createEntries: () => { parent: Entry; question: Entry }) {
       return transaction(db, () => {
         const existing = get(identity.id)
@@ -99,13 +136,13 @@ export function createDelegationRepo(db: Db, entries: EntryRepo) {
       if (result.changes !== 1) throw new Error('The delegation lease is no longer available for dispatch.')
     },
     finish(lease: DelegationLease, state: Terminal, receipt: Receipt) {
-      transaction(db, () => {
+      return transaction(db, () => {
         const updated = db.prepare(`update delegations set state = ?, receipt = ?, lease = null, updated_at = ?
           where id = ? and lease = ? and state = 'assigned'`).run(state, JSON.stringify(receipt), Date.now(), lease.id, lease.token)
         if (updated.changes !== 1) throw new Error('The delegation lease is no longer valid. Its result was not changed.')
         // External engines can call through the bridge before they supply a visible tool card.
         const work = get(lease.id)!
-        if (entries.get(work.parentEntryId)?.kind === 'event') present(work, false)
+        if (entries.get(work.parentEntryId)?.kind === 'event') return present(work, false)
       })
     },
     acknowledge(id: string, parentEntryId: string) {

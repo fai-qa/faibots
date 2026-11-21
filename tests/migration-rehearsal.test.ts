@@ -11,6 +11,9 @@ import { MIGRATIONS } from '../src/main/store/schema'
 
 import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
 
+import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
+
+const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const LATEST = MIGRATIONS.length
 
@@ -47,7 +50,8 @@ const TABLES: { name: string; since: number; cols: string[]; order: string }[] =
   { name: 'artifact_revisions', since: 6, cols: ['id', 'artifact_id', 'revision_no', 'sha256', 'provenance', 'created_at'], order: 'id' },
   { name: 'review_decisions', since: 6, cols: ['id', 'artifact_revision_id', 'rubric', 'reviewer', 'decision', 'explanation', 'created_at'], order: 'id' },
   { name: 'journey_runs', since: 7, cols: ['id', 'project_id', 'artifact_id', 'status', 'budgets', 'started_at', 'ended_at'], order: 'id' },
-  { name: 'delegations', since: 8, cols: ['id', 'caller_id', 'child_id', 'input_hash', 'parent_entry_id', 'question_id', 'state', 'lease', 'engine', 'system_hash', 'receipt', 'delivered_at', 'created_at', 'updated_at'], order: 'id' }
+  { name: 'delegations', since: 8, cols: ['id', 'caller_id', 'child_id', 'input_hash', 'parent_entry_id', 'question_id', 'state', 'lease', 'engine', 'system_hash', 'receipt', 'delivered_at', 'created_at', 'updated_at'], order: 'id' },
+  { name: 'assignment_admissions', since: BUDGET_VERSION, cols: ['assignment_id', 'root_turn_id', 'root_conversation_id', 'parent_assignment_id', 'created_at'], order: 'assignment_id' }
 ]
 
 /** Insert synthetic rows into every table that exists at schema version v (ids are tagged by v). */
@@ -113,6 +117,7 @@ function seed(db: DatabaseSync, v: number): void {
     run("insert into project_evaluations values (?,'complete','accepted',?,'user',1,2)", `jr-${t}`, `rev-${t}`)
     run("insert into evaluation_trials values (?,?,?,'passed','accepted',3,'verified','accepted')", v, `jr-${t}`, `jr-${t}`)
   }
+  if (v >= BUDGET_VERSION) run(`insert into assignment_admissions values (?, ?, ?, ?, 1)`, `work-${t}`, `root-${t}`, `conv-${t}`, 'work-v8')
 }
 
 interface Snapshot { counts: Record<string, number>; hash: string }

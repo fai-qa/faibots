@@ -7,12 +7,13 @@ const { createServer } = require('node:http')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 const { pathToFileURL } = require('node:url')
+const { setTimeout: delay } = require('node:timers/promises')
 const { DatabaseSync } = require('node:sqlite')
 
 const marker = 'The delegated action ran.'
 const root = join(__dirname, '..')
 
-function electronStage(mode, profile, url) {
+function electronStage(mode, profile, style, url) {
   const { app } = require('electron')
   app.setPath('userData', profile)
   delete process.env.ELECTRON_RENDERER_URL
@@ -28,7 +29,9 @@ function electronStage(mode, profile, url) {
             kind: 'openai-compatible', label: 'Fixture', baseUrl: url, defaultModelId: 'chief-test', enabled: true
           })
           await invoke('settings:update', { workspaceRoot: join(profile, 'workspaces') })
-          const chief = await invoke('bots:create', { name: 'Chief Test', model: { providerId: provider.id, modelId: 'chief-test' } })
+          const chief = (await invoke('bots:list')).find((bot) => bot.isPrimary && bot.name === 'fai')
+          assert(chief)
+          await invoke('bots:update', { id: chief.id, patch: { model: { providerId: provider.id, modelId: 'chief-test' } } })
           await invoke('bots:create', { name: 'Child Test', handle: 'child-test', model: { providerId: provider.id, modelId: 'child-test' } })
           const dm = await invoke('conv:open-dm', { botId: chief.id })
           writeFileSync(checkpoint, JSON.stringify({ conversationId: dm.id }))
@@ -37,10 +40,21 @@ function electronStage(mode, profile, url) {
         }
         const { conversationId } = JSON.parse(readFileSync(checkpoint, 'utf8'))
         const { entries } = await invoke('conv:entries', { conversationId })
-        const cards = entries.filter((entry) => entry.toolCall?.toolName === 'send_to_agent')
+        const cards = entries.filter((entry) => entry.toolCall?.toolName === style)
         assert.equal(cards.length, 1)
-        assert.equal(cards[0].toolCall.status, 'error')
-        assert.match(cards[0].toolCall.resultText, /closed before the delegated task returned a confirmed result/)
+        if (style === 'assign_to_agent') {
+          assert.equal(cards[0].toolCall.status, 'done')
+          const id = /Assignment ([a-f0-9]{64}) is running/.exec(cards[0].toolCall.resultText)?.[1]
+          assert(id)
+          const returns = entries.filter((entry) => entry.clientNonce === 'faibots:assignment-result:' + id)
+          assert.equal(returns.length, 1)
+          assert.match(returns[0].text, /reconciliation_required/)
+          assert.match(returns[0].text, /closed before the delegated task returned a confirmed result/)
+          assert(entries.some((entry) => entry.text === 'I am available while the child works.'))
+        } else {
+          assert.equal(cards[0].toolCall.status, 'error')
+          assert.match(cards[0].toolCall.resultText, /closed before the delegated task returned a confirmed result/)
+        }
         const exchange = await invoke('conv:entries', { conversationId: cards[0].toolCall.exchangeConversationId })
         assert.equal(exchange.entries.filter((entry) => entry.toolCall?.toolName === 'write_file' && entry.toolCall.status === 'done').length, 1)
         assert.equal(exchange.entries.filter((entry) => entry.kind === 'message').length, 1)
@@ -57,7 +71,7 @@ function electronStage(mode, profile, url) {
   })
 }
 
-async function smoke() {
+async function smoke(style) {
   assert.equal(process.platform, 'win32')
   const profile = mkdtempSync(join(tmpdir(), 'faibots-delegation-'))
   mkdirSync(join(profile, 'workspaces'))
@@ -83,18 +97,34 @@ async function smoke() {
       if (!chief && messages.some((message) => message.role === 'tool')) {
         assert.equal(readFileSync(join(profile, 'workspaces', 'child-test', 'marker.txt'), 'utf8'), marker)
         assert.equal(injectedCrash, false)
+        if (style === 'assign_to_agent') {
+          const db = new DatabaseSync(join(profile, 'faibots.db'), { readOnly: true })
+          try {
+            const parentAnswered = db.prepare('select 1 from entries where text = ? and is_streaming = 0')
+            const deadline = Date.now() + 6000
+            while (!parentAnswered.get('I am available while the child works.')) {
+              assert(Date.now() < deadline, 'The chief stayed blocked on its child')
+              await delay(25)
+            }
+          } finally { db.close() }
+        }
         injectedCrash = true
         assert(firstProcess.kill('SIGKILL'))
         return
       }
-      const tool = chief ? 'send_to_agent' : 'write_file'
+      const tool = chief ? style : 'write_file'
       const args = chief ? { to: 'child-test', message: 'Write the test marker.' } : { path: 'marker.txt', content: marker }
       response.writeHead(200, { 'content-type': 'text/event-stream' })
       const chunk = (delta, finish_reason) => response.write(`data: ${JSON.stringify({
         id: 'fixture', object: 'chat.completion.chunk', created: 0, model, choices: [{ index: 0, delta, finish_reason }]
       })}\n\n`)
-      chunk({ role: 'assistant', tool_calls: [{ index: 0, type: 'function', id: 'call-' + tool, function: { name: tool, arguments: JSON.stringify(args) } }] }, null)
-      chunk({}, 'tool_calls')
+      if (chief && messages.some((message) => message.role === 'tool')) {
+        chunk({ role: 'assistant', content: 'I am available while the child works.' }, null)
+        chunk({}, 'stop')
+      } else {
+        chunk({ role: 'assistant', tool_calls: [{ index: 0, type: 'function', id: 'call-' + tool, function: { name: tool, arguments: JSON.stringify(args) } }] }, null)
+        chunk({}, 'tool_calls')
+      }
       response.end('data: [DONE]\n\n')
     } catch (error) {
       fixtureError = error
@@ -106,11 +136,11 @@ async function smoke() {
   try {
     const url = `http://127.0.0.1:${server.address().port}/v1`
     for (const mode of ['start', 'inspect', 'inspect']) {
-      const child = spawn(executable, [__filename, mode, profile, url], { stdio: 'inherit', timeout: 40_000 })
+      const child = spawn(executable, [__filename, mode, profile, style, url], { stdio: 'inherit', timeout: 40_000 })
       if (mode === 'start') firstProcess = child
       const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve) })
       if (fixtureError) throw fixtureError
-      if (mode === 'start') assert(injectedCrash, 'The first launch ended before the planned interruption')
+      if (mode === 'start') assert(injectedCrash, `The first launch ended with code ${code} before the planned interruption (${style}, ${chiefCalls} chief calls, ${childCalls} child calls)`)
       else assert.equal(code, 0)
     }
     const db = new DatabaseSync(join(profile, 'faibots.db'), { readOnly: true })
@@ -123,15 +153,16 @@ async function smoke() {
       assert.match(rows[0].system_hash, /^[a-f0-9]{64}$/)
       assert(rows[0].delivered_at)
       assert.equal(db.prepare("select count(*) n from actions where tool_name = 'write_file' and state = 'completed'").get().n, 1)
+      assert.equal(db.prepare('select count(*) n from assignment_admissions').get().n, 1)
     } finally { db.close() }
-    assert.equal(chiefCalls, 1)
+    assert.equal(chiefCalls, style === 'assign_to_agent' ? 2 : 1)
     assert.equal(childCalls, 2)
-    console.log('Forced Electron exit after one child file write. Two restarts recovered the parent card without another model call or write.')
+    console.log(`${style}: forced exit after one child write; two restarts recovered the original assignment with no additional model call or write.`)
   } finally {
     server.closeAllConnections()
     server.close()
   }
 }
 
-if (process.versions.electron) electronStage(...process.argv.slice(-3))
-else smoke().catch((error) => { console.error(error); process.exitCode = 1 })
+if (process.versions.electron) electronStage(...process.argv.slice(-4))
+else smoke('send_to_agent').then(() => smoke('assign_to_agent')).catch((error) => { console.error(error); process.exitCode = 1 })

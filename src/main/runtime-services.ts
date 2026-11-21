@@ -22,6 +22,7 @@ export function createRuntimeServices(deps: Omit<Services, 'providers' | 'runtim
 } {
   const providers = createProviderService({ store: deps.store, secrets: deps.secrets, bus: deps.bus })
   const runtime = createRuntime({ ...deps, store: deps.store as PlatformStore, providers })
+  for (const tool of runtime.assignments.tools()) deps.tools.register(tool)
   const routines = createRoutineService({ store: deps.store, runtime, bus: deps.bus })
   for (const tool of routineTools(routines)) deps.tools.register(tool)
   const missions = createMissionRunService({ store: deps.store as PlatformStore, runtime, attachments: deps.attachments, dataDir: deps.dataDir, bus: deps.bus })
