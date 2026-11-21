@@ -18,4 +18,3 @@ export const workBriefSchema = `
     state text not null check(state in ('pending','ready','started','finished','interrupted')),
     entry_id text, primary key(work_id,revision)
   );`
-
