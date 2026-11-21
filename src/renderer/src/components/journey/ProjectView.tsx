@@ -142,16 +142,16 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <ProjectImprovements key={projectId + '-instructions'} projectId={projectId} version={journeyVersion} />
 
           {/* Mission ----------------------------------------------------------------- */}
-          <section aria-label="Mission">
+          <section aria-label="Proposal workflow">
             <div className="rounded-card border border-line-soft bg-sidebar p-4">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="flex items-center gap-1.5 text-[13px] font-semibold text-fg">
                   <Rocket size={14} className="text-fg-3" />
-                  Mission
+                  Proposal workflow
                 </h2>
                 {(!currentRun || !activeRun) && <RunStatusChip run={currentRun} ready={ready} />}
               </div>
-              {!currentRun && <p className="mt-1.5 text-[12.5px] text-fg-3">Draft a proposal from the notes and have a second bot review it.</p>}
+              {!currentRun && <p className="mt-1.5 text-[12.5px] text-fg-3">Draft from the selected notes and have a second bot review the result.</p>}
               {currentRun && <MissionTrail run={currentRun} artifact={currentArtifact} />}
               <div className="mt-3">
                 <Button
@@ -162,13 +162,13 @@ export function ProjectView({ projectId }: { projectId: string }) {
                   aria-busy={starting}
                   title={
                     activeRun
-                      ? 'A mission is already running.'
+                      ? 'A proposal is already in progress.'
                       : !ready
                         ? 'Attach notes first.'
-                        : 'Start the mission for the attached notes.'
+                        : 'Draft and review a proposal using the selected notes.'
                   }
                 >
-                  {starting ? 'Starting…' : activeRun ? 'Mission running' : 'Start the mission'}
+                  {starting ? 'Starting…' : activeRun ? 'Proposal in progress' : 'Draft proposal'}
                 </Button>
               </div>
               {runList.length > 0 && (
@@ -203,8 +203,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
               </div>
             ) : (
               <EmptyState icon={FileCheck2} title="No artifacts yet">
-                The mission run writes the deliverable here as snapshot revisions, each checked against the rubric.
-                Review comes with the run.
+                Saved drafts and their reviews appear here.
               </EmptyState>
             )}
           </section>
