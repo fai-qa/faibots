@@ -3,8 +3,9 @@
 // work as for any tool (create_bot asks first by default).
 
 import { z } from 'zod'
-import type { Bot, Conversation, Id } from '@shared/domain'
-import type { EventBus, Store, ToolContext } from '../contracts'
+import type { Bot, Conversation, Id, ModelRoute } from '@shared/domain'
+import { kindInfo, resolveModelId } from '@shared/provider-catalog'
+import type { EventBus, SkillService, Store, ToolContext } from '../contracts'
 import { defineTool, errorResult, textResult, type PlatformToolDefinition } from '../tools/define'
 import { buildHandleIndex } from './mentions'
 
@@ -50,8 +51,17 @@ export function findBot(bots: Bot[], query: string): Bot | undefined {
 const directoryLine = (b: Bot) =>
   `- @${b.handle}: ${b.name}${b.label ? `, ${b.label}` : ''}${b.isPrimary ? ' (primary bot)' : ''}${b.description ? `. ${b.description}` : ''}`
 
-export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; runtime: CollabRuntime }): PlatformToolDefinition[] {
+export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 'settings'>; skills: SkillService; bus: EventBus; runtime: CollabRuntime }): PlatformToolDefinition[] {
   const others = (self: Id) => deps.store.bots.list().filter((b) => b.id !== self && !b.hidden)
+  const configuredModel = (route: ModelRoute | null) => {
+    if (!route) return undefined
+    const provider = deps.store.providers.get(route.providerId)
+    if (!provider?.enabled || (kindInfo(provider.kind).needsApiKey && !provider.hasApiKey)) return undefined
+    const modelId = resolveModelId(provider, route.modelId)
+    return modelId ? { route, label: `${modelId} via ${provider.label}` } : undefined
+  }
+  const newBotModel = (creator: Bot) =>
+    configuredModel(deps.store.settings.get().defaultModel) ?? configuredModel(creator.model)
 
   const sendToAgent = defineTool({
     name: 'send_to_agent',
@@ -112,7 +122,12 @@ export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; r
     async execute(_input, ctx) {
       const bots = others(ctx.bot.id)
       if (bots.length === 0) return textResult('There are no other bots yet. You can propose one with create_bot.')
-      return textResult(bots.map(directoryLine).join('\n'))
+      return textResult(bots.map((bot) => {
+        const model = configuredModel(bot.model)
+        const skills = deps.skills.list(bot.id).map((skill) => skill.name)
+        return [directoryLine(bot), model ? `Model configured: ${model.label}` : 'Model needs setup',
+          ...(skills.length ? [`Skills: ${skills.join(', ')}`] : [])].join(' | ')
+      }).join('\n'))
     }
   })
 
@@ -131,18 +146,26 @@ export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; r
     source: 'faibots',
     defaultPermission: 'ask',
     activityLabel: 'Creating a new bot',
-    summarize: (input) =>
-      `Create a new bot "${input.name}"${input.label ? ` (${input.label})` : ''}${input.description ? `: ${input.description}` : ''}`,
-    async execute(input) {
+    summarize: (input, ctx) => {
+      const model = newBotModel(ctx.bot)
+      return `Create a new bot "${input.name}"${input.label ? ` (${input.label})` : ''}${input.description ? `: ${input.description}` : ''}. ` +
+        (model ? `Model: ${model.label}.` : 'Model setup required.')
+    },
+    async execute(input, ctx) {
+      const existing = deps.store.bots.list().find((bot) => bot.name.trim().toLowerCase() === input.name.trim().toLowerCase())
+      if (existing) return textResult(`A bot named ${existing.name} already exists (@${existing.handle}). Check its role before assigning. No bot was created.`)
+      const configured = newBotModel(ctx.bot)
       const bot = deps.store.bots.create({
         name: input.name,
         ...(input.label !== undefined && { label: input.label }),
         ...(input.description !== undefined && { description: input.description }),
         ...(input.soul !== undefined && { soul: input.soul }),
+        model: configured?.route ?? { providerId: '', modelId: '' },
+        mcpServerIds: [],
         isPrimary: false
       })
       deps.bus.emit('bots:changed', { bots: deps.store.bots.list() })
-      const model = bot.model.providerId ? '' : ' It has no model yet: the user needs to pick one in its Profile before it can answer.'
+      const model = configured ? ` Model configured: ${configured.label}.` : ' Its model needs setup in its profile before it can answer.'
       return textResult(`Created ${bot.name} (@${bot.handle}).${model}`)
     }
   })

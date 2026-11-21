@@ -27,7 +27,7 @@ export function createRuntime(deps: RuntimeDeps, options: CreateRuntimeOptions =
     ...(options.exchangeTimeoutMs !== undefined && { exchangeTimeoutMs: options.exchangeTimeoutMs }),
     ...(options.now && { now: options.now })
   })
-  for (const tool of collabTools({ store, bus, runtime })) tools.register(tool)
+  for (const tool of collabTools({ store, skills: deps.skills, bus, runtime })) tools.register(tool)
   return runtime
 }
 

@@ -57,9 +57,9 @@ const HOUR = 60 * MIN
 export const WORKSPACE_ROOT = 'C:\\Users\\sample\\FaiBots\\workspaces'
 export const DATA_DIR = 'C:\\Users\\sample\\AppData\\Roaming\\FaiBots'
 
-const ATLAS_SOUL = `# Atlas
+const FAI_SOUL = `# fai
 
-You are Atlas, Alex's chief of staff. You keep the big picture and make sure nothing falls through the cracks.
+You are fai, Alex's chief of staff. You keep the big picture and make sure nothing falls through the cracks.
 
 ## Voice
 - Calm, brief and concrete. Lead with the answer, then the next step.
@@ -141,11 +141,11 @@ export function seedMockData(now = Date.now()): MockDb {
     makeBot(
       {
         id: 'b-atlas',
-        name: 'Atlas',
-        handle: 'atlas',
+        name: 'fai',
+        handle: 'fai',
         label: 'Chief of staff',
         description: 'Coordinates your other bots, keeps plans and checklists, and checks in on what needs you.',
-        soul: ATLAS_SOUL,
+        soul: FAI_SOUL,
         avatar: { shape: 'squircle', color: 'blue' },
         model: { providerId: 'p-anthropic', modelId: 'claude-opus-5-5', effort: 'high' },
         isPrimary: true,
@@ -225,7 +225,7 @@ export function seedMockData(now = Date.now()): MockDb {
   ]
 
   const conversations: Conversation[] = [
-    makeConv({ id: 'c-atlas', kind: 'dm', botIds: ['b-atlas'], title: 'Atlas' }, weekAgo),
+    makeConv({ id: 'c-atlas', kind: 'dm', botIds: ['b-atlas'], title: 'fai' }, weekAgo),
     makeConv({ id: 'c-iris', kind: 'dm', botIds: ['b-iris'], title: 'Iris' }, weekAgo),
     makeConv({ id: 'c-juno', kind: 'dm', botIds: ['b-juno'], title: 'Juno' }, weekAgo),
     makeConv({ id: 'c-rex', kind: 'dm', botIds: ['b-rex'], title: 'Rex' }, weekAgo),
@@ -236,7 +236,7 @@ export function seedMockData(now = Date.now()): MockDb {
         botIds: ['b-atlas', 'b-iris', 'b-juno'],
         title: 'Launch crew',
         group: { ...DEFAULT_GROUP_SETTINGS },
-        notes: 'Launch: Thursday. Owner of the checklist: Atlas.'
+        notes: 'Launch: Thursday. Owner of the checklist: fai.'
       },
       yesterday
     ),
@@ -245,7 +245,7 @@ export function seedMockData(now = Date.now()): MockDb {
         id: 'x-atlas-iris',
         kind: 'exchange',
         botIds: ['b-atlas', 'b-iris'],
-        title: 'Atlas and Iris',
+        title: 'fai and Iris',
         origin: { conversationId: 'c-atlas', entryId: 'e-atlas-5', fromBotId: 'b-atlas' }
       },
       now - 39 * MIN
@@ -276,7 +276,7 @@ export function seedMockData(now = Date.now()): MockDb {
   const user = { kind: 'user' } as const
   const by = (botId: Id) => ({ kind: 'bot', botId }) as const
 
-  // --- Atlas dm ---------------------------------------------------------------
+  // --- fai dm ---------------------------------------------------------------
   add('c-atlas', yesterday - 3 * HOUR, {
     kind: 'message',
     author: user,
@@ -348,7 +348,7 @@ export function seedMockData(now = Date.now()): MockDb {
     text: 'Great. Run the test suite before we ship.'
   })
 
-  // --- Exchange Atlas <-> Iris ------------------------------------------------
+  // --- Exchange fai <-> Iris ------------------------------------------------
   add('x-atlas-iris', now - 39 * MIN, {
     kind: 'message',
     author: by('b-atlas'),

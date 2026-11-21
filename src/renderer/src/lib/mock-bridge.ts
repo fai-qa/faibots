@@ -206,7 +206,7 @@ export function createMockBridge(): FaiBotsBridge {
     const style = bot.handle
     if (where === 'group') {
       const lines: Record<string, string> = {
-        atlas: `From my side, **${topic}** needs one owner and a date. I'll track it on the launch checklist.`,
+        fai: `From my side, **${topic}** needs one owner and a date. I'll track it on the launch checklist.`,
         iris: `I can dig into **${topic}** and bring back a short comparison by tonight.`,
         juno: `I'll draft the wording for **${topic}** once we agree on the plan.`,
         rex: `I'll review anything about **${topic}** that touches code before it ships.`,
@@ -220,7 +220,7 @@ export function createMockBridge(): FaiBotsBridge {
         : `My take on **${topic}**: keep it small, test it with real use, then decide. Shout if you need more.`
     }
     switch (style) {
-      case 'atlas':
+      case 'fai':
         return `Here's how I'd handle **${topic}**:\n\n1. Pin down what "done" looks like, and by when.\n2. Split it into small pieces and hand the research to @iris.\n3. Check in with you before anything goes out.\n\nWant me to start on step 1?`
       case 'iris':
         return `Here's what I found on **${topic}**:\n\n| Option | Effort | Why it matters |\n|---|---|---|\n| Start small | Low | Quick to test with real users |\n| Go broad | High | Covers more cases, slower to ship |\n\nSources are in my notes. I can send the links if you want them.`
@@ -356,7 +356,7 @@ export function createMockBridge(): FaiBotsBridge {
   }
 
   async function exchangeFlow(c: Conversation, bot: Bot, userText: string, signal: AbortSignal): Promise<void> {
-    const peer = db.bots.find((b) => b.id !== bot.id && b.handle === (bot.handle === 'iris' ? 'atlas' : 'iris')) ??
+    const peer = db.bots.find((b) => b.id !== bot.id && b.handle === (bot.handle === 'iris' ? 'fai' : 'iris')) ??
       db.bots.find((b) => b.id !== bot.id && !b.hidden)
     if (!peer) {
       await stream(c.id, bot.id, replyFor(bot, userText, 'dm'), signal)
@@ -513,13 +513,13 @@ export function createMockBridge(): FaiBotsBridge {
     })
   }
 
-  // The seeded Atlas dm ends with "Run the test suite": continue that turn so an approval
+  // The seeded fai dm ends with "Run the test suite": continue that turn so an approval
   // card is waiting when the app opens. Entries are appended synchronously, before any fetch.
   {
-    const atlas = getBot('b-atlas')
+    const fai = getBot('b-atlas')
     const dm = getConv('c-atlas')
-    if (atlas && dm) {
-      runInBackground(dm.id, shellFlow(dm, atlas, 'npm test', signalFor(dm.id)).finally(() => setLive(atlas.id, dm.id, 'idle')))
+    if (fai && dm) {
+      runInBackground(dm.id, shellFlow(dm, fai, 'npm test', signalFor(dm.id)).finally(() => setLive(fai.id, dm.id, 'idle')))
       dm.unreadCount = 0
     }
   }
@@ -578,7 +578,7 @@ export function createMockBridge(): FaiBotsBridge {
       artifact,
       revisions: [r1, r2],
       content:
-        '# Launch plan\n\n- **What**: ship the desktop app behind the verified checklist.\n- **Who**: atlas coordinates, iris researches, juno writes.\n- **Proof**: every deliverable lands as a revision here.\n\n> Checked against the launch rubric.'
+        '# Launch plan\n\n- **What**: ship the desktop app behind the verified checklist.\n- **Who**: fai coordinates, iris researches, juno writes.\n- **Proof**: every deliverable lands as a revision here.\n\n> Checked against the launch rubric.'
     })
     journeyRuns.push({
       id: 'jr-1', projectId: launch.id, artifactId: artifact.id, status: 'complete',
@@ -774,6 +774,7 @@ export function createMockBridge(): FaiBotsBridge {
     'bots:list': () => db.bots,
     'bots:create': (input) => {
       if (!input.name?.trim()) throw new Error('Name can’t be empty')
+      if (input.name.trim().toLowerCase() === 'fai') throw new Error('The name fai belongs to the main bot.')
       const base = slugify(input.handle ?? input.name).replace(/-/g, '') || 'bot'
       let handle = base
       for (let i = 2; db.bots.some((b) => b.handle === handle); i++) handle = `${base}${i}`
@@ -808,17 +809,22 @@ export function createMockBridge(): FaiBotsBridge {
     'bots:update': ({ id, patch }) => {
       const bot = mustBot(id)
       if (patch.name !== undefined && !patch.name.trim()) throw new Error('Name can’t be empty')
+      if (!bot.isPrimary && patch.name?.trim().toLowerCase() === 'fai') throw new Error('The name fai belongs to the main bot.')
       if (patch.handle !== undefined) {
         if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(patch.handle)) throw new Error('Use lowercase letters, numbers, - or _ for the handle')
         if (db.bots.some((b) => b.id !== id && b.handle === patch.handle)) throw new Error(`@${patch.handle} is already taken`)
       }
-      if (patch.isPrimary) for (const b of db.bots) if (b.id !== id) b.isPrimary = false
+      if (patch.isPrimary !== undefined && patch.isPrimary !== bot.isPrimary) throw new Error('fai is the permanent main bot.')
+      if (bot.isPrimary && ((patch.name !== undefined && patch.name !== bot.name) ||
+        (patch.handle !== undefined && patch.handle !== bot.handle) || patch.hidden)) {
+        throw new Error('fai keeps its name, handle and place in the sidebar.')
+      }
       Object.assign(bot, patch, { updatedAt: now() })
       emitBots()
       return bot
     },
     'bots:delete': ({ id }) => {
-      mustBot(id)
+      if (mustBot(id).isPrimary) throw new Error('fai is the permanent main bot.')
       db.bots = db.bots.filter((b) => b.id !== id)
       for (const c of [...db.conversations]) {
         if (!c.botIds.includes(id)) continue

@@ -15,12 +15,12 @@ Model availability and sign-in depend on your provider.
 
 If Electron exits immediately on Windows, run `npm run prestart` to download the locked runtime. Copy `node_modules/electron/dist` to a standalone folder outside `node_modules`, set `ELECTRON_EXEC_PATH` in your current PowerShell session to the copied `electron.exe`, then run `npm run dev` again. Keep sandboxing enabled. [Electron's Windows launch issue](https://github.com/electron/electron/issues/54614)
 
-## Try your first bot
+## Start with fai
 
-1. In **Settings → Models & providers**, add a provider you already use and test the connection.
-2. Choose **New Bot**, give it a name and role, and select its model in the bot’s profile.
-3. Open its chat and give it a small task. Close and reopen the app to pick up the conversation.
-4. To work with two bots, create a second bot and use **New chat** to select both. Mention the bot you want to answer.
+1. The app opens in your chat with **fai**, the main bot. In **Settings → Models & providers**, connect a provider you already use. Choose its model in the profile for fai.
+2. Give fai a job. For example, “Find a bot to edit this product description. If we need an editor, propose one. Bring the revised text back here.”
+3. When a new bot is needed, review its role and model in the approval card. A specialist can use the configured default model or the model already assigned to fai.
+4. You can also create bots yourself in **New Bot**, talk directly to a specialist or choose several bots in **New chat**. Reopening the app takes you back to fai.
 
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
 

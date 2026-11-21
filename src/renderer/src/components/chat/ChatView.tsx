@@ -103,7 +103,7 @@ function ChatHeader({ conv }: { conv: Conversation }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h1 className={`truncate text-[14px] font-semibold text-fg`}>{title}</h1>
-          {bot?.isPrimary && <span className="text-2xs font-medium text-fg-3">Primary bot</span>}
+          {bot?.isPrimary && <span className="text-2xs font-medium text-fg-3">Main bot</span>}
         </div>
         <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-3">
           {bot ? (

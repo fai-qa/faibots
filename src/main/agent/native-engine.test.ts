@@ -51,10 +51,11 @@ describe('native engine', () => {
       ['tool-call', 'Looking up the other bots'],
       ['message', 'Helper can help.']
     ])
-    expect(entries[2]!.toolCall).toMatchObject({ callId: 'c1', toolName: 'list_bots', status: 'done', resultText: '- @helper: Helper. Helps' })
+    const directory = '- @helper: Helper. Helps | Model configured: test-model via Local test model'
+    expect(entries[2]!.toolCall).toMatchObject({ callId: 'c1', toolName: 'list_bots', status: 'done', resultText: directory })
     // Both results of the step went back as one batch.
     expect(adapter.toolResults).toHaveLength(1)
-    expect(adapter.toolResults[0]![0]!.result.content).toEqual([{ type: 'text', text: '- @helper: Helper. Helps' }])
+    expect(adapter.toolResults[0]![0]!.result.content).toEqual([{ type: 'text', text: directory }])
 
     // The model saw the bot's view, ending with a user turn, and a stable, sorted tool list.
     const spec = adapter.specs[0]!

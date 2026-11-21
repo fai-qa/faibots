@@ -5,6 +5,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { MAX_GROUP_BOTS } from '@shared/domain'
 import type { InvokeChannel, InvokeMap } from '@shared/ipc'
 import type { Services } from '../contracts'
+import { assertRemovableBot } from '../store/bots'
 import { createSnapshotService } from '../attachments/snapshots'
 import { encryptionAvailable, pickFiles } from '../platform/electron'
 import { observeFile, pinWorkspace } from '../routines/acceptance'
@@ -45,6 +46,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       return bot
     },
     'bots:delete': ({ id }) => {
+      assertRemovableBot(s.store.bots.get(id))
       // Stop the bot's running turns first; the store then removes its dm and exchanges, drops it
       // from groups and emits conv:deleted / conv:changed itself.
       for (const conversation of s.store.conversations.list()) {
@@ -88,6 +90,8 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       return conversation
     },
     'conv:delete': ({ id }) => {
+      const conversation = s.store.conversations.get(id)
+      if (conversation?.kind === 'dm') assertRemovableBot(s.store.bots.get(conversation.botIds[0]!))
       s.runtime.stop(id)
       s.store.conversations.delete(id)
       s.bus.emit('conv:deleted', { conversationId: id })

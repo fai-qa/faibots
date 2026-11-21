@@ -242,6 +242,50 @@ describe('store on disk', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+  it('keeps one fai and its original conversation across desktop launches', () => {
+    const store = createStore({ dataDir: dir, homeDir: dir })
+    const [fai] = store.bots.list()
+    expect(fai).toMatchObject({ name: 'fai', handle: 'fai', isPrimary: true })
+    const dm = store.conversations.findDm(fai!.id)!
+    const editor = store.bots.create({ name: 'Editor' })
+    expect(() => store.bots.update(fai!.id, { name: 'Other' })).toThrow(/fai/)
+    expect(() => store.bots.update(fai!.id, { hidden: true })).toThrow(/fai/)
+    expect(() => store.bots.delete(fai!.id)).toThrow(/fai/)
+    expect(() => store.bots.update(editor.id, { isPrimary: true })).toThrow(/fai/)
+    expect(() => store.bots.create({ name: 'FAI' })).toThrow(/fai/)
+    store.close()
+    const reopened = createStore({ dataDir: dir, homeDir: dir })
+    expect(reopened.bots.list().filter((bot) => bot.isPrimary)).toEqual([fai])
+    expect(reopened.conversations.findDm(fai!.id)).toEqual(dm)
+    reopened.close()
+  })
+
+  it('adopts an existing named fai, preserving its id, chosen handle, model and messages', () => {
+    const old = openStore(join(dir, 'faibots.db'), { homeDir: dir })
+    const atlas = old.bots.create({ name: 'Atlas', handle: 'fai', isPrimary: true })
+    const model = { providerId: 'old-provider', modelId: 'old-model' }
+    const named = old.bots.create({ name: 'FAI', handle: 'lead', hidden: true, model })
+    const dm = old.conversations.create({ kind: 'dm', title: 'FAI', botIds: [named.id] })
+    const entry = old.entries.append(message(dm.id, 'Original message'))
+    old.close()
+    const updated = createStore({ dataDir: dir, homeDir: dir })
+    expect(updated.bots.get(atlas.id)).toMatchObject({ name: 'Atlas', handle: 'fai', isPrimary: false })
+    expect(updated.bots.get(named.id)).toMatchObject({ name: 'fai', handle: 'lead', isPrimary: true, hidden: false, model })
+    expect(updated.conversations.findDm(named.id)).toMatchObject({ id: dm.id, title: 'fai' })
+    expect(updated.entries.get(entry.id)).toEqual(entry)
+    updated.close()
+  })
+
+  it('preserves an unrelated owner of the fai handle when adding the main bot', () => {
+    const old = openStore(join(dir, 'faibots.db'), { homeDir: dir })
+    const atlas = old.bots.create({ name: 'Atlas', handle: 'fai' })
+    old.close()
+    const updated = createStore({ dataDir: dir, homeDir: dir })
+    expect(updated.bots.get(atlas.id)).toMatchObject({ name: 'Atlas', handle: 'fai', isPrimary: false })
+    expect(updated.bots.getByHandle('fai2')).toMatchObject({ name: 'fai', isPrimary: true })
+    updated.close()
+  })
+
   it('uses WAL, records the schema version and reopens cleanly', () => {
     const store = createStore({ dataDir: dir, homeDir: dir })
     expect(store.db.prepare('pragma journal_mode').get()).toEqual({ journal_mode: 'wal' })

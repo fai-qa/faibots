@@ -58,7 +58,6 @@ interface Persisted {
   drafts: Record<string, Draft>
   compactSidebar: boolean
   detailsOpen: boolean
-  lastConversationId?: Id
 }
 
 function loadPersisted(): Partial<Persisted> {
@@ -71,7 +70,6 @@ function loadPersisted(): Partial<Persisted> {
 }
 
 const persisted = loadPersisted()
-export const lastConversationId = persisted.lastConversationId
 
 export const useUi = create<UiState>()(() => ({
   route: { kind: 'home' },
@@ -101,8 +99,7 @@ useUi.subscribe((s) => {
     const data: Persisted = {
       drafts: s.drafts,
       compactSidebar: s.compactSidebar,
-      detailsOpen: s.detailsOpen,
-      lastConversationId: s.route.kind === 'conversation' ? s.route.id : undefined
+      detailsOpen: s.detailsOpen
     }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data))

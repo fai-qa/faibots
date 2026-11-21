@@ -308,7 +308,7 @@ describe('list_bots, create_bot, pass_turn', () => {
       result = await api.tool('list_bots', {})
     })
     await h.send(dm.id, 'who is around?')
-    expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths')
+    expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths | Model configured: test-model via Local test model')
   })
 
   it('create_bot asks first and creates nothing when denied', async () => {
@@ -323,7 +323,7 @@ describe('list_bots, create_bot, pass_turn', () => {
       await new Promise((r) => setTimeout(r, 5))
     }
     const card = h.services.bus.of('conv:entry').find((e) => e.entry.kind === 'approval')!.entry
-    expect(card.approval).toMatchObject({ toolName: 'create_bot', summary: 'Create a new bot "Intern": Helps' })
+    expect(card.approval).toMatchObject({ toolName: 'create_bot', summary: 'Create a new bot "Intern": Helps. Model: test-model via Local test model.' })
     h.services.approvals.resolve(card.approval!.approvalId, 'deny')
     await done
     expect(result?.isError).toBe(true)
