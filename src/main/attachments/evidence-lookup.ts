@@ -6,10 +6,14 @@ const normalize = (text: string) =>
   text
     .toLocaleLowerCase()
     .normalize('NFKC')
+    // Ignore Arabic vocalization and elongation for lookup. Keep original quotes for citations.
+    .replace(/[\u0640\u064b-\u0652\u0670]/gu, '')
+    .replace(/[٠-٩]/gu, (digit) => String(digit.charCodeAt(0) - 0x660))
+    .replace(/[۰-۹]/gu, (digit) => String(digit.charCodeAt(0) - 0x6f0))
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
 const COMMON = new Set(
-  'what which when does is are the for and our this that please tell me about from have'.split(' ')
+  'what which when does is are the for and our this that please tell me about from have ما ماذا متى كيف هل هو هي في من عن يعني'.split(' ')
 )
 
 /** Search checked snapshots. A disagreement needs an identifiable shared field, never just a different excerpt. */
