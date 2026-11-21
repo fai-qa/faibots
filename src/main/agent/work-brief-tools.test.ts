@@ -79,6 +79,46 @@ describe('fai work briefs', () => {
     expect(workBriefs(h.services.store.db).list(dm.id)[0]).toMatchObject({partial:true,state:'review'})
   })
 
+  it('keeps a busy job update separate from a new request and links each reply to its own message', async () => {
+    const chief = h.bot('fai',{isPrimary:true})
+    const dm = h.runtime.openDm(chief.id)
+    const work = workBriefs(h.services.store.db)
+    let proceed!: () => void
+    const gate = new Promise<void>(resolve=>{proceed=resolve})
+    const send = (text:string) => h.runtime.send({conversationId:dm.id,text,mentions:[],mentionsEveryone:false,attachmentPaths:[],clientNonce:text})
+    const failures:string[]=[]
+    h.engine.script('fai',async api=>{
+      const request = h.engine.turns.at(-1)!.newTexts.at(-1) ?? ''
+      const brief = asBrief(await api.tool('plan_work',{...briefInput,objective:request.includes('Separate')?'Check travel dates':briefInput.objective}))
+      if(request==='Start the pickup note') {
+        await gate
+        const obsolete = await api.tool('review_work',{action:'result',id:brief.id,revision:brief.revision,text:'Old gate.'})
+        failures.push(body(obsolete))
+      } else {
+        const result = request.includes('Gate 8') ? 'Pickup at Gate 8.' : 'Check the travel dates.'
+        asBrief(await api.tool('review_work',{action:'result',id:brief.id,revision:brief.revision,text:result}))
+        api.say(result)
+      }
+    })
+    await send('Start the pickup note')
+    await vi.waitFor(()=>expect(work.list(dm.id)).toHaveLength(1))
+    const original=work.list(dm.id)[0]!
+    work.decide(dm.id,{id:original.id,revision:1,decision:'steer',note:'Use Gate 8'})
+    try {
+      await deliverWorkReplies(h.services.store,h.runtime)
+      await send('Separate job: travel dates')
+    } finally { proceed() }
+    await h.runtime.idle()
+    const briefs=work.list(dm.id)
+    expect(briefs).toHaveLength(2)
+    expect(briefs.find(item=>item.id===original.id)).toMatchObject({lastInstruction:'Use Gate 8',result:'Pickup at Gate 8.',state:'review'})
+    expect(failures[0]).toMatch(/changed|updated/)
+    const entries=h.services.store.entries.since(dm.id,0)
+    for(const [reply,nonce] of [['Pickup at Gate 8.',`work-${original.id}-1`],['Check the travel dates.','Separate job: travel dates']] as const) {
+      expect(entries.find(entry=>entry.text===reply)?.replyToId).toBe(entries.find(entry=>entry.clientNonce===nonce)?.id)
+    }
+  })
+
   it('wakes one parent after background completion and ignores later duplicate notifications', async () => {
     const chief=h.bot('fai',{isPrimary:true})
     h.bot('Editor')

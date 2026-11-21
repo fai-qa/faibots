@@ -11,7 +11,7 @@ export const workBriefSchema = `
     note text not null, created_at integer not null, pending_reply integer not null,
     primary key(work_id, revision)
   );
-  create table chief_work_turns (turn_id text primary key, work_id text not null references chief_work(id) on delete cascade);
+  create table chief_work_turns (turn_id text primary key, work_id text not null references chief_work(id) on delete cascade, work_revision integer not null);
   create index chief_work_turns_work on chief_work_turns(work_id);
   create table chief_wakes (
     work_id text not null references chief_work(id) on delete cascade, revision integer not null,

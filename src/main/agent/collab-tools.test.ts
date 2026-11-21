@@ -308,7 +308,22 @@ describe('list_bots, create_bot, pass_turn', () => {
       result = await api.tool('list_bots', {})
     })
     await h.send(dm.id, 'who is around?')
-    expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths | Model configured: test-model via Local test model')
+    expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths | Model configured: test-model via Local test model | Running assignments: 0 | Billing configuration: local')
+  })
+
+  it('rules out roles whose required tool only works in groups', async () => {
+    const chief = h.bot('fai', {isPrimary:true})
+    const specialist = h.bot('Editor')
+    const dm = h.runtime.openDm(chief.id)
+    let listed = '', refusal = ''
+    h.engine.script(chief.handle, async api => {
+      listed = text(await api.tool('list_bots', { requiredTools: ['pass_turn'] }))
+      refusal = text(await api.tool('send_to_agent', { to: specialist.handle, message: 'Handle the room.', requiredTools: ['pass_turn'] }))
+    })
+    await h.send(dm.id,'Check who can handle this.')
+    expect(listed).toContain('tool pass_turn unavailable')
+    expect(refusal).toContain('tool pass_turn unavailable')
+    expect(h.services.store.conversations.findExchange(chief.id,specialist.id)).toBeUndefined()
   })
 
   it('rechecks skills and permissions after listing and before creating an exchange', async () => {

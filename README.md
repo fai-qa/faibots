@@ -22,6 +22,10 @@ If Electron exits immediately on Windows, run `npm run prestart` to download the
 3. When a new bot is needed, review its role and model in the approval card. A specialist can use the configured default model or the model already assigned to fai.
 4. You can also create bots yourself in **New Bot**, talk directly to a specialist or choose several bots in **New chat**. Reopening the app takes you back to fai.
 
+When a job needs several steps, fai can keep a work brief in the chat. Open it to see the deliverable and checks, update that job, answer a question, or accept a result. A specialist can work in the background while you speak with fai. The brief and its verified returns survive reopening the app.
+
+Projects have a Library for selected source revisions, a Space for reviewed Pages, and separate session histories. You choose which work to bring into a new session. Project instructions can be tried on two sets of notes before you activate them.
+
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
 
 Chats and settings are stored on your computer. A model request sends the conversation context it needs to the provider you configured. Tools and connectors can access additional information according to their permissions.

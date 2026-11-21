@@ -37,6 +37,7 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const canSteer = brief.state === 'active' || brief.state === 'waiting'
   const needsOwner = brief.state === 'needs_input' || brief.state === 'review'
   useEffect(() => { setDetailsOpen(needsOwner); setNote(''); setError('') }, [needsOwner, brief.revision])
   async function decide(decision: WorkDecision) {
@@ -44,7 +45,7 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
     setError('')
     try {
       await invoke('work:decide', { id: brief.id, conversationId: brief.conversationId, revision: brief.revision, decision,
-        note: decision === 'answer' || decision === 'request_changes' ? note : '' })
+        note: ['answer','request_changes','steer'].includes(decision) ? note : '' })
     } catch (cause) {
       setError(errorMessage(cause))
     } finally { setPending(false) }
@@ -57,11 +58,13 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
           <dt className="text-fg-3">Deliverable</dt><dd>{brief.deliverable}</dd>
           <dt className="text-fg-3">Checks</dt><dd>{brief.checks}</dd>
+          {brief.lastInstruction && <><dt className="text-fg-3">Your instruction</dt><dd>{brief.lastInstruction}</dd></>}
         </dl>
         {brief.state === 'needs_input' && <p className="whitespace-pre-wrap">{brief.question}</p>}
         {brief.result && <div><strong>{brief.partial ? 'Partial result' : 'Result'}</strong><p className="whitespace-pre-wrap">{brief.result}</p></div>}
-        {needsOwner && <textarea aria-label={brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
+        {(needsOwner || canSteer) && <textarea aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
         <div className="flex flex-wrap gap-2">
+          {canSteer && <button className={button} disabled={pending || !note.trim()} onClick={() => void decide('steer')}>Update this job</button>}
           {brief.state === 'needs_input' && <button className={button} disabled={pending || !note.trim()} onClick={() => void decide('answer')}>Send answer</button>}
           {brief.state === 'review' && <>
             <button className={button} disabled={pending} onClick={() => void decide('accept')}>{brief.partial ? 'Accept partial result' : 'Accept result'}</button>

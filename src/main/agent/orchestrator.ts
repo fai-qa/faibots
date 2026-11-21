@@ -45,6 +45,8 @@ import { errorResult } from '../tools/define'
 import { MAX_RESULT_CHARS, truncateText } from '../tools/registry'
 import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
+import { startOfLocalDay } from '../store/turns'
+import { MAIN_BOT_NAME } from '../store/bots'
 import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
 import { IncompleteTurnError, type TurnEngine } from './engine'
@@ -96,6 +98,7 @@ interface TurnRequest {
   parentSignal?: AbortSignal
   cascade?: Cascade
   root?: AssignmentRoot
+  userRequest?: { id: Id; seq: number }
   wake?: { id: string; revision: number; entryId: string }
   assignment?: { lease: DelegationLease; questionSeq: number; origin: NonNullable<Conversation['origin']> }
 }
@@ -246,7 +249,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
 
     if (conversation.kind === 'dm') {
       const botId = conversation.botIds[0]
-      if (botId) this.track(this.scheduleTurn(conversation.id, botId, { trigger: 'user', mustAnswer: true, inGroup: false, chain: [] }))
+      if (botId) {
+        const recipient = store.bots.get(botId)
+        const personalWork = recipient?.isPrimary && recipient.name === MAIN_BOT_NAME
+        this.track(this.scheduleTurn(conversation.id, botId, { trigger: 'user', mustAnswer: true, inGroup: false,
+          chain: [], ...(personalWork && { userRequest: { id: entry.id, seq: entry.seq } }) }))
+      }
     } else {
       this.track(this.runCascade(conversation.id, entry))
     }
@@ -383,6 +391,22 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // Collab tools
   // -------------------------------------------------------------------------------------------
 
+  jobHistory(bot: Bot, conversationId: Id) {
+    const { db, turns } = this.deps.store
+    const running = db.prepare("select count(*) as n from delegations where child_id=? and state='assigned'").get(bot.id)
+    const recent = db.prepare(`select d.updated_at-d.created_at as elapsed from delegations d join entries p on p.id=d.parent_entry_id
+      where d.child_id=? and p.conversation_id=? and d.state='answered' order by d.updated_at desc limit 20`).all(bot.id,conversationId)
+    const times = recent.map(row => Number(row.elapsed)).sort((a,b)=>a-b)
+    const middle = Math.floor(times.length/2)
+    const medianMs = times.length ? (times.length % 2 ? times[middle]! : (times[middle-1]!+times[middle]!)/2) : null
+    const used = bot.dailyRunLimit > 0 ? turns.automaticRunsSince(bot.id,startOfLocalDay(this.now().getTime())) : 0
+    const accepted = db.prepare(`select count(distinct w.id) as n from chief_work w join chief_work_turns t on t.work_id=w.id
+      join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
+      where w.conversation_id=? and w.state='accepted' and w.partial=0 and d.child_id=? and d.state='answered'`).get(conversationId,bot.id)
+    return { running: Number(running?.n ?? 0), remaining: bot.dailyRunLimit > 0 ? Math.max(0,bot.dailyRunLimit-used) : null,
+      medianMs, accepted: Number(accepted?.n ?? 0) }
+  }
+
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer' {
     const turn = this.active.get(turnId)
     if (!turn) return 'no-turn'
@@ -422,6 +446,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const detached = this.assignments.isDetached(id)
     const inherited = asking?.root ?? { turnId: ctx.turnId, conversationId: ctx.conversation.id }
     const work = this.briefs.rootForTurn(inherited.turnId) ?? this.briefs.rootForTurn(ctx.turnId)
+    if (this.briefs.superseded(ctx.turnId)) throw new CollabRefusal('The owner updated this job. Wait for its new instruction before assigning further work.')
     if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
     const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
     const inputHash = createHash('sha256').update(message.trim()).digest('hex')
@@ -669,7 +694,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const context = store.botContext.get(conversationId, botId)
     // An assignment can only consume its own question. A second one may already be queued in this exchange.
     const wakeEntry = req.wake ? store.entries.get(req.wake.entryId) : undefined
-    const upToSeq = wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+    const upToSeq = req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
     const unseen = wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
@@ -693,6 +718,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
         bot,
         conversation,
         members,
+        ...(req.userRequest && { replyToId: req.userRequest.id }),
+        ...(wakeEntry && { replyToId: wakeEntry.id }),
         signal,
         ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId } }),
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
@@ -777,7 +804,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
         toolContext,
         context,
         upToSeq,
-        turnNote: turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
+        turnNote: [turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
+          ...(req.wake ? [`Resume the specialist returns for work ${req.wake.id}. Check this work and its assignment receipts before submitting a result.`] : [])
+        ].filter(Boolean).join('\n'),
         recorder,
         signal,
         nameOf: (author) => speakerName(author, (id) => store.bots.get(id), userName),

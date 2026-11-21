@@ -1,5 +1,5 @@
 export type WorkState = 'active' | 'waiting' | 'needs_input' | 'review' | 'accepted' | 'cancelled'
-export type WorkDecision = 'answer' | 'accept' | 'request_changes' | 'cancel'
+export type WorkDecision = 'steer' | 'answer' | 'accept' | 'request_changes' | 'cancel'
 
 export interface WorkBrief {
   id: string
@@ -10,6 +10,7 @@ export interface WorkBrief {
   checks: string
   state: WorkState
   revision: number
+  lastInstruction: string
   question: string
   partial: boolean
   result: string

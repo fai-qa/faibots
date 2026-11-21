@@ -65,7 +65,7 @@ export async function deliverWorkReplies(store: PlatformStore, runtime: Pick<Run
   const work = workBriefs(store.db)
   for (const reply of work.pending()) {
     await runtime.send({ conversationId: reply.conversationId, clientNonce: `work-${reply.id}-${reply.revision}`,
-      text: `${reply.decision === 'answer' ? 'Answer' : 'Requested change'} for work ${reply.id} (${reply.objective}): ${reply.note}`,
+      text: `${reply.decision === 'answer' ? 'Answer' : reply.decision === 'steer' ? 'Updated instruction' : 'Requested change'} for work ${reply.id} (${reply.objective}): ${reply.note}`,
       mentions: [], mentionsEveryone: false, attachmentPaths: [] })
     work.acknowledge(reply.id, reply.revision)
   }

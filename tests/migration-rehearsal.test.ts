@@ -34,7 +34,7 @@ const TABLES: { name: string; since: number; cols: string[]; order: string }[] =
   { name: 'chief_work', since: BRIEF_VERSION, cols: ['id','conversation_id','user_entry_id','objective','revision','state'], order: 'id' },
   { name: 'chief_decisions', since: BRIEF_VERSION, cols: ['work_id','revision','decision','note','pending_reply'], order: 'work_id,revision' },
   { name: 'chief_wakes', since: BRIEF_VERSION, cols: ['work_id','revision','state','entry_id'], order: 'work_id,revision' },
-  { name: 'chief_work_turns', since: BRIEF_VERSION, cols: ['turn_id','work_id'], order: 'turn_id' },
+  { name: 'chief_work_turns', since: BRIEF_VERSION, cols: ['turn_id','work_id','work_revision'], order: 'turn_id' },
   { name: 'session_hosts', since: SESSION_VERSION, cols: ['host_key','host_id'], order: 'host_id' },
   { name: 'session_environments', since: SESSION_VERSION, cols: ['host_id','root_key','environment_id'], order: 'environment_id' },
   { name: 'project_sessions', since: SESSION_VERSION, cols: ['id','project_id','host_id','environment_id','owner_id','label','mode','parent_id','engine','sources','created_at'], order: 'id' },
@@ -152,7 +152,7 @@ function seed(db: DatabaseSync, v: number): void {
     run("insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at) values (?,?,?,'brief','draft','review','active',3,1)", `brief-${t}`,`conv-${t}`,`entry-${t}`)
     run("insert into chief_decisions values (?,2,'answer','two copies',1,1)", `brief-${t}`)
     run("insert into chief_wakes values (?,2,'finished',?)",`brief-${t}`,`entry-${t}`)
-    run("insert into chief_work_turns values (?,?)",`turn-${t}`,`brief-${t}`)
+    run("insert into chief_work_turns values (?,?,1)",`turn-${t}`,`brief-${t}`)
   }
   if (v >= BUDGET_VERSION) run(`insert into assignment_admissions values (?, ?, ?, ?, 1)`, `work-${t}`, `root-${t}`, `conv-${t}`, 'work-v8')
   if (v >= IMPROVEMENTS_VERSION) {

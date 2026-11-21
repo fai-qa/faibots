@@ -23,6 +23,7 @@ export interface RecorderOptions {
   conversation: Conversation
   /** Bots that can be @mentioned from this conversation (its members). */
   members: Bot[]
+  replyToId?: Id
   meta?: Entry['meta']
   /** Once aborted (Stop, reset), late text and tool calls from the engine are dropped. */
   signal?: AbortSignal
@@ -154,6 +155,7 @@ export class TurnRecorder {
       const entry = this.append({
         conversationId: this.opts.conversation.id,
         kind: 'message',
+        ...(this.opts.replyToId && { replyToId: this.opts.replyToId }),
         author: { kind: 'bot', botId: this.opts.bot.id },
         text: '',
         mentions: [],
