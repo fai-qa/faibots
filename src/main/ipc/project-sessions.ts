@@ -7,7 +7,7 @@ import type { PlatformStore } from '../store'
 import { safeModelId, saveTurnContext } from '../store/turn-context'
 import { createProjectSessions } from '../store/project-sessions'
 import { chiefForHandoff } from '../store/escalations'
-import { queueProjectResult } from '../store/project-result-requests'
+import { queueProjectResult, readProjectResult } from '../store/project-result-requests'
 
 type Lookup = SessionInvoke['session:lookup']['req']
 
@@ -99,6 +99,10 @@ export function projectSessionHandlers(services: Pick<Services,'runtime'|'dataDi
     return answer
   }
   return {
+    'session:instruction': ({ conversationId, entryId }: SessionInvoke['session:instruction']['req']) => {
+      try { return readProjectResult(store, services, conversationId, entryId)?.instruction ?? null }
+      catch { return null }
+    },
     'session:ask-fai': async (req: SessionInvoke['session:ask-fai']['req']) => {
       const chat = services.runtime.openDm(chiefForHandoff(store).id)
       const entry = queueProjectResult(store, services, chat.id, req)

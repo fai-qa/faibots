@@ -1,4 +1,6 @@
 import clsx from 'clsx'
+import { useEffect, useState } from 'react'
+import { invoke, on } from '../../lib/bridge'
 import { CircleAlert, Copy, CornerUpLeft, FileText, Image as ImageIcon, RotateCcw } from 'lucide-react'
 import type { Conversation, Entry } from '@shared/domain'
 import { useData } from '../../store/data'
@@ -53,6 +55,27 @@ function ReplyQuote({ entry }: { entry: Entry }) {
   )
 }
 
+function ProjectInstruction({ entry }: { entry: Entry }) {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState<string | null>()
+  useEffect(() => {
+    if (!open) return
+    let live = true
+    const close = () => { live = false; setValue(undefined); setOpen(false) }
+    const off = [on('journey:changed', close), on('settings:changed', close), on('bots:changed', close)]
+    void invoke('session:instruction', { conversationId: entry.conversationId, entryId: entry.id })
+      .then((text) => { if (live) setValue(text) })
+      .catch(() => { if (live) setValue(null) })
+    return () => { live = false; off.forEach((unsubscribe) => unsubscribe()) }
+  }, [open, entry.conversationId, entry.id])
+  return <div className="mt-1 text-[12px]">
+    <button type="button" aria-expanded={open} className="underline" onClick={() => { setValue(undefined); setOpen(!open) }}>
+      {open ? 'Hide my instruction' : 'Show my instruction'}
+    </button>
+    {open && <p dir="auto" className="mt-1 whitespace-pre-wrap">{value === undefined ? 'Checking access…' : value ?? 'This selection is unavailable.'}</p>}
+  </div>
+}
+
 export function MessageBubble({
   entry,
   conv,
@@ -96,6 +119,7 @@ export function MessageBubble({
         ) : entry.text ? (
           <Markdown text={entry.text} streaming={entry.isStreaming} onInk={isUser} />
         ) : null}
+        {isUser && entry.clientNonce?.startsWith('project-result-') && <ProjectInstruction entry={entry} />}
         <AttachmentChips entry={entry} onInk={isUser} />
       </div>
       {pending && <span className="mt-1 text-2xs text-fg-4">Sending…</span>}

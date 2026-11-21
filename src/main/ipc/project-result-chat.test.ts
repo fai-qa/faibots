@@ -286,14 +286,18 @@ it('uses the owner’s explicit Reply action for a new instruction and live evid
 })
 
 it('shows only the linked project inputs on the work card and withdraws their titles when access changes', async () => {
-  const { store, dm, project, request, source, start } = await fixture()
+  const { ipc, store, dm, project, request, source, start } = await fixture()
   const entry = queueProjectResult(store, h.services, dm.id, request)
   const work = workBriefs(store.db).start(dm.id, entry.id, 'test-turn', 'Check the entrance', 'One sentence', 'Matches the selected source')
   const display = () => workScope(store, h.services, dm.id, work.id)
+  const instruction = () => ipc['session:instruction']({ conversationId: dm.id, entryId: entry.id })
+  expect(instruction()).toBe(request.instruction)
+  expect(ipc['session:instruction']({ conversationId: 'another-chat', entryId: entry.id })).toBeNull()
   expect(display()).toEqual({ inputs: ['Your original message', project.name + ' / ' + start.label, 'fixture-notes.md · revision 1, line 1'], withheld: false })
   expect(() => workScope(store, h.services, 'another-chat', work.id)).toThrow(/this chat/)
   store.projectContent.select(project.id, store.projectContent.pin(project.id, source.id).itemId, false)
   expect(display()).toEqual({ inputs: ['Your original message'], withheld: true })
+  expect(instruction()).toBeNull()
 })
 
 it('withholds a revoked queued selection on restart before opening any provider turn', async () => {
