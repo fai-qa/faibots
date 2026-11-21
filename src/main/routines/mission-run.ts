@@ -16,6 +16,8 @@ import type {
 } from '@shared/domain'
 import type { AttachmentStore, EventBus, MissionRunService, Runtime } from '../contracts'
 import { readSourceSnapshot, revisionText } from '../attachments/project-reads'
+import type { ProjectInstruction } from '@shared/project-improvements'
+import { createProjectImprovements } from '../store/project-improvements'
 import { transaction } from '../store/db'
 import { safeFileName } from '../attachments/attachments'
 import { artifactSaves } from './artifact-saves'
@@ -106,6 +108,11 @@ export function missionTrigger(project: Project, artifact: Artifact): EntryTrigg
 
 export function createMissionRunService(deps: MissionRunServiceDeps): MissionRunService & { idle(): Promise<void> } {
   const { store, runtime, attachments, dataDir, bus } = deps
+  const improvements = createProjectImprovements(store, (project, revision) => revisionText(store,project,revision,dataDir,attachments))
+  const observeOutcome = (run: JourneyRun) => {
+    if (!improvements.isTrial(run.id)) store.projectContent.recordOutcome(run)
+    improvements.observe(run)
+  }
   const now = deps.now ?? Date.now
   const saves = artifactSaves(store,dataDir)
   const active = new Map<Id, Promise<void>>()
@@ -117,7 +124,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
     try {
       return transaction(store.db, () => {
         const run = repo.finish(runId, patch)
-        if (run.endedAt !== undefined) store.projectContent.recordOutcome(run)
+        if (run.endedAt !== undefined) observeOutcome(run)
         return run
       })
     } catch (error) {
@@ -256,7 +263,8 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
     chief: Bot,
     artifact: Artifact,
     reviewer: Bot | undefined,
-    rubric: string
+    rubric: string,
+    instruction?: ProjectInstruction
   ): Promise<void> => {
     const settings = store.settings.get()
     const workspaceDir = join(settings.workspaceRoot, chief.handle)
@@ -285,7 +293,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
 
       const draft = await runtime.runAutomated({
         botId: chief.id,
-        text: draftTask(project, notes.manifest, deliverable),
+        text: [draftTask(project, notes.manifest, deliverable), instruction && `Reviewed project instruction v${instruction.version}: ${instruction.instruction}\nRequired output text: ${instruction.requiredText}`].filter(Boolean).join('\n\n'),
         trigger: missionTrigger(project, artifact),
         readProjectNote: notes.read,
         manifestLite: { sources: notes.manifest }
@@ -330,7 +338,8 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       // One reviewer exchange, as its own automatic turn so waiting_review is a real, persisted state.
       finish(run.id, { status: 'waiting_review' })
       changed(project.id)
-      const message = reviewMessageFor(rubric, draftText, DELIVERABLE_PATH, notes.evidence(), run.id).trim()
+      const reviewRubric = instruction ? `${rubric}\nProject instruction v${instruction.version}: ${instruction.instruction}\nRequired output text: ${instruction.requiredText}` : rubric
+      const message = reviewMessageFor(reviewRubric, draftText, DELIVERABLE_PATH, notes.evidence(), run.id).trim()
       const existingExchange = store.conversations.findExchange(chief.id, reviewer.id)
       const previousSeq = existingExchange
         ? store.entries.page(existingExchange.id, { limit: 1 }).entries[0]?.seq ?? 0
@@ -373,6 +382,8 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         explanation = `The review exchange could not finish: ${reviewTurn.error ?? `the chief turn ended as ${reviewTurn.status}`}${partial ? `. The reviewer's unfinished text stays partial: ${clip(partial, 1_000)}` : ''}`
       }
 
+      const failedProjectCheck = instruction && !draftText.includes(instruction.requiredText)
+        ? `Project instruction v${instruction.version}: the required text was missing from the saved output.` : undefined
       transaction(store.db, () => {
         const review = store.artifacts.addReview({
           artifactRevisionId: revision.id,
@@ -384,14 +395,14 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         store.artifacts.updateStatus(artifact.id, 'reviewed')
 
         // Nothing auto-accepts beyond the bot's own review; only 'accepted' is complete.
-        const status = decision === 'accepted' ? 'complete' : 'partial'
+        const status = decision === 'accepted' && !failedProjectCheck ? 'complete' : 'partial'
         if (status === 'complete') {
           revisionText(store, project.id, revision, dataDir, attachments)
-          store.projectContent.publish(run, revision, review)
+          if (!improvements.isTrial(run.id)) store.projectContent.publish(run, revision, review)
         }
         finish(run.id, {
           status,
-          ...(status === 'partial' && { error: clip(explanation) }),
+          ...(status === 'partial' && { error: clip(failedProjectCheck ?? explanation) }),
           endedAt: now(),
           budgets: budgets()
         })
@@ -403,7 +414,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
   }
 
   return {
-    start(projectId, baselineRunId) {
+    start(projectId, baselineRunId, trialCandidateId) {
       const project = store.projects.get(projectId)
       if (!project) throw new Error('Project not found')
       const baseline = baselineRunId && store.projectContent.evaluations(projectId).find(e => e.runId === baselineRunId)
@@ -421,13 +432,13 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       if (!chief) throw new Error('There is no bot to run the mission.')
       const reviewer = store.bots.list().find((b) => b.id !== chief.id && !b.hidden && b.model.providerId !== '')
 
-      const { artifact, run } = transaction(store.db, () => {
-        const artifact = store.artifacts.create({ projectId, name: `${safeFileName(project.name)} proposal.md`, kind: 'proposal' })
+      const { artifact, run, instruction } = transaction(store.db, () => {
+        const artifact = store.artifacts.create({ projectId, name: `${safeFileName(project.name)} ${trialCandidateId ? 'instruction trial' : 'proposal'}.md`, kind: 'proposal' })
         const run = repo.start({ projectId, artifactId: artifact.id, status: 'working', startedAt: now() })
         store.projectContent.recordContext(run,sources,rubric,baselineRunId)
-        return { artifact, run }
+        return { artifact, run, instruction: improvements.pin(run,baselineRunId,trialCandidateId) }
       })
-      const done = runMission(run, project, sources, chief, artifact, reviewer, rubric)
+      const done = runMission(run, project, sources, chief, artifact, reviewer, rubric, instruction)
       active.set(run.id, done)
       void done.finally(() => active.delete(run.id))
       changed(projectId)
@@ -442,7 +453,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       const unfinished = store.db.prepare(`select r.id from journey_runs r join project_context c on c.run_id=r.id
         where r.status in ('working','waiting_review')`).all()
       const count = repo.closeInterrupted(at)
-      for (const row of unfinished) store.projectContent.recordOutcome(repo.get(String(row.id))!)
+      for (const row of unfinished) observeOutcome(repo.get(String(row.id))!)
       return count
       })
     },

@@ -6,6 +6,7 @@ import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
 import { SESSION_SCHEMA } from './session-schema'
+import { PROJECT_IMPROVEMENTS_SCHEMA } from './project-improvements-schema'
 
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
@@ -328,6 +329,7 @@ export const MIGRATIONS: string[] = [
   create index delegations_pending on delegations(id) where delivered_at is null;
   `,
   PROJECT_CONTENT_SCHEMA,
+  PROJECT_IMPROVEMENTS_SCHEMA,
   workBriefSchema,
   ASSIGNMENT_BUDGET_SCHEMA,
   SESSION_SCHEMA,

@@ -11,6 +11,7 @@ import { MIGRATIONS } from '../src/main/store/schema'
 
 import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
 import { SESSION_SCHEMA } from '../src/main/store/session-schema'
+import { PROJECT_IMPROVEMENTS_SCHEMA } from '../src/main/store/project-improvements-schema'
 
 import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
 
@@ -23,6 +24,7 @@ const BRIEF_VERSION = MIGRATIONS.indexOf(workBriefSchema) + 1
 const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
+const IMPROVEMENTS_VERSION = MIGRATIONS.indexOf(PROJECT_IMPROVEMENTS_SCHEMA) + 1
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
@@ -38,6 +40,9 @@ const TABLES: { name: string; since: number; cols: string[]; order: string }[] =
   { name: 'project_sessions', since: SESSION_VERSION, cols: ['id','project_id','host_id','environment_id','owner_id','label','mode','parent_id','engine','sources','created_at'], order: 'id' },
   { name: 'project_answers', since: SESSION_VERSION, cols: ['id','session_id','query','payload','created_at'], order: 'id' },
   { name: 'project_history_selection', since: SESSION_VERSION, cols: ['session_id','answer_id'], order: 'session_id,answer_id' },
+  { name: 'improvement_candidates', since: IMPROVEMENTS_VERSION, cols: ['id','project_id','version','instruction','required_text','matched','heldout','base','decision','created_at','reviewed_at'], order: 'id' },
+  { name: 'improvement_runs', since: IMPROVEMENTS_VERSION, cols: ['run_id','candidate_id','lane','baseline_id','observed','reason','sha256','created_at'], order: 'run_id' },
+  { name: 'improvement_history', since: IMPROVEMENTS_VERSION, cols: ['seq','project_id','before_id','after_id','action','created_at'], order: 'seq' },
   { name: 'project_spaces', since: CONTENT_VERSION, cols: ['id', 'project_id', 'name'], order: 'id' },
   { name: 'library_items', since: CONTENT_VERSION, cols: ['id', 'owner_id'], order: 'id' },
   { name: 'library_revisions', since: CONTENT_VERSION, cols: ['item_id', 'revision', 'source_id'], order: 'item_id,revision' },
@@ -150,6 +155,12 @@ function seed(db: DatabaseSync, v: number): void {
     run("insert into chief_work_turns values (?,?)",`turn-${t}`,`brief-${t}`)
   }
   if (v >= BUDGET_VERSION) run(`insert into assignment_admissions values (?, ?, ?, ?, 1)`, `work-${t}`, `root-${t}`, `conv-${t}`, 'work-v8')
+  if (v >= IMPROVEMENTS_VERSION) {
+    run("insert into journey_runs(id,project_id,status,started_at) values(?,?,'complete',1)", `held-${t}`,`proj-${t}`)
+    run("insert into improvement_candidates values(?,?,1,'Use this heading','Next step',?,?,null,'approved',1,2)",`candidate-${t}`,`proj-${t}`,`jr-${t}`,`held-${t}`)
+    run("insert into improvement_runs values(?,?,'matched',?,'passed','Checked','sha',3)",`jr-${t}`,`candidate-${t}`,`held-${t}`)
+    run("insert into improvement_history values(?,?,null,?,'publish',4)",v,`proj-${t}`,`candidate-${t}`)
+  }
 }
 
 interface Snapshot { counts: Record<string, number>; hash: string }

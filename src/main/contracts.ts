@@ -498,7 +498,7 @@ export interface Runtime {
  */
 export interface MissionRunService {
   /** Start a mission run for a project (refuses: unknown project, no sources, a run already active). */
-  start(projectId: Id, baselineRunId?: Id): JourneyRun
+  start(projectId: Id, baselineRunId?: Id, trialCandidateId?: Id): JourneyRun
   /** Runs of a project, newest first. */
   runs(projectId: Id, limit?: number): JourneyRun[]
   /** Startup only: close runs left working/waiting_review by a crash as failed (A20). */

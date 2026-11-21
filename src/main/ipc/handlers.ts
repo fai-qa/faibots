@@ -13,6 +13,7 @@ import { workBriefs } from '../store/work-briefs'
 import { deliverWorkReplies } from '../agent/work-brief-tools'
 import { projectContentHandlers } from './project-content'
 import { projectSessionHandlers } from './project-sessions'
+import { improvementHandlers } from './project-improvements'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
 
@@ -37,6 +38,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       return result
     },
     ...projectSessionHandlers(s, store),
+    ...improvementHandlers(s, store),
     'app:info': () => ({
       name: app.getName(),
       version: app.getVersion(),

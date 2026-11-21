@@ -5,6 +5,7 @@ import type { WorkBrief, WorkReply } from './work-brief'
 
 import { CONTENT_CHANNELS, type ContentInvoke } from './project-content'
 import { SESSION_CHANNELS, type SessionInvoke } from './project-sessions'
+import { IMPROVEMENT_CHANNELS, type ImprovementInvoke } from './project-improvements'
 import type {
   AppSettings,
   ApprovalDecision,
@@ -98,7 +99,7 @@ export interface ArtifactWithRevisions {
   content?: string
 }
 
-export interface InvokeMap extends ContentInvoke, SessionInvoke {
+export interface InvokeMap extends ContentInvoke, SessionInvoke, ImprovementInvoke {
   'work:list': { req: { conversationId: Id }; res: WorkBrief[] }
   'work:decide': { req: WorkReply & { conversationId: Id }; res: WorkBrief }
   'app:info': { req: void; res: AppInfo }
@@ -256,6 +257,7 @@ export const INVOKE_CHANNELS = [
   ...CONTENT_CHANNELS,
   'work:list', 'work:decide',
   ...SESSION_CHANNELS,
+  ...IMPROVEMENT_CHANNELS,
   'app:info',
   'bots:list', 'bots:create', 'bots:update', 'bots:delete', 'bots:export-recipe', 'bots:import-recipe',
   'conv:list', 'conv:open-dm', 'conv:create-group', 'conv:update', 'conv:delete', 'conv:entries',

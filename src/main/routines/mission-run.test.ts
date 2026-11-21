@@ -13,6 +13,7 @@ import { ScriptedAdapter, callTools, say, type ScriptedStep } from '../agent/tes
 import { fileTools } from '../tools/builtin/files'
 import { createAttachmentStore } from '../attachments/attachments'
 import { projectContentHandlers } from '../ipc/project-content'
+import { improvementHandlers } from '../ipc/project-improvements'
 import type { MissionRunService, Services } from '../contracts'
 import {
   createMissionRunService, DELIVERABLE_PATH, DEFAULT_PROPOSAL_RUBRIC, reviewMessageFor, reviewVerdictOf
@@ -78,11 +79,11 @@ describe('mission run (M1c)', () => {
   }
 
   /** The chief sends the run-specific brief, source evidence and draft verbatim. */
-  const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT): ScriptedStep => (events, signal) => {
+  const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT, source = NOTE_BODY): ScriptedStep => (events, signal) => {
     const message = REVIEW_MESSAGE.exec(latestTask(harness, chiefId))![1]!.trim()
     expect(message).toContain(DEFAULT_PROPOSAL_RUBRIC)
     expect(message).toContain(draft.trim())
-    expect(message).toContain(sha(NOTE_BODY))
+    expect(message).toContain(sha(source))
     return callTools([{ id: 'send-1', name: 'send_to_agent', input: { to: 'iris', message } }])(events, signal)
   }
 
@@ -278,6 +279,71 @@ describe('mission run (M1c)', () => {
     const revisions = h!.services.store.artifacts.revisions(artifact.id)
     expect(revisions).toHaveLength(1)
     expect(h!.services.store.artifacts.reviews(revisions[0]!.id)).toEqual([])
+  })
+
+  it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {
+    const { adapter, missions, projectId, chiefId } = setup()
+    const services = h!.services
+    const store = services.store
+    const attachments = createAttachmentStore({ dataDir: services.dataDir })
+    const handlers = improvementHandlers({ ...services, missions, attachments } as unknown as Services, store)
+    const other = store.projects.create({ name: 'Separate project' })
+    const requiredText = '## Next decision'
+    const instruction = 'Include a Next decision heading before the final recommendation.'
+    const write = (withRule: boolean, obey = true): ScriptedStep => (events, signal) => {
+      expect(latestTask(h!,chiefId).includes(instruction)).toBe(withRule)
+      return writeDraft(h!,chiefId,withRule && obey ? DRAFT + '\n' + requiredText : DRAFT)(events,signal)
+    }
+    const stage = (withRule: boolean, obey = true, source = NOTE_BODY) =>
+      adapter.push(write(withRule,obey),say('Saved.'),reviewDispatch(h!,chiefId,DRAFT,source),say('VERDICT: accepted — grounded.'),endTurn)
+    stage(false)
+    const matched = missions.start(projectId).id
+    await missions.idle()
+    expect(store.journeyRuns.get(matched)?.status,store.journeyRuns.get(matched)?.error).toBe('complete')
+    const first = store.projectContent.library(projectId)[0]!
+    store.projectContent.select(projectId, first.itemId, false)
+    const path = join(services.dataDir,'heldout.md')
+    const heldNotes = '# Another launch\n\nAsk the venue to approve a smaller workshop.'
+    writeFileSync(path,heldNotes)
+    const att = attachments.ingest([path])[0]!
+    store.projectSources.insert({ projectId,attachmentId:att.id,name:att.name,sha256:sha(heldNotes),sizeBytes:att.sizeBytes,kind:'md' })
+    stage(false,true,heldNotes)
+    const heldout = missions.start(projectId).id
+    await missions.idle()
+    expect(store.journeyRuns.get(heldout)?.status,store.journeyRuns.get(heldout)?.error).toBe('complete')
+    expect(() => handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout:matched})).toThrow(/different/)
+    const candidateId = handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout})
+    const req = { projectId,candidateId }
+    expect(() => handlers['improvement:trial']({...req,lane:'matched'})).toThrow(/Approve/)
+    expect(() => handlers['improvement:review']({...req,projectId:other.id,decision:'approved'})).toThrow()
+    handlers['improvement:review']({...req,decision:'approved'})
+    stage(true)
+    handlers['improvement:trial']({...req,lane:'matched'})
+    await missions.idle()
+    expect(() => handlers['improvement:publish'](req)).toThrow(/heldout/)
+    stage(true,false,heldNotes)
+    handlers['improvement:trial']({...req,lane:'heldout'})
+    await missions.idle()
+    expect(() => handlers['improvement:publish'](req)).toThrow(/heldout/)
+    stage(true,true,heldNotes)
+    handlers['improvement:trial']({...req,lane:'heldout'})
+    await missions.idle()
+    expect(store.projectContent.pages(projectId)).toHaveLength(2)
+    handlers['improvement:publish'](req)
+    expect(handlers['improvement:list']({projectId}).active?.id).toBe(candidateId)
+    expect(handlers['improvement:list']({projectId:other.id}).active).toBeNull()
+    stage(true,true,heldNotes)
+    const live = missions.start(projectId).id
+    await missions.idle()
+    expect(store.db.prepare('select lane,observed from improvement_runs where run_id=?').get(live)).toMatchObject({lane:'production',observed:'passed'})
+    handlers['improvement:rollback'](req)
+    stage(false,true,heldNotes)
+    missions.start(projectId)
+    await missions.idle()
+    const result = handlers['improvement:list']({projectId})
+    expect(result.active).toBeNull()
+    expect(result.history.map((item)=>item.action)).toEqual(['rollback','publish'])
+    expect(result.trials.map((t)=>t.observed)).toEqual(['passed','failed','passed'])
   })
 
   it('publishes a Page tied to the accepted revision and captures a failed case to recheck against a later matching run', async () => {

@@ -18,6 +18,7 @@ import { Button } from '../ui/Button'
 import { StatusChip } from './StatusChip'
 import { ProjectSpace } from './ProjectSpace'
 import { ProjectSessions } from './ProjectSessions'
+import { ProjectImprovements } from './ProjectImprovements'
 import { RunDetails } from './RunDetails'
 import { AgentTrail, type TrailStep } from '../ui/agent-trail-clean'
 
@@ -138,6 +139,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
               </EmptyState>
             )}
           </section> : <ProjectSpace key={projectId} projectId={projectId} version={journeyVersion} attaching={attaching} onAttach={()=>void attach()} />}
+          <ProjectImprovements key={projectId + '-instructions'} projectId={projectId} version={journeyVersion} />
 
           {/* Mission ----------------------------------------------------------------- */}
           <section aria-label="Mission">

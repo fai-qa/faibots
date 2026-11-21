@@ -769,6 +769,9 @@ export function createMockBridge(): FaiBotsBridge {
 
   const desktopContent = (): never => { throw new Error('Open the desktop app to use the local project Library and Space.') }
   const handlers: Handlers = {
+    'improvement:list': () => ({ active: null, cases: [], candidates: [], trials: [], history: [], production: [] }),
+    'improvement:propose': desktopContent, 'improvement:review': desktopContent, 'improvement:trial': desktopContent,
+    'improvement:publish': desktopContent, 'improvement:rollback': desktopContent,
     'content:project': desktopContent, 'content:select': desktopContent, 'content:revoke': desktopContent, 'content:restore': desktopContent,
     'session:project': desktopContent, 'session:open': desktopContent, 'session:lookup': desktopContent, 'session:history': desktopContent,
     'content:read-source': desktopContent, 'content:share': desktopContent, 'content:revise': desktopContent, 'content:read-page': desktopContent, 'content:rerun': desktopContent, 'content:evaluate': desktopContent,
