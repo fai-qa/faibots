@@ -25,7 +25,7 @@ function entry(author: Entry['author'], text: string, extra: Partial<Entry> = {}
 const you = { kind: 'user' } as const
 const me = { kind: 'bot', botId: 'me' } as const
 const ada = { kind: 'bot', botId: 'ada' } as const
-const nameOf = (a: Entry['author']) => (a.kind === 'user' ? 'Alex' : a.kind === 'bot' ? (a.botId === 'me' ? 'Me' : 'Ada') : 'FaiBots')
+const nameOf = (a: Entry['author']) => (a.kind === 'user' ? 'Alex' : a.kind === 'bot' ? (a.botId === 'me' ? 'Me' : 'Ada') : 'faibots')
 
 describe('buildBotView', () => {
   it('own messages are assistant turns; others are named user turns, merged when consecutive', () => {
@@ -92,8 +92,8 @@ describe('buildBotView', () => {
 
 describe('withTurnNote and entriesAsText', () => {
   it('appends the note to the newest user turn', () => {
-    const view = withTurnNote([{ role: 'user', content: [{ type: 'text', text: '[Alex] hi' }] }], '(FaiBots: reply)')
-    expect(view).toEqual([{ role: 'user', content: [{ type: 'text', text: '[Alex] hi' }, { type: 'text', text: '(FaiBots: reply)' }] }])
+    const view = withTurnNote([{ role: 'user', content: [{ type: 'text', text: '[Alex] hi' }] }], '(faibots: reply)')
+    expect(view).toEqual([{ role: 'user', content: [{ type: 'text', text: '[Alex] hi' }, { type: 'text', text: '(faibots: reply)' }] }])
     expect(withTurnNote(view, '')).toBe(view)
   })
 

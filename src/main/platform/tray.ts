@@ -27,7 +27,7 @@ export function createTrayController(deps: {
 
   const menu = () =>
     Menu.buildFromTemplate([
-      { label: 'Open FaiBots', click: () => deps.open() },
+      { label: 'Open faibots', click: () => deps.open() },
       { type: 'separator' },
       {
         label: 'Pause routines',
@@ -36,7 +36,7 @@ export function createTrayController(deps: {
         click: (item) => deps.setRoutinesPaused(item.checked)
       },
       { type: 'separator' },
-      { label: 'Quit FaiBots', click: () => deps.quit() }
+      { label: 'Quit faibots', click: () => deps.quit() }
     ])
 
   return {
@@ -49,7 +49,7 @@ export function createTrayController(deps: {
       if (tray) return
       const image = nativeImage.createFromDataURL(`data:image/png;base64,${ICON_PNG_BASE64}`)
       tray = new Tray(process.platform === 'darwin' ? image.resize({ width: 18, height: 18 }) : image)
-      tray.setToolTip('FaiBots: your bots keep running here')
+      tray.setToolTip('faibots: your bots keep running here')
       tray.setContextMenu(menu())
       tray.on('click', () => deps.open())
     },

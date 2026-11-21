@@ -123,7 +123,7 @@ export const PERMISSION_LABELS = {
 
 export const TOOL_GROUP_LABELS = {
   builtin: 'On your computer',
-  faibots: 'FaiBots',
+  faibots: 'faibots',
   mcp: 'Connectors'
 } as const
 

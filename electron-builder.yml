@@ -1,10 +1,10 @@
-# Windows installer for FaiBots. `npm run dist` builds the app, then writes
-# dist/FaiBots-Setup-<version>.exe. Docs: https://www.electron.build/configuration
+# Windows installer for faibots. `npm run dist` builds the app, then writes
+# dist/faibots-Setup-<version>.exe. Docs: https://www.electron.build/configuration
 
 # Must match app.setAppUserModelId() in src/main/index.ts: Windows ties toasts and the taskbar
 # entry to this id, so changing it breaks notifications for installed copies.
 appId: com.faibots.app
-productName: FaiBots
+productName: faibots
 copyright: Copyright © 2026 fai.qa
 
 directories:
@@ -28,16 +28,16 @@ asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk-*/**
   - node_modules/@openai/codex-*/vendor/**
 
-# Fuses are switches compiled into FaiBots.exe and flipped at package time, so nothing at run
+# Fuses are switches compiled into faibots.exe and flipped at package time, so nothing at run
 # time (an environment variable, a command-line flag) can turn them back on. Nothing in the app
 # needs the ones turned off here: both engines are their own native programs and MCP connectors
 # run the user's own command. Reasons and checks: docs/PACKAGING.md.
 electronFuses:
-  runAsNode: false                             # ELECTRON_RUN_AS_NODE=1 no longer turns FaiBots.exe into Node
+  runAsNode: false                             # ELECTRON_RUN_AS_NODE=1 no longer turns faibots.exe into Node
   enableNodeOptionsEnvironmentVariable: false  # NODE_OPTIONS (e.g. --require evil.js) is ignored
   enableNodeCliInspectArguments: false         # --inspect / --inspect-brk cannot attach a debugger
   onlyLoadAppFromAsar: true                    # only resources/app.asar is loaded, never a loose app folder
-  enableEmbeddedAsarIntegrityValidation: true  # app.asar must match the hash stored in FaiBots.exe
+  enableEmbeddedAsarIntegrityValidation: true  # app.asar must match the hash stored in faibots.exe
   enableCookieEncryption: true                 # cookies on disk are encrypted with the OS key (DPAPI)
 
 win:
@@ -54,7 +54,7 @@ nsis:
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: FaiBots
+  shortcutName: faibots
   deleteAppDataOnUninstall: false
   runAfterFinish: true
   artifactName: ${productName}-Setup-${version}.${ext}

@@ -36,7 +36,7 @@ function createWindow(): BrowserWindow {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    title: 'FaiBots',
+    title: 'faibots',
     backgroundColor: '#0f1012',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -59,8 +59,8 @@ function createWindow(): BrowserWindow {
     if (!toldAboutTray) {
       toldAboutTray = true
       notify({
-        title: 'FaiBots is still running',
-        body: 'Your routines keep going. Open FaiBots or quit it from the tray icon.',
+        title: 'faibots is still running',
+        body: 'Your routines keep going. Open faibots or quit it from the tray icon.',
         urgent: false,
         onClick: () => focusWindow()
       })
@@ -229,7 +229,7 @@ if (!app.requestSingleInstanceLock()) {
       // Without services the window would be an empty shell; say why and quit instead.
       const message = err instanceof Error ? err.message : String(err)
       console.error('[main] startup failed:', err)
-      dialog.showErrorBox('FaiBots could not start', `${message}\n\nData folder: ${app.getPath('userData')}`)
+      dialog.showErrorBox('faibots could not start', `${message}\n\nData folder: ${app.getPath('userData')}`)
       app.exit(1)
       return
     }

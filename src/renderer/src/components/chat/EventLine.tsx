@@ -38,7 +38,7 @@ function TriggerTask({ entry, trigger }: { entry: Entry; trigger: EntryTrigger }
   const mission = trigger.kind === 'mission'
   const label = mission ? 'Mission' : 'Routine'
   const name = mission ? trigger.projectName : trigger.routineName
-  const detail = mission ? 'run by FaiBots' : `Routine, ${STARTED[trigger.via]}`
+  const detail = mission ? 'run by faibots' : `Routine, ${STARTED[trigger.via]}`
   return (
     <div className="flex justify-center px-4 py-2" title={formatFull(entry.createdAt)}>
       <div className="w-full max-w-[560px] rounded-xl border border-line-soft bg-pane px-3.5 py-2.5">

@@ -18,7 +18,7 @@ describe('automatic runs', () => {
     h.cleanup()
   })
 
-  it('posts the task as FaiBots in the bot chat and returns the reply', async () => {
+  it('posts the task as faibots in the bot chat and returns the reply', async () => {
     const bot = h.bot('Stark')
     h.engine.script('stark', (api) => {
       api.turn.recorder.addUsage({ inputTokens: 120, outputTokens: 30 })
@@ -44,11 +44,11 @@ describe('automatic runs', () => {
     const bot = h.bot('Stark')
     const result = await h.runtime.runAutomated({ botId: bot.id, text: 'Check the inbox', trigger: trigger('Inbox check') })
     const entries = h.services.store.entries.page(result.conversationId, { limit: 10 }).entries
-    const view = buildBotView({ botId: bot.id, entries, summary: '', nameOf: (a) => (a.kind === 'system' ? 'FaiBots' : 'Alex') })
+    const view = buildBotView({ botId: bot.id, entries, summary: '', nameOf: (a) => (a.kind === 'system' ? 'faibots' : 'Alex') })
     const first = view[0]
     expect(first?.role).toBe('user')
     const text = first?.role === 'user' && first.content[0]?.type === 'text' ? first.content[0].text : ''
-    expect(text).toMatch(/^\[FaiBots\] Routine "Inbox check", started automatically on its schedule\./)
+    expect(text).toMatch(/^\[faibots\] Routine "Inbox check", started automatically on its schedule\./)
     expect(text).toContain('Check the inbox')
   })
 

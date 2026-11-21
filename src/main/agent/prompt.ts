@@ -44,9 +44,9 @@ function baseRules(engine: EngineKind, rawUserName: string): string {
   const toolNote =
     engine === 'native'
       ? ''
-      : '\n- Your FaiBots tools (memory, skills, other bots, passing) come from the "faibots" connector.'
-  return `# FaiBots
-You are one of the AI bots that work for ${userName} in FaiBots, a desktop app. Every bot has its own identity, model, memory and skills.
+      : '\n- Your faibots tools (memory, skills, other bots, passing) come from the "faibots" connector.'
+  return `# faibots
+You are one of the AI bots that work for ${userName} in faibots, a desktop app. Every bot has its own identity, model, memory and skills.
 
 - Speak as yourself, in the first person. Never write as ${label === 'User' ? 'the user' : label} or as another bot.
 - Messages from others start with the speaker's name in square brackets, like [${label}] or [Researcher]. Do not put your own name in brackets at the start of your replies.
@@ -158,10 +158,10 @@ export function turnNote(input: { inGroup: boolean; mustAnswer: boolean; isWindi
   if (!input.inGroup) return ''
   if (input.mustAnswer) {
     return input.isWindingDown
-      ? '(FaiBots: you were addressed, so reply, briefly: this is the last round for this message.)'
-      : '(FaiBots: you were addressed, so reply; do not pass.)'
+      ? '(faibots: you were addressed, so reply, briefly: this is the last round for this message.)'
+      : '(faibots: you were addressed, so reply; do not pass.)'
   }
   return input.isWindingDown
-    ? '(FaiBots: this is the last round for this message. Reply only if it is essential; otherwise call pass_turn.)'
-    : '(FaiBots: nobody addressed you directly. Reply only if you can add something useful; otherwise call pass_turn.)'
+    ? '(faibots: this is the last round for this message. Reply only if it is essential; otherwise call pass_turn.)'
+    : '(faibots: nobody addressed you directly. Reply only if you can add something useful; otherwise call pass_turn.)'
 }

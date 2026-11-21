@@ -197,7 +197,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // -------------------------------------------------------------------------------------------
 
   async send(req: SendMessageRequest): Promise<Entry> {
-    if (this.closed) throw new Error('FaiBots is shutting down.')
+    if (this.closed) throw new Error('faibots is shutting down.')
     const { store } = this.deps
     const conversation = store.conversations.get(req.conversationId)
     if (!conversation) throw new Error('Conversation not found')
@@ -290,7 +290,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   }
 
   async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
-    if (this.closed) throw new Error('FaiBots is shutting down.')
+    if (this.closed) throw new Error('faibots is shutting down.')
     const { store } = this.deps
     const text = input.text.trim()
     if (!text) throw new Error('A routine needs something to do.')

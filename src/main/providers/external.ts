@@ -242,7 +242,7 @@ export function withPathDirs(env: Record<string, string>, pathDirs: string[]): R
 
 export async function probeCodex(opts: { hasStoredKey: boolean; timeoutMs?: number }): Promise<CodexStatus> {
   const bin = findCodexBinary()
-  if (!bin) return { ok: false, billing: 'unknown', message: 'The Codex CLI that ships with FaiBots was not found for this computer.' }
+  if (!bin) return { ok: false, billing: 'unknown', message: 'The Codex CLI that ships with faibots was not found for this computer.' }
   const env = withPathDirs(codexEnv(), bin.pathDirs)
   return new Promise<CodexStatus>((resolve) => {
     let output = ''

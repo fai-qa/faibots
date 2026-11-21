@@ -21,7 +21,7 @@ export function ProvidersSection() {
   return (
     <div className="max-w-[720px]">
       <div className="mb-4 flex items-center gap-3">
-        <p className="flex-1 text-[12.5px] text-fg-3">Each bot picks one of these in its profile. FaiBots never switches a bot to a different route on its own.</p>
+        <p className="flex-1 text-[12.5px] text-fg-3">Each bot picks one of these in its profile. faibots never switches a bot to a different route on its own.</p>
         <Button variant="primary" icon={Plus} onClick={() => setEditing('new')}>
           Add provider
         </Button>

@@ -444,7 +444,7 @@ export function seedMockData(now = Date.now()): MockDb {
     'b-atlas': {
       botId: 'b-atlas',
       content:
-        '## About Alex\n- Building FaiBots, a local multi-bot app.\n- Likes short answers with a clear next step.\n\n## Current work\n- Launch on Thursday. I own the checklist.',
+        '## About Alex\n- Building faibots, a local multi-bot app.\n- Likes short answers with a clear next step.\n\n## Current work\n- Launch on Thursday. I own the checklist.',
       updatedAt: yesterday
     }
   }
@@ -612,7 +612,7 @@ function seedRoutines(now: number, at: number): { routines: Routine[]; runs: Rou
   const runs: RoutineRun[] = [
     run('run-1', 1, 'done', '1. Ship the routines PR. 2. Reply to the two open issues about Windows paths. 3. Prepare the demo for Thursday.'),
     run('run-2', 2, 'done', '1. Review the Codex sandbox fix. 2. Draft the README demo section. 3. Book the meeting with the design partner.'),
-    run('run-3', 3, 'skipped', 'Missed: FaiBots was not running at the planned time.', 'catch-up'),
+    run('run-3', 3, 'skipped', 'Missed: faibots was not running at the planned time.', 'catch-up'),
     run('run-4', 4, 'error', 'The GitHub connector did not answer in time.')
   ]
   return { routines, runs }

@@ -156,7 +156,7 @@ export function createRoutineRepo(db: Db): RoutineRepo {
           checks: evidence.checks.map((check) => ({ ...check, status: 'unverified' })) }), str(row.id))
       }
       return Number(
-        db.prepare(`update routine_runs set status = 'cancelled', ended_at = ?, error = 'FaiBots closed during the run' where status = 'running'`)
+        db.prepare(`update routine_runs set status = 'cancelled', ended_at = ?, error = 'faibots closed during the run' where status = 'running'`)
           .run(now).changes
       )
     }

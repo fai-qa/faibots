@@ -187,7 +187,7 @@ describe('routine service', () => {
     store.routines.startRun({ routineId: r.id, botId: bot.id, trigger: 'manual', status: 'running', startedAt: clock })
     const restarted = make()
     restarted.start()
-    expect(restarted.runs({ routineId: r.id })[0]).toMatchObject({ status: 'cancelled', error: 'FaiBots closed during the run' })
+    expect(restarted.runs({ routineId: r.id })[0]).toMatchObject({ status: 'cancelled', error: 'faibots closed during the run' })
     void restarted.shutdown()
   })
 

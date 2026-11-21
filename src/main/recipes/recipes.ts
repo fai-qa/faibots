@@ -76,7 +76,7 @@ export function createRecipeService(deps: {
 
     importRecipe(input) {
       const parsed = recipeSchema.safeParse(input)
-      if (!parsed.success) throw new Error(`This is not a FaiBots bot recipe: ${z.prettifyError(parsed.error)}`)
+      if (!parsed.success) throw new Error(`This is not a faibots bot recipe: ${z.prettifyError(parsed.error)}`)
       const recipe = parsed.data
 
       // Connectors are matched by name; ones the user does not have are left out.
