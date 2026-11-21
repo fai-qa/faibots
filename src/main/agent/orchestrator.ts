@@ -479,7 +479,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const inputHash = createHash('sha256').update(message.trim()).digest('hex')
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
       if (!this.delegations.reserve(id, root, assignmentLimit)) {
-        throw new CollabRefusal(`The specialist assignment limit for this job is ${assignmentLimit}. The budget is used or this assignment was already admitted. Answer with what you have.`)
+        const reason = work
+          ? `The specialist assignment limit for this job is ${assignmentLimit}. The budget is used or this assignment was already admitted.`
+          : `Bots already asked each other ${assignmentLimit} times for this request, or this assignment was already admitted.`
+        throw new CollabRefusal(reason + ' Answer with what you have.')
       }
       if (detached && this.delegations.list(from.id, ctx.conversation.id, true).length >= MAX_ASKS_PER_TURN) {
         throw new CollabRefusal(`This chat already has ${MAX_ASKS_PER_TURN} background assignments running.`)
