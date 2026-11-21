@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { WorkBrief, WorkDecision } from '@shared/work-brief'
+import type { WorkBrief, WorkDecision, WorkScope } from '@shared/work-brief'
 import { errorMessage, invoke, on } from '../../lib/bridge'
 
 const stateLabels = {
@@ -32,6 +32,46 @@ export function WorkBriefPanel({ conversationId }: { conversationId: string }) {
   )
 }
 
+function ScopeAndLimits({ brief }: { brief: WorkBrief }) {
+  const [open, setOpen] = useState(false)
+  const [scope, setScope] = useState<WorkScope>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (!open) return
+    let sequence = 0
+    function refresh() {
+      const request = ++sequence
+      setScope(undefined)
+      setError('')
+      void invoke('work:scope', { conversationId: brief.conversationId, id: brief.id }).then((result) => {
+        if (sequence === request) setScope(result)
+      }).catch((cause) => { if (sequence === request) setError(errorMessage(cause)) })
+    }
+    const off = [on('journey:changed', refresh), on('bots:changed', refresh), on('settings:changed', refresh),
+      on('work:changed', (event) => { if (event.conversationId === brief.conversationId) refresh() })]
+    refresh()
+    return () => { sequence++; off.forEach((unsubscribe) => unsubscribe()) }
+  }, [open, brief.conversationId, brief.id])
+  return (
+    <details open={open} onToggle={(event) => {
+      setOpen(event.currentTarget.open)
+      if (!event.currentTarget.open) setScope(undefined)
+    }}>
+      <summary className="cursor-pointer text-fg-2">Scope and limits</summary>
+      {open && <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+        <dt className="text-fg-3">Inputs</dt><dd>
+          {scope ? <>{scope.inputs.map((item) => <div key={item}>{item}</div>)}{scope.withheld && <div>Some selected evidence is unavailable.</div>}</> :
+            <span>{error || 'Checking selected inputs…'}</span>}
+        </dd>
+        {brief.exclusions && <><dt className="text-fg-3">Out of scope</dt><dd>{brief.exclusions}</dd></>}
+        <dt className="text-fg-3">Assignment limit</dt><dd>{brief.assignmentLimit} specialist {brief.assignmentLimit === 1 ? 'assignment' : 'assignments'} across the whole job</dd>
+        <dt className="text-fg-3">Stop when</dt><dd>{brief.stopWhen || 'The result is ready for your review, or a decision needs your input.'}</dd>
+        <dt className="text-fg-3">Return to</dt><dd>This fai chat for your review</dd>
+      </dl>}
+    </details>
+  )
+}
+
 function BriefCard({ brief }: { brief: WorkBrief }) {
   const [note, setNote] = useState('')
   const [pending, setPending] = useState(false)
@@ -60,6 +100,7 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
           <dt className="text-fg-3">Checks</dt><dd>{brief.checks}</dd>
           {brief.lastInstruction && <><dt className="text-fg-3">Your instruction</dt><dd>{brief.lastInstruction}</dd></>}
         </dl>
+        <ScopeAndLimits brief={brief} />
         {brief.state === 'needs_input' && <p className="whitespace-pre-wrap">{brief.question}</p>}
         {brief.result && <div><strong>{brief.partial ? 'Partial result' : 'Result'}</strong><p className="whitespace-pre-wrap">{brief.result}</p></div>}
         {(needsOwner || canSteer) && <textarea aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}

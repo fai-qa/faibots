@@ -1356,6 +1356,7 @@ export function createMockBridge(): FaiBotsBridge {
 
     // Journey (M1b preview) -------------------------------------------------
     'work:list': () => [],
+    'work:scope': desktopContent,
     'work:decide': () => { throw new Error('Open the desktop app to review a work brief.') },
     'projects:list': () => journeyProjects,
     'projects:get': ({ id }) => {

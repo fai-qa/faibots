@@ -18,3 +18,9 @@ export const workBriefSchema = `
     state text not null check(state in ('pending','ready','started','finished','interrupted')),
     entry_id text, primary key(work_id,revision)
   );`
+
+export const workConstraintsSchema = `
+  alter table chief_work add column exclusions text not null default '';
+  alter table chief_work add column stop_when text not null default '';
+  alter table chief_work add column assignment_limit integer not null default 12 check(assignment_limit between 0 and 12);
+`

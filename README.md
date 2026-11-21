@@ -22,7 +22,7 @@ If Electron exits immediately on Windows, run `npm run prestart` to download the
 3. When a new bot is needed, review its role and model in the approval card. A specialist can use the configured default model or the model already assigned to fai.
 4. You can also create bots yourself in **New Bot**, talk directly to a specialist or choose several bots in **New chat**. Reopening the app takes you back to fai.
 
-When a job needs several steps, fai can keep a work brief in the chat. Open it to see the deliverable and checks, update that job, answer a question, or accept a result. A specialist can work in the background while you speak with fai. The brief and its verified returns survive reopening the app.
+You can speak to fai in English, Arabic or a mix. Ask for what you want back. A request with a clear answer can finish in one sentence. When a job needs several steps, fai can keep a work brief in the chat. Open it to see the deliverable and checks, update that job, answer a question, or accept a result. **Scope and limits** shows the selected inputs, specialist assignment limit and where fai will return the result. A specialist can work in the background while you speak with fai. The brief and its verified returns survive reopening the app.
 
 Projects have a Library for selected source revisions, a Space for reviewed Pages, and separate session histories. You choose which work to bring into a new session. To discuss a search result in your main chat, choose **Ask fai** below the result, enter your instruction, and select **Send to fai**. Project instructions can be tried on two sets of notes before you activate them.
 

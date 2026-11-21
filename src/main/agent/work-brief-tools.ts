@@ -1,3 +1,4 @@
+import { MAX_ASKS_PER_CHAIN } from '@shared/work-brief'
 import { z } from 'zod'
 import { getHandoffCheckpoint } from '../store/escalations'
 import { MAIN_BOT_NAME } from '../store/bots'
@@ -16,8 +17,10 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
     getHandoffCheckpoint(store, chat, lookup, authority).map(({id,workId,availability}) => ({id,workId,availability}))
   const tools = [
     defineTool({
-      name: 'plan_work', description: 'Record a checkable brief for a substantial user request in this chat. Use once per original request; answer simple questions directly.',
-      schema: z.object({ objective: z.string().trim().min(1).max(2000), deliverable: z.string().trim().min(1).max(2000), checks: z.string().trim().min(1).max(2000) }),
+      name: 'plan_work', description: 'Record a checkable brief for a substantial user request in this chat. Use once before assigning specialists. Record exclusions, stop conditions and a smaller specialist budget when the job calls for them. Answer simple questions directly.',
+      schema: z.object({ objective: z.string().trim().min(1).max(2000), deliverable: z.string().trim().min(1).max(2000), checks: z.string().trim().min(1).max(2000),
+        exclusions: z.string().trim().max(2000).optional(), stopWhen: z.string().trim().max(2000).optional(),
+        assignmentLimit: z.number().int().min(0).max(MAX_ASKS_PER_CHAIN).optional() }),
       source: 'faibots', defaultPermission: 'always', activityLabel: 'Recording the work brief', isAvailable: available,
       async execute(input, ctx) {
         if (!ctx.userEntryId) throw new WorkRefusal('Start a brief only from a user request in this chat.')
@@ -25,7 +28,7 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
         if (existing.some(ref=>ref.availability==='withheld')) throw new WorkRefusal('The selected handoff is no longer available. Ask the owner to select its current scope.')
         const linked = existing.find(ref => ref.workId)?.workId
         const brief = linked ? work.resume(ctx.conversation.id,linked,ctx.turnId) :
-          work.start(ctx.conversation.id,ctx.userEntryId,ctx.turnId,input.objective,input.deliverable,input.checks)
+          work.start(ctx.conversation.id,ctx.userEntryId,ctx.turnId,input.objective,input.deliverable,input.checks,input)
         changed(ctx.conversation.id)
         return textResult(JSON.stringify({...brief,...(existing.length && {handoffs:existing})}))
       }

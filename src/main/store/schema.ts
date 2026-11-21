@@ -3,7 +3,7 @@
 import { TURN_CONTEXT_SCHEMA } from './turn-context-schema'
 import { DELEGATION_ATTEMPT_SCHEMA } from './delegation-attempt-schema'
 import { ARTIFACT_SAVE_SCHEMA } from './artifact-save-schema'
-import { workBriefSchema } from './work-brief-schema'
+import { workBriefSchema, workConstraintsSchema } from './work-brief-schema'
 import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
@@ -348,5 +348,6 @@ export const MIGRATIONS: string[] = [
   create index turns_by_root on turns(root_turn_id);
   create index admissions_by_root on automatic_run_admissions(root_turn_id);
   create index entries_by_turn on entries(json_extract(meta,'$.turnId')) where json_valid(meta);
-  `
+  `,
+  workConstraintsSchema
 ]

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { openStore } from './index'
 import { migrate, schemaVersion } from './db'
 import { MIGRATIONS } from './schema'
+import { workBriefs } from './work-briefs'
 
 const directories: string[] = []
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }) })
@@ -22,6 +23,19 @@ describe('action persistence compatibility', () => {
     migrate(store.db)
     expect(store.settings.get().userName).toBe('Keep me')
     store.close()
+  })
+  it('keeps an earlier reviewed brief and the original assignment budget when upgrading from preview 5', () => {
+    const db = new DatabaseSync(':memory:')
+    try {
+      migrate(db, MIGRATIONS.slice(0, 18))
+      db.exec('pragma foreign_keys = off')
+      db.prepare(`insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,result,updated_at)
+        values ('w','c','u','Meeting','Venue note','Venue','review',3,'Meet at Gate 4.',123)`).run()
+      migrate(db)
+      migrate(db)
+      expect(workBriefs(db).get('w', 'c')).toMatchObject({ objective: 'Meeting', revision: 3, state: 'review',
+        result: 'Meet at Gate 4.', assignmentLimit: 12, exclusions: '', stopWhen: '' })
+    } finally { db.close() }
   })
   it('migrating from the previous version keeps a bot_context row and its session id', () => {
     const dir = mkdtempSync(join(tmpdir(), 'faibots-migration-')); directories.push(dir)

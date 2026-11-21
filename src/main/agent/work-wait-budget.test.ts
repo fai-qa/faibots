@@ -50,7 +50,7 @@ it.each(['returned', 'interrupted', 'cancelled'] as const)(
         text: 'Check where we meet.'
       })
       const work = workBriefs(store.db)
-      const original = work.start(parent.id, user.id, 'root-turn', task.objective, task.deliverable, task.checks)
+      const original = work.start(parent.id, user.id, 'root-turn', task.objective, task.deliverable, task.checks, { assignmentLimit: 1, stopWhen: 'Report after one check.' })
       const repo = createDelegationRepo(store.db, store.entries)
       repo.reserve('child', { turnId: 'root-turn', conversationId: parent.id }, MAX_ASKS_PER_CHAIN)
       const start = repo.assign(
@@ -85,6 +85,7 @@ it.each(['returned', 'interrupted', 'cancelled'] as const)(
       for (let reboot = 0; reboot < 2; reboot++) {
         store = openStore(file, { homeDir: dir })
         const active = workBriefs(store.db)
+        expect(active.get(original.id, parent.id)).toMatchObject({ assignmentLimit: 1, stopWhen: 'Report after one check.' })
         const deps = { ...template, store, mcp: stubMcp() }
         const approvals = createApprovalService(deps)
         const tools = createToolRegistry({ ...deps, approvals })
@@ -228,6 +229,46 @@ it('keeps an expired worker and all later observations unconfirmed', async () =>
     })
     expect(attempt!.receipt?.text).toMatch(/within|time/)
     await vi.waitFor(() => expect(h.services.store.actions.get(attempt!.id)?.state).toBe('unknown'))
+  } finally {
+    await h.runtime.shutdown()
+    h.cleanup()
+  }
+})
+
+it('enforces a smaller work budget across nested assignments and subsequent owner turns', async () => {
+  const h = createHarness()
+  try {
+    for (const tool of [...h.runtime.assignments.tools(), ...workBriefTools(h.services.store, h.services.bus)]) h.services.tools.register(tool)
+    const chief = h.bot('fai', { isPrimary: true })
+    h.bot('Scout')
+    h.bot('Reader')
+    const room = h.runtime.openDm(chief.id)
+    const refusals: string[] = []
+    const contracts: WorkBrief[] = []
+    h.engine.script('reader', async api => { api.say('Read the note.') })
+    h.engine.script('scout', async api => {
+      refusals.push(text(await api.tool('send_to_agent', { to: 'reader', message: 'Check the note.' })))
+      api.say('Here is my own review.')
+    })
+    h.engine.script('fai', async api => {
+      const plan = contracts.length ? task : { ...task, exclusions: 'Keep the schedule private.', stopWhen: 'Ask if dates conflict.', assignmentLimit: 1 }
+      contracts.push(asBrief(await api.tool('plan_work', plan)))
+      const assignment = await api.tool('send_to_agent', { to: 'scout', message: 'Review this note.' })
+      if (contracts.length > 1) refusals.push(text(assignment))
+      api.say('The note is reviewed.')
+    })
+    await h.send(room.id, 'Review the note with one specialist.')
+    const original = contracts[0]!
+    const work = workBriefs(h.services.store.db)
+    work.decide(room.id, { id: original.id, revision: original.revision, decision: 'steer', note: 'Check the dates again.' })
+    await deliverWorkReplies(h.services.store, h.runtime)
+    await h.runtime.idle()
+    expect(contracts).toHaveLength(2)
+    for (const brief of contracts) expect(brief).toMatchObject({ id: original.id, assignmentLimit: 1, exclusions: 'Keep the schedule private.', stopWhen: 'Ask if dates conflict.' })
+    expect(refusals).toHaveLength(2)
+    expect(refusals.every(r => r.includes('limit for this job is 1'))).toBe(true)
+    expect(h.services.store.db.prepare('select count(*) as n from assignment_admissions').get()?.n).toBe(1)
+    expect(h.engine.turns.some(t => t.handle === 'reader')).toBe(false)
   } finally {
     await h.runtime.shutdown()
     h.cleanup()

@@ -34,6 +34,7 @@ import {
   type ManifestLiteSource,
   type TurnTrigger
 } from '@shared/domain'
+import { MAX_ASKS_PER_CHAIN } from '@shared/work-brief'
 import type { SendMessageRequest } from '@shared/ipc'
 import type { AutomatedRunResult, Runtime, Services, ToolContext, ToolDefinition, ToolResult } from '../contracts'
 import type { EngineKind } from '../providers/catalog'
@@ -63,7 +64,7 @@ export const MAX_CHAIN_DEPTH = 3
 /** send_to_agent calls one turn may make. */
 export const MAX_ASKS_PER_TURN = 5
 /** send_to_agent calls one chain may make in total, across every level of asking. */
-export const MAX_ASKS_PER_CHAIN = 12
+export { MAX_ASKS_PER_CHAIN }
 export const EXCHANGE_TIMEOUT_MS = 10 * 60_000
 const SHUTDOWN_WAIT_MS = 4_000
 
@@ -454,11 +455,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const work = this.briefs.rootForTurn(inherited.turnId) ?? this.briefs.rootForTurn(ctx.turnId)
     if (this.briefs.superseded(ctx.turnId)) throw new CollabRefusal('The owner updated this job. Wait for its new instruction before assigning further work.')
     if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
+    const assignmentLimit = work?.assignmentLimit ?? MAX_ASKS_PER_CHAIN
     const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
     const inputHash = createHash('sha256').update(message.trim()).digest('hex')
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
-      if (!this.delegations.reserve(id, root, MAX_ASKS_PER_CHAIN)) {
-        throw new CollabRefusal(`Bots already asked each other ${MAX_ASKS_PER_CHAIN} times for this request, or this assignment was already admitted. Answer with what you have.`)
+      if (!this.delegations.reserve(id, root, assignmentLimit)) {
+        throw new CollabRefusal(`The specialist assignment limit for this job is ${assignmentLimit}. The budget is used or this assignment was already admitted. Answer with what you have.`)
       }
       if (detached && this.delegations.list(from.id, ctx.conversation.id, true).length >= MAX_ASKS_PER_TURN) {
         throw new CollabRefusal(`This chat already has ${MAX_ASKS_PER_TURN} background assignments running.`)

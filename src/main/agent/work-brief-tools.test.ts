@@ -20,6 +20,32 @@ describe('fai work briefs', () => {
   })
   afterEach(async () => { await h.runtime.shutdown(); h.cleanup() })
 
+  it('honors zero assignments and refuses to set a retroactive cap below work already admitted', async () => {
+    const chief = h.bot('fai', { isPrimary: true })
+    h.bot('Editor')
+    const chat = h.runtime.openDm(chief.id)
+    const receipts: ToolResult[] = []
+    h.engine.script('editor', async api => { api.say('Reviewed.') })
+    h.engine.script('fai', async api => {
+      const assign = () => api.tool('send_to_agent', { to: 'editor', message: 'Review this.' })
+      if (receipts.length === 0) {
+        receipts.push(await api.tool('plan_work', { ...briefInput, assignmentLimit: 0 }))
+        receipts.push(await assign())
+      } else {
+        receipts.push(await assign())
+        receipts.push(await api.tool('plan_work', { ...briefInput, assignmentLimit: 0 }))
+      }
+      api.say('Done.')
+    })
+    await h.send(chat.id, 'Handle this yourself.')
+    await h.send(chat.id, 'Check with the editor.')
+    expect(asBrief(receipts[0]!)).toMatchObject({ assignmentLimit: 0 })
+    expect(body(receipts[1]!)).toContain('limit for this job is 0')
+    expect(receipts[2]!.isError).not.toBe(true)
+    expect(body(receipts[3]!)).toContain('already started')
+    expect(h.engine.turns.filter(t => t.handle === 'editor')).toHaveLength(1)
+  })
+
   it('asks once, resumes the same brief after an owner answer, and requires the owner to accept', async () => {
     const chief = h.bot('fai', {isPrimary:true})
     const dm = h.runtime.openDm(chief.id)

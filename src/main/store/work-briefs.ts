@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { EntryRepo } from '../contracts'
-import type { WorkBrief, WorkReply, WorkState } from '@shared/work-brief'
+import { MAX_ASKS_PER_CHAIN, type WorkBrief, type WorkConstraints, type WorkReply, type WorkState } from '@shared/work-brief'
 import { num, parseJson, str, transaction, type Db, type Row } from './db'
 
 export class WorkRefusal extends Error {}
@@ -8,6 +8,7 @@ export class WorkRefusal extends Error {}
 function read(row: Row): WorkBrief {
   return { id: str(row.id), conversationId: str(row.conversation_id), userEntryId: str(row.user_entry_id),
     objective: str(row.objective), deliverable: str(row.deliverable), checks: str(row.checks),
+    exclusions: str(row.exclusions), stopWhen: str(row.stop_when), assignmentLimit: num(row.assignment_limit),
     state: str(row.state) as WorkState, revision: num(row.revision), question: str(row.question), lastInstruction: str(row.last_instruction ?? ''),
     result: str(row.result), partial: Boolean(row.partial), evidenceIds: parseJson<string[]>(row.evidence_ids, []), updatedAt: num(row.updated_at) }
 }
@@ -37,9 +38,9 @@ export function workBriefs(db: Db) {
   return {
     get, superseded,
     rootForTurn(turnId: string) {
-      const bound = db.prepare(`select w.id,w.state,t.turn_id from chief_work_turns b join chief_work w on w.id=b.work_id
+      const bound = db.prepare(`select w.id,w.state,w.assignment_limit,t.turn_id from chief_work_turns b join chief_work w on w.id=b.work_id
         join chief_work_turns t on t.work_id=w.id where b.turn_id=? order by t.rowid limit 1`).get(turnId)
-      return bound && { id: str(bound.id), state: str(bound.state), rootTurnId: str(bound.turn_id) }
+      return bound && { id: str(bound.id), state: str(bound.state), rootTurnId: str(bound.turn_id), assignmentLimit: num(bound.assignment_limit) }
     },
     assignments(id: string) { return children(id).map(row => ({ id: str(row.id), state: str(row.state) })) },
     wait(chat: string, id: string, revision: number, turnId: string) {
@@ -99,7 +100,7 @@ export function workBriefs(db: Db) {
     list(chat: string) {
       return db.prepare(selected+' where w.conversation_id=? order by w.updated_at desc, w.rowid desc').all(chat).map(read)
     },
-    start(chat: string, entry: string, turnId: string, objective: string, deliverable: string, checks: string) {
+    start(chat: string, entry: string, turnId: string, objective: string, deliverable: string, checks: string, constraints: Partial<WorkConstraints> = {}) {
       const now = Date.now()
       return transaction(db, () => {
         const source = db.prepare("select id,client_nonce from entries where id=? and conversation_id=? and kind='message' and json_extract(author,'$.kind')='user'").get(entry, chat)
@@ -111,11 +112,20 @@ export function workBriefs(db: Db) {
           bindTurn(str(resumed.id),turnId)
           return get(str(resumed.id),chat)
         }
-        db.prepare(`insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at)
-          values(?,?,?,?,?,?,'active',1,?) on conflict(user_entry_id) do nothing`).run(randomUUID(), chat, entry, objective, deliverable, checks, now)
-        const brief = read(db.prepare('select * from chief_work where user_entry_id=?').get(entry)!)
-        bindTurn(brief.id,turnId)
-        return brief
+        const recorded = db.prepare('select * from chief_work where user_entry_id=?').get(entry)
+        if (recorded) {
+          bindTurn(str(recorded.id), turnId)
+          return get(str(recorded.id), chat)
+        }
+        const limit = constraints.assignmentLimit ?? MAX_ASKS_PER_CHAIN
+        const admitted = db.prepare('select count(*) as n from assignment_admissions where root_turn_id=?').get(turnId)!
+        if (num(admitted.n) > limit) throw new WorkRefusal('More specialist assignments have already started than this limit allows. Report that to the owner.')
+        const id = randomUUID()
+        db.prepare(`insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,exclusions,stop_when,assignment_limit,state,revision,updated_at)
+          values(?,?,?,?,?,?,?,?,?,'active',1,?)`).run(id, chat, entry, objective, deliverable, checks,
+            constraints.exclusions ?? '', constraints.stopWhen ?? '', limit, now)
+        bindTurn(id, turnId)
+        return get(id, chat)
       })
     },
     submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[], turnId: string, partial: boolean) {

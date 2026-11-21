@@ -9,6 +9,7 @@ import { assertRemovableBot } from '../store/bots'
 import { createSnapshotService } from '../attachments/snapshots'
 import { encryptionAvailable, pickFiles } from '../platform/electron'
 import { revisionText } from '../attachments/project-reads'
+import { workScope } from '../store/work-scope'
 import { workBriefs } from '../store/work-briefs'
 import { deliverWorkReplies } from '../agent/work-brief-tools'
 import { projectContentHandlers } from './project-content'
@@ -31,6 +32,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
 
   return {
     ...projectContentHandlers(s, store),
+    'work:scope': ({ conversationId, id }) => workScope(store, s, conversationId, id),
     'work:list': ({ conversationId }) => workBriefs(store.db).list(conversationId),
     'work:decide': async (req) => {
       const result = workBriefs(store.db).decide(req.conversationId, req)

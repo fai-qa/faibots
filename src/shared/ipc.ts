@@ -1,4 +1,4 @@
-import type { WorkBrief, WorkReply } from './work-brief'
+import type { WorkBrief, WorkReply, WorkScope } from './work-brief'
 // Typed contract between the renderer and the main process.
 // Every request/response channel and every push event is declared here once;
 // the preload bridge only forwards names that appear in INVOKE_CHANNELS / EVENT_CHANNELS.
@@ -103,6 +103,7 @@ export interface ArtifactWithRevisions {
 
 export interface InvokeMap extends ContentInvoke, TurnContextInvoke, SessionInvoke, ImprovementInvoke, EscalationInvoke {
   'work:list': { req: { conversationId: Id }; res: WorkBrief[] }
+  'work:scope': { req: { conversationId: Id; id: Id }; res: WorkScope }
   'work:decide': { req: WorkReply & { conversationId: Id }; res: WorkBrief }
   'app:info': { req: void; res: AppInfo }
 
@@ -257,7 +258,7 @@ export type EventChannel = keyof EventMap
 
 export const INVOKE_CHANNELS = [
   ...CONTENT_CHANNELS,
-  'work:list', 'work:decide',
+  'work:list', 'work:scope', 'work:decide',
   'context:turns',
   ...SESSION_CHANNELS,
   ...IMPROVEMENT_CHANNELS,
