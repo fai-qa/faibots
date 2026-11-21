@@ -295,3 +295,18 @@ it('shows only the linked project inputs on the work card and withdraws their ti
   store.projectContent.select(project.id, store.projectContent.pin(project.id, source.id).itemId, false)
   expect(display()).toEqual({ inputs: ['Your original message'], withheld: true })
 })
+
+it('withholds a revoked queued selection on restart before opening any provider turn', async () => {
+  const { store, dm, request, source } = await fixture()
+  queueProjectResult(store, h.services, dm.id, request)
+  store.projectContent.select(request.projectId, store.projectContent.pin(request.projectId, source.id).itemId, false)
+  await h.runtime.shutdown()
+  h.cleanup()
+  boot()
+  await Promise.resolve()
+  await h.runtime.idle()
+  expect(h.engine.turns).toHaveLength(0)
+  const entries = h.services.store.entries.since(dm.id, 0)
+  expect(entries.some(e => e.kind === 'event' && e.text.includes('selected project result is unavailable'))).toBe(true)
+  expect(JSON.stringify(entries)).not.toContain('West entrance')
+})

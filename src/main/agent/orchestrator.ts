@@ -51,7 +51,7 @@ import { startOfLocalDay } from '../store/turns'
 import { MAIN_BOT_NAME } from '../store/bots'
 import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
-import { projectReplyOrigin, projectResultOrigin, queueProjectReply } from '../store/project-result-requests'
+import { projectReplyOrigin, projectResultForEntry, projectResultOrigin, queueProjectReply } from '../store/project-result-requests'
 import { IncompleteTurnError, type TurnEngine } from './engine'
 import { speakerName } from './history'
 import { LiveStates } from './live-state'
@@ -881,6 +881,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
         this.delegations.pin(req.assignment.lease, route.engine, systemHash)
       }
       const labels = new Map(turnTools.map((t) => [t.name, t.activityLabel]))
+      // The app may have closed or waited in the queue after the owner clicked. Recheck before
+      // the configured provider sees even the new instruction, which can itself quote the source.
+      if (selectedResultTrigger && resultOrigin &&
+        (projectResultOrigin(store, conversationId, selectedResultTrigger, req.wake) !== resultOrigin ||
+          projectResultForEntry(store, this.deps.dataDir, this.deps.attachments, conversationId, resultOrigin)?.status !== 'available')) {
+        recorder.event('The selected project result is unavailable. Check its sources in the project before asking fai again.')
+        return { status: 'skipped', posts: [] }
+      }
       await engine.run({
         turnId,
         bot,
