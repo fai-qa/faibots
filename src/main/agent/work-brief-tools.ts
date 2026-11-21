@@ -1,15 +1,19 @@
 import { z } from 'zod'
-import type { EventBus, Runtime } from '../contracts'
+import { getHandoffCheckpoint } from '../store/escalations'
+import { MAIN_BOT_NAME } from '../store/bots'
+import type { EventBus, Runtime, Services } from '../contracts'
 import { workBriefs, WorkRefusal } from '../store/work-briefs'
 import type { PlatformStore } from '../store'
 import { defineTool, errorResult, textResult } from '../tools/define'
 
 /** Only the original fai chat can create or change its work; specialists can still give direct answers. */
-export function workBriefTools(store: PlatformStore, bus: EventBus) {
+export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: Pick<Services,'dataDir'|'attachments'>) {
   const work = workBriefs(store.db)
-  const available = ({ bot, conversation }: { bot: { isPrimary: boolean }; conversation: { kind: string } }) =>
-    bot.isPrimary && conversation.kind === 'dm'
+  const available = ({ bot, conversation }: { bot: { isPrimary: boolean; name: string }; conversation: { kind: string } }) =>
+    bot.isPrimary && bot.name === MAIN_BOT_NAME && conversation.kind === 'dm'
   const changed = (conversationId: string) => bus.emit('work:changed', { conversationId })
+  const handoffs = (chat: string, lookup: { userEntryId?: string; workId?: string }) =>
+    getHandoffCheckpoint(store, chat, lookup, authority).map(({id,workId,availability}) => ({id,workId,availability}))
   const tools = [
     defineTool({
       name: 'plan_work', description: 'Record a checkable brief for a substantial user request in this chat. Use once per original request; answer simple questions directly.',
@@ -17,9 +21,13 @@ export function workBriefTools(store: PlatformStore, bus: EventBus) {
       source: 'faibots', defaultPermission: 'always', activityLabel: 'Recording the work brief', isAvailable: available,
       async execute(input, ctx) {
         if (!ctx.userEntryId) throw new WorkRefusal('Start a brief only from a user request in this chat.')
-        const brief = work.start(ctx.conversation.id, ctx.userEntryId, ctx.turnId, input.objective, input.deliverable, input.checks)
+        const existing = handoffs(ctx.conversation.id,{userEntryId:ctx.userEntryId})
+        if (existing.some(ref=>ref.availability==='withheld')) throw new WorkRefusal('The selected handoff is no longer available. Ask the owner to select its current scope.')
+        const linked = existing.find(ref => ref.workId)?.workId
+        const brief = linked ? work.resume(ctx.conversation.id,linked,ctx.turnId) :
+          work.start(ctx.conversation.id,ctx.userEntryId,ctx.turnId,input.objective,input.deliverable,input.checks)
         changed(ctx.conversation.id)
-        return textResult(JSON.stringify(brief))
+        return textResult(JSON.stringify({...brief,...(existing.length && {handoffs:existing})}))
       }
     }),
     defineTool({
@@ -33,7 +41,11 @@ export function workBriefTools(store: PlatformStore, bus: EventBus) {
       async execute(input, ctx) {
         if (input.action === 'list') return textResult(JSON.stringify(work.list(ctx.conversation.id)))
         if (!input.id) throw new WorkRefusal('Choose the brief by its ID.')
-        if (input.action === 'resume') return textResult(JSON.stringify(work.resume(ctx.conversation.id, input.id, ctx.turnId)))
+        if (input.action === 'resume') {
+          const refs = handoffs(ctx.conversation.id,{workId:input.id})
+          const brief = work.resume(ctx.conversation.id,input.id,ctx.turnId)
+          return textResult(JSON.stringify({...brief,...(refs.length && {handoffs:refs})}))
+        }
         if (input.action === 'wait') {
           if (!input.revision) throw new WorkRefusal('Include the current revision.')
           const brief = work.wait(ctx.conversation.id,input.id,input.revision,ctx.turnId)

@@ -1,3 +1,4 @@
+import { workBriefs } from '../store/work-briefs'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -84,10 +85,6 @@ function ctx(bot: Bot, conversation: Conversation): ToolContext {
   }
 }
 function addWork(chatId: string, entryId: string) {
-  // The native brief module belongs to the integration branch. Exercise its exact persisted contract.
-  store.db.exec(
-    `create table if not exists chief_work (id text primary key,conversation_id text not null,user_entry_id text not null,objective text not null,deliverable text not null,checks text not null,state text not null,revision integer not null,updated_at integer not null)`
-  )
   if (!store.entries.get(entryId))
     store.entries.append({
       id: entryId,
@@ -100,13 +97,7 @@ function addWork(chatId: string, entryId: string) {
       mentionsEveryone: false,
       isStreaming: false
     })
-  const workId = randomUUID()
-  store.db
-    .prepare(
-      "insert into chief_work (id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at) values (?,?,?,'Entrance date','Date','Signed notice','active',1,0)"
-    )
-    .run(workId, chatId, entryId)
-  return workId
+  return workBriefs(store.db).start(chatId,entryId,randomUUID(),'Entrance date','Date','Signed notice').id
 }
 it('lets the owner escalate exact excerpts once, uses the actual chief DM, preserves source authors and does not offer the tool to a specialist', async () => {
   const { chief, editor, chat, chiefChat, req, selected } = fixture()

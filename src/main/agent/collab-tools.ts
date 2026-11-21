@@ -120,7 +120,7 @@ export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 's
         }
       }
       try {
-        if (deps.runtime.jobHistory(target, ctx.conversation.id).remaining === 0) throw new CollabRefusal(`@${target.handle} reached its daily automatic run limit.`)
+        if (deps.runtime.jobHistory(target, ctx.conversation.id).remaining === 0) throw new CollabRefusal(`@${target.handle} reached its daily limit for automatic runs.`)
         const missing = await missingCapabilities(ctx.bot, target, input)
         if (missing.length) throw new CollabRefusal(`Cannot assign this job to @${target.handle}: ${missing.join(', ')}.`)
         const brief = input.deliverable ? `${input.message}\n\nExpected result: ${input.deliverable}` : input.message

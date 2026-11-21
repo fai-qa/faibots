@@ -51,7 +51,7 @@ describe('native engine', () => {
       ['tool-call', 'Looking up the other bots'],
       ['message', 'Helper can help.']
     ])
-    const directory = '- @helper: Helper. Helps | Model configured: test-model via Local test model'
+    const directory = '- @helper: Helper. Helps | Model configured: test-model via Local test model | Running assignments: 0 | Billing configuration: local'
     expect(entries[2]!.toolCall).toMatchObject({ callId: 'c1', toolName: 'list_bots', status: 'done', resultText: directory })
     // Both results of the step went back as one batch.
     expect(adapter.toolResults).toHaveLength(1)

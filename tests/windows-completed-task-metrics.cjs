@@ -316,12 +316,15 @@ async function measureInDesktop(profile, scenario, baseUrl) {
 
 async function run() {
   assert.equal(process.platform, 'win32')
-  const count = Number(process.argv[2] ?? 3)
+  const options = process.argv.slice(2)
+  const enforceLimits = options.includes('--local-release-limits')
+  const count = Number(options.find(arg => !arg.startsWith('--')) ?? 3)
   assert(Number.isInteger(count) && count >= 1 && count <= 20, 'Use 1 to 20 independent profile pairs')
   const electron = process.env.FAIBOTS_SMOKE_ELECTRON || require('electron')
   const reportRoot = mkdtempSync(join(tmpdir(), 'faibots-metrics-'))
   const report = {
     revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+    desktopIsolation: process.env.FAIBOTS_QA_HIDDEN_DESKTOP ? 'Separate Win32 desktop' : 'Current desktop',
     windowsBuild: release(),
     measuredAt: new Date().toISOString(),
     architecture: process.arch,
@@ -351,9 +354,22 @@ async function run() {
         report.profiles.push({ sample: i + 1, scenario, ...result })
       }
     }
+    if (enforceLimits) {
+      const failures = []
+      for (const profile of report.profiles) {
+        if (!(profile.startup.peakFamilyWorkingSetMiB > 0 && profile.startup.peakFamilyWorkingSetMiB < 750)) failures.push(`Startup used ${profile.startup.peakFamilyWorkingSetMiB} MiB`)
+        for (const task of profile.runs) {
+          const limit = task.scenario === 'C01' ? 2000 : 5000
+          if (!(task.elapsedMs > 0 && task.elapsedMs <= limit && task.peakFamilyWorkingSetMiB > 0 && task.peakFamilyWorkingSetMiB < 750))
+            failures.push(`${task.scenario} ${task.temperature}: ${task.elapsedMs} ms, ${task.peakFamilyWorkingSetMiB} MiB`)
+        }
+      }
+      report.localLimits = { directMs: 2000, repairedMs: 5000, maxExclusiveMiB: 750, failures }
+    }
     const path = join(reportRoot, 'report.json')
     writeFileSync(path, JSON.stringify(report, null, 2))
     console.log(path)
+    if (enforceLimits) assert.deepEqual(report.localLimits.failures, [], 'A completed local task exceeded a release limit')
   } finally {
     server.closeAllConnections()
     server.close()
