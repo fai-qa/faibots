@@ -72,6 +72,7 @@ export interface RuntimeOptions {
 }
 
 export interface TurnOutcome {
+  turnId?: Id
   /** 'limited': an automatic turn was refused by the bot's daily run limit. */
   status: 'sent' | 'pass' | 'error' | 'cancelled' | 'skipped' | 'limited'
   posts: Entry[]
@@ -88,6 +89,7 @@ interface TurnRequest {
   chain: Id[]
   /** Selected sources for this turn (manifest-lite, FJ-09); only mission runs set it. */
   manifestLite?: { sources: ManifestLiteSource[] }
+  readProjectNote?: ToolContext['readProjectNote']
   /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
   parentSignal?: AbortSignal
   cascade?: Cascade
@@ -296,7 +298,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     return conversation
   }
 
-  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
+  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
     if (this.closed) throw new Error('faibots is shutting down.')
     const { store } = this.deps
     const text = input.text.trim()
@@ -322,6 +324,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       inGroup: false,
       chain: [],
       ...(input.manifestLite && { manifestLite: input.manifestLite }),
+      readProjectNote: input.readProjectNote,
       ...(input.signal && { parentSignal: input.signal })
     })
     // Include coalesced text as context only. A skipped turn has no verified execution outcome;
@@ -338,7 +341,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       conversationId: conversation.id,
       entryId: entry.id,
       reply,
-      ...(outcome.error && { error: outcome.error })
+      ...(outcome.error && { error: outcome.error }),
+      ...(outcome.turnId && { turnId: outcome.turnId })
     }
   }
 
@@ -680,6 +684,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         chain: req.chain,
         inGroup: req.inGroup,
         workspaceDir,
+        readProjectNote: req.readProjectNote,
         mcpTools
       }
       const others = members.filter((b) => b.id !== bot.id)
@@ -761,7 +766,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       endedAt: Date.now(),
       ...(error && { error })
     })
-    return outcome
+    return { ...outcome, turnId }
   }
 
   private async runTool(

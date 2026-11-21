@@ -10,6 +10,7 @@ import { openDatabase, type Db } from './db'
 import { createEntryRepo, type PlatformEntryRepo } from './entries'
 import { createProviderRepo } from './providers'
 import { createProjectRepo, createProjectSourceRepo, createArtifactRepo, type ArtifactRepo, type ProjectRepo, type ProjectSourceRepo } from './projects'
+import { createProjectContentRepo } from './project-content'
 import { createJourneyRunRepo, type JourneyRunRepo } from './journey-runs'
 import { createRoutineRepo } from './routines'
 import { createSettingsRepo, defaultSettings } from './settings'
@@ -23,6 +24,7 @@ export interface PlatformStore extends Store {
   db: Db
   entries: PlatformEntryRepo
   /** Journey repos (migration 6 + 7). */
+  projectContent: ReturnType<typeof createProjectContentRepo>
   projects: ProjectRepo
   projectSources: ProjectSourceRepo
   artifacts: ArtifactRepo
@@ -65,6 +67,7 @@ export function openStore(path: string, opts: { homeDir: string; userName?: stri
   const listeners = new Set<(deletion: BotDeletion) => void>()
   const settings = createSettingsRepo(db, defaultSettings(opts.homeDir, opts.userName))
 
+  const projectSources = createProjectSourceRepo(db)
   const bots = createBotRepo(db, settings, (deletion) => {
     for (const listener of listeners) {
       try {
@@ -86,8 +89,9 @@ export function openStore(path: string, opts: { homeDir: string; userName?: stri
     turns: createTurnLogRepo(db),
     routines: createRoutineRepo(db),
     actions: createActionRepo(db),
+    projectContent: createProjectContentRepo(db, projectSources),
     projects: createProjectRepo(db),
-    projectSources: createProjectSourceRepo(db),
+    projectSources,
     artifacts: createArtifactRepo(db),
     journeyRuns: createJourneyRunRepo(db),
     onBotDeleted(listener) {

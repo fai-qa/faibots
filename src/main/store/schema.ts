@@ -1,6 +1,8 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
 
+import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
+
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
   create table settings (
@@ -320,5 +322,6 @@ export const MIGRATIONS: string[] = [
     check ((state = 'assigned') = (lease is not null))
   );
   create index delegations_pending on delegations(id) where delivered_at is null;
-  `
+  `,
+  PROJECT_CONTENT_SCHEMA
 ]

@@ -7,6 +7,7 @@ import type {
   Artifact, ArtifactKind, ArtifactProvenance, ArtifactRevision, ArtifactStatus, Id, NoteKind, Project,
   ProjectSource, ReviewDecision, ReviewDecisionKind
 } from '@shared/domain'
+import { linkLibraryRevision } from './project-content'
 import { num, parseJson, str, transaction, type Db, type Row } from './db'
 
 export const MAX_PROJECT_NAME = 120
@@ -25,7 +26,7 @@ export interface ProjectRepo {
 export interface ProjectSourceRepo {
   listByProject(projectId: Id): ProjectSource[]
   get(id: Id): ProjectSource | undefined
-  insert(input: { projectId: Id; attachmentId: Id; name: string; sha256: string; sizeBytes: number; kind: NoteKind }): ProjectSource
+  insert(input: { libraryItemId?: Id; projectId: Id; attachmentId: Id; name: string; sha256: string; sizeBytes: number; kind: NoteKind }): ProjectSource
   remove(id: Id): void
 }
 
@@ -144,10 +145,13 @@ export function createProjectSourceRepo(db: Db): ProjectSourceRepo {
         id: randomUUID(), projectId: input.projectId, attachmentId: input.attachmentId, name: input.name.trim(),
         sha256: checkSha256(input.sha256), sizeBytes: input.sizeBytes, kind: input.kind, createdAt: Date.now()
       }
-      db.prepare(`insert into project_sources (id, project_id, attachment_id, name, sha256, size_bytes, kind, created_at)
+      return transaction(db, () => {
+        db.prepare(`insert into project_sources (id, project_id, attachment_id, name, sha256, size_bytes, kind, created_at)
         values (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(source.id, source.projectId, source.attachmentId, source.name, source.sha256, source.sizeBytes, source.kind, source.createdAt)
-      return source
+        linkLibraryRevision(db, source, input.libraryItemId)
+        return source
+      })
     },
     remove(id) {
       db.prepare('delete from project_sources where id = ?').run(id)

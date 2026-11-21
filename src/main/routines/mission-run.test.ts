@@ -12,7 +12,8 @@ import { createNativeEngine } from '../agent/native-engine'
 import { ScriptedAdapter, callTools, say, type ScriptedStep } from '../agent/testing/scripted-adapter'
 import { fileTools } from '../tools/builtin/files'
 import { createAttachmentStore } from '../attachments/attachments'
-import type { MissionRunService } from '../contracts'
+import { projectContentHandlers } from '../ipc/project-content'
+import type { MissionRunService, Services } from '../contracts'
 import {
   createMissionRunService, DELIVERABLE_PATH, DEFAULT_PROPOSAL_RUBRIC, reviewMessageFor, reviewVerdictOf
 } from './mission-run'
@@ -277,6 +278,60 @@ describe('mission run (M1c)', () => {
     const revisions = h!.services.store.artifacts.revisions(artifact.id)
     expect(revisions).toHaveLength(1)
     expect(h!.services.store.artifacts.reviews(revisions[0]!.id)).toEqual([])
+  })
+
+  it('publishes a Page tied to the accepted revision and captures a failed case to recheck against a later matching run', async () => {
+    const { adapter, missions, projectId, chiefId } = setup()
+    const store = h!.services.store
+    const content = store.projectContent
+    adapter.push(() => { throw new Error('desk fixture unavailable') })
+    const failed = missions.start(projectId)
+    await missions.idle()
+    expect(content.pages(projectId)).toEqual([])
+    expect(content.evaluations(projectId)[0]).toMatchObject({ runId: failed.id, status: 'failed', turns: 1, reason: expect.stringContaining('desk fixture') })
+    expect(content.reevaluate(projectId, failed.id, () => {}).report?.status).toBe('failed')
+
+    const readNote: ScriptedStep = (events, signal) => {
+      const path = /- (mission-[^\s]+\/project-notes\/[^\s]+)/.exec(latestTask(h!, chiefId))![1]!
+      expect(existsSync(join(store.settings.get().workspaceRoot, 'atlas',path))).toBe(false)
+      return callTools([{ id:'read-current-note', name:'read_file', input:{path} }])(events,signal)
+    }
+    adapter.push(readNote,writeDraft(h!,chiefId),say('Saved.'),reviewDispatch(h!,chiefId),say('VERDICT: accepted — grounded.'),endTurn)
+    const accepted = missions.start(projectId, failed.id)
+    await missions.idle()
+    const readEntry = store.entries.page(store.conversations.findDm(chiefId)!.id,{limit:100}).entries.find(e=>e.toolCall?.callId==='read-current-note')
+    expect(readEntry?.toolCall?.resultText).toContain(NOTE_BODY.trim())
+    const [page]=content.pages(projectId)
+    expect(page).toMatchObject({spaceId:content.space(projectId).id, runId:accepted.id,sha256:sha(DRAFT)})
+    const handlers=projectContentHandlers({...h!.services,attachments:createAttachmentStore({dataDir:h!.services.dataDir})} as unknown as Services,store)
+    expect(handlers['content:read-page']({projectId,pageId:page!.id}).body).toBe(DRAFT)
+    expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.report).toMatchObject({status:'passed',candidateId:accepted.id})
+    expect(handlers['content:evaluate']({projectId,runId:failed.id}).report).toMatchObject({status:'passed',candidateId:accepted.id})
+    expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.status).toBe('failed')
+    const other=store.projects.create({name:'Private project'})
+    expect(()=>handlers['content:read-page']({projectId:other.id,pageId:page!.id})).toThrow(/not found/)
+    const source=content.library(projectId)[0]!
+    content.revoke(projectId,source.itemId)
+    expect(()=>handlers['content:read-page']({projectId,pageId:page!.id})).toThrow(/access/)
+    expect(handlers['content:evaluate']({projectId,runId:failed.id}).report?.status).toBe('failed')
+  })
+
+  it('refuses a source revoked while a draft is in progress and does not publish a Page', async () => {
+    const { adapter, missions, projectId, chiefId } = setup()
+    const content = h!.services.store.projectContent
+    adapter.push((events,signal)=>{
+      const path=/- (mission-[^\s]+\/project-notes\/[^\s]+)/.exec(latestTask(h!,chiefId))![1]!
+      content.revoke(projectId,content.library(projectId)[0]!.itemId)
+      return callTools([{id:'read-revoked-note',name:'read_file',input:{path}}])(events,signal)
+    },writeDraft(h!,chiefId),say('Saved.'))
+    const run=missions.start(projectId)
+    await missions.idle()
+    const dm=h!.services.store.conversations.findDm(chiefId)!
+    const read=h!.services.store.entries.page(dm.id,{limit:100}).entries.find(e=>e.toolCall?.callId==='read-revoked-note')
+    expect(read?.toolCall?.resultText).toMatch(/access/)
+    expect(read?.toolCall?.resultText).not.toContain(NOTE_BODY.trim())
+    expect(h!.services.store.journeyRuns.get(run.id)).toMatchObject({status:'failed',error:expect.stringMatching(/access/)})
+    expect(content.pages(projectId)).toEqual([])
   })
 
   it('reads only structural verdict lines from a review reply', () => {

@@ -9,11 +9,23 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { migrate, openDatabase, schemaVersion } from '../src/main/store/db'
 import { MIGRATIONS } from '../src/main/store/schema'
 
+import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
+
+const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name: 'project_spaces', since: CONTENT_VERSION, cols: ['id', 'project_id', 'name'], order: 'id' },
+  { name: 'library_items', since: CONTENT_VERSION, cols: ['id', 'owner_id'], order: 'id' },
+  { name: 'library_revisions', since: CONTENT_VERSION, cols: ['item_id', 'revision', 'source_id'], order: 'item_id,revision' },
+  { name: 'library_access', since: CONTENT_VERSION, cols: ['project_id', 'item_id', 'selected', 'revoked'], order: 'project_id,item_id' },
+  { name: 'project_context', since: CONTENT_VERSION, cols: ['run_id', 'space_id', 'rubric', 'sources', 'baseline_run_id'], order: 'run_id' },
+  { name: 'space_pages', since: CONTENT_VERSION, cols: ['id', 'run_id', 'revision_id', 'review_id', 'created_at'], order: 'id' },
+  { name: 'project_run_turns', since: CONTENT_VERSION, cols: ['run_id', 'turn_id', 'phase'], order: 'run_id,turn_id' },
+  { name: 'project_evaluations', since: CONTENT_VERSION, cols: ['run_id', 'observed', 'reason', 'revision_id', 'reviewer', 'turns', 'created_at'], order: 'run_id' },
+  { name: 'evaluation_trials', since: CONTENT_VERSION, cols: ['id', 'run_id', 'candidate_id', 'outcome', 'reason', 'created_at', 'integrity', 'contract'], order: 'id' },
   { name: 'settings', since: 1, cols: ['id', 'data'], order: 'id' },
   { name: 'bots', since: 1, cols: ['id', 'name', 'handle', 'avatar', 'model', 'tool_permissions', 'created_at', 'updated_at'], order: 'id' },
   { name: 'conversations', since: 1, cols: ['id', 'kind', 'title', 'bot_ids', 'last_entry_at', 'created_at', 'updated_at'], order: 'id' },
@@ -89,6 +101,17 @@ function seed(db: DatabaseSync, v: number): void {
       state, engine, system_hash, receipt, delivered_at, created_at, updated_at)
       values (?, ?, ?, ?, ?, ?, 'answered', 'native', ?, '{"text":"synthetic reply"}', 3, 1, 2)`,
       `work-${t}`, `bot-${t}`, 'bot-v1', 'c'.repeat(64), `entry-${t}`, 'entry-v1', 'd'.repeat(64))
+  }
+  if (v >= CONTENT_VERSION) {
+    // The project insert already created its Space. Seed every other content row explicitly.
+    run('insert into library_items values (?,?)', `src-${t}`, `proj-${t}`)
+    run('insert into library_revisions values (?,1,?)', `src-${t}`, `src-${t}`)
+    run('insert into library_access values (?,?,1,0)', `proj-${t}`, `src-${t}`)
+    run("insert into project_context values (?,?,?,'[]',null)", `jr-${t}`, `proj-${t}`, `rubric ${t}`)
+    run("insert into project_run_turns values (?,?,'draft')", `jr-${t}`, `turn-${t}`)
+    run('insert into space_pages values (?,?,?,?,1)', `page-${t}`, `jr-${t}`, `rev-${t}`, `dec-${t}`)
+    run("insert into project_evaluations values (?,'complete','accepted',?,'user',1,2)", `jr-${t}`, `rev-${t}`)
+    run("insert into evaluation_trials values (?,?,?,'passed','accepted',3,'verified','accepted')", v, `jr-${t}`, `jr-${t}`)
   }
 }
 

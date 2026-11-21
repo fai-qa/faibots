@@ -609,7 +609,7 @@ export interface Artifact {
 /** Where a revision came from: the project and the source notes it was built from (FJ-08). */
 export interface ArtifactProvenance {
   projectId?: Id
-  sources?: { attachmentId: Id; name: string; sha256: string }[]
+  sources?: { sourceId?: Id; itemId?: Id; revision?: number; attachmentId: Id; name: string; sha256: string }[]
   note?: string
   /** The workspace file the revision snapshot was observed from (FJ-06 capture). */
   file?: { workspace: string; path: string }

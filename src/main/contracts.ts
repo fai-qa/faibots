@@ -314,6 +314,8 @@ export interface ToolResult {
 export interface ToolContext {
   bot: Bot
   conversation: Conversation
+  /** Resolve a selected virtual project note in this turn, checking its current access. */
+  readProjectNote?: (path: string) => string | undefined
   /** Unique per bot turn. */
   turnId: Id
   /** Model-provided tool call id. */
@@ -454,6 +456,8 @@ export interface ProviderService {
 
 /** How an automatic run (a routine) ended. */
 export interface AutomatedRunResult {
+  /** Ledger row of the executed turn, when a model was attempted. */
+  turnId?: Id
   /** 'limited': the bot reached its daily run limit, so no model was called. */
   status: 'done' | 'error' | 'cancelled' | 'skipped' | 'limited'
   conversationId: Id
@@ -472,7 +476,7 @@ export interface Runtime {
    * the bot's turn. Counts against the bot's daily run limit. Mission runs pass the selected
    * sources as manifest-lite so the prompt can cite them.
    */
-  runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
+  runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
   stop(conversationId: Id): void
   reset(conversationId: Id): void
   liveStates(): BotLiveState[]
@@ -491,7 +495,7 @@ export interface Runtime {
  */
 export interface MissionRunService {
   /** Start a mission run for a project (refuses: unknown project, no sources, a run already active). */
-  start(projectId: Id): JourneyRun
+  start(projectId: Id, baselineRunId?: Id): JourneyRun
   /** Runs of a project, newest first. */
   runs(projectId: Id, limit?: number): JourneyRun[]
   /** Startup only: close runs left working/waiting_review by a crash as failed (A20). */

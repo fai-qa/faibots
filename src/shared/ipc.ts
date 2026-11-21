@@ -2,6 +2,7 @@
 // Every request/response channel and every push event is declared here once;
 // the preload bridge only forwards names that appear in INVOKE_CHANNELS / EVENT_CHANNELS.
 
+import { CONTENT_CHANNELS, type ContentInvoke } from './project-content'
 import type {
   AppSettings,
   ApprovalDecision,
@@ -95,7 +96,7 @@ export interface ArtifactWithRevisions {
   content?: string
 }
 
-export interface InvokeMap {
+export interface InvokeMap extends ContentInvoke {
   'app:info': { req: void; res: AppInfo }
 
   // Bots
@@ -245,7 +246,9 @@ export interface EventMap {
 export type InvokeChannel = keyof InvokeMap
 export type EventChannel = keyof EventMap
 
+
 export const INVOKE_CHANNELS = [
+  ...CONTENT_CHANNELS,
   'app:info',
   'bots:list', 'bots:create', 'bots:update', 'bots:delete', 'bots:export-recipe', 'bots:import-recipe',
   'conv:list', 'conv:open-dm', 'conv:create-group', 'conv:update', 'conv:delete', 'conv:entries',

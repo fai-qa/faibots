@@ -8,7 +8,8 @@ import type { Services } from '../contracts'
 import { assertRemovableBot } from '../store/bots'
 import { createSnapshotService } from '../attachments/snapshots'
 import { encryptionAvailable, pickFiles } from '../platform/electron'
-import { observeFile, pinWorkspace } from '../routines/acceptance'
+import { revisionText } from '../attachments/project-reads'
+import { projectContentHandlers } from './project-content'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
 
@@ -23,6 +24,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
   const store = s.store as PlatformStore
 
   return {
+    ...projectContentHandlers(s, store),
     'app:info': () => ({
       name: app.getName(),
       version: app.getVersion(),
@@ -196,15 +198,17 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       // The snapshot service (built lazily: it is stateless and needs no wiring at startup)
       // copies the files and enforces md/txt/pdf and 10 MB per note before anything is stored;
       // its errors are plain messages for the renderer.
-      return createSnapshotService({
+      const added = createSnapshotService({
         attachments: s.attachments,
         projects: store.projects,
         projectSources: store.projectSources
       }).attach(projectId, paths)
+      s.bus.emit('journey:changed', { projectId })
+      return added
     },
     'projects:list-sources': ({ projectId }) => {
       if (!store.projects.get(projectId)) throw new Error('Project not found')
-      return store.projectSources.listByProject(projectId)
+      return store.projectContent.library(projectId).filter(item => item.readable && item.selected).map(item => item.source)
     },
     'artifacts:list': ({ projectId }) => {
       if (!store.projects.get(projectId)) throw new Error('Project not found')
@@ -217,11 +221,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
         const file = latest?.provenance.file
         if (file && latest) {
           try {
-            const pinned = pinWorkspace(file.workspace)
-            const observed = observeFile(file.workspace, file.path, pinned)
-            if (observed.kind === 'ok' && observed.sha256 === latest.sha256.toLowerCase()) {
-              content = observed.data.toString('utf8')
-            }
+            content = revisionText(store, projectId, latest, s.dataDir, s.attachments)
           } catch {
             // Unreadable or moved workspace: no content, the revision record stays authoritative.
           }

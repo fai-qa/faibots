@@ -6,7 +6,7 @@ import { FileCheck2, FileText, Paperclip, ChevronDown, Rocket } from 'lucide-rea
 import { useState } from 'react'
 import type { ArtifactWithRevisions } from '@shared/ipc'
 import type { JourneyRun, ProjectSource, ReviewDecision } from '@shared/domain'
-import { invoke } from '../../lib/bridge'
+import { isMockBridge, invoke } from '../../lib/bridge'
 import { useAsync } from '../../lib/hooks'
 import { formatBytes, formatFull, plural } from '../../lib/format'
 import { useData } from '../../store/data'
@@ -16,6 +16,7 @@ import { Markdown } from '../chat/Markdown'
 import { Badge, EmptyState, Spinner } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { StatusChip } from './StatusChip'
+import { ProjectSpace } from './ProjectSpace'
 import { RunDetails } from './RunDetails'
 import { AgentTrail, type TrailStep } from '../ui/agent-trail-clean'
 
@@ -96,12 +97,12 @@ export function ProjectView({ projectId }: { projectId: string }) {
             <h1 className="text-[20px] font-semibold tracking-[-0.01em] text-fg">{project.name}</h1>
             {project.description && <p className="mt-1 text-[13px] text-fg-3 selectable">{project.description}</p>}
             <p className="mt-1.5 text-[12px] text-fg-4">
-              Created {formatFull(project.createdAt)} · {plural(sourceCount, 'note')} attached
+              Created {formatFull(project.createdAt)} · {plural(sourceCount, 'note')} selected
             </p>
           </header>
 
           {/* Notes ------------------------------------------------------------------ */}
-          <section aria-label="Notes">
+          {isMockBridge() ? <section aria-label="Notes">
             <div className="mb-2 flex items-center justify-between gap-2">
               <h2 className="text-[13px] font-semibold text-fg">Notes</h2>
               <StatusChip tone="built" title="Attaching notes works locally: the files are copied into this app's attachment store." />
@@ -133,7 +134,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                 attach here.
               </EmptyState>
             )}
-          </section>
+          </section> : <ProjectSpace key={projectId} projectId={projectId} version={journeyVersion} attaching={attaching} onAttach={()=>void attach()} />}
 
           {/* Mission ----------------------------------------------------------------- */}
           <section aria-label="Mission">
