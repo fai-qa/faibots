@@ -21,7 +21,7 @@ export function createRuntimeServices(deps: Omit<Services, 'providers' | 'runtim
   webhooks: WebhookHost
 } {
   const providers = createProviderService({ store: deps.store, secrets: deps.secrets, bus: deps.bus })
-  const runtime = createRuntime({ ...deps, providers })
+  const runtime = createRuntime({ ...deps, store: deps.store as PlatformStore, providers })
   const routines = createRoutineService({ store: deps.store, runtime, bus: deps.bus })
   for (const tool of routineTools(routines)) deps.tools.register(tool)
   const missions = createMissionRunService({ store: deps.store as PlatformStore, runtime, attachments: deps.attachments, dataDir: deps.dataDir, bus: deps.bus })

@@ -18,7 +18,7 @@
 // agent, routine) and its tokens. Automatic turns (agent, routine) first check the bot's daily run
 // limit, so a routine or a chatty bot cannot spend a whole allowance unattended.
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
   DEFAULT_GROUP_SETTINGS,
@@ -39,7 +39,10 @@ import type { AutomatedRunResult, Runtime, Services, ToolContext, ToolDefinition
 import type { EngineKind } from '../providers/catalog'
 import type { RuntimeProviders } from '../providers/provider-service'
 import type { ToolCallRequest } from '../providers/types'
+import type { PlatformStore } from '../store'
+import { createDelegationRepo, type DelegationLease } from '../store/delegations'
 import { errorResult } from '../tools/define'
+import { MAX_RESULT_CHARS, truncateText } from '../tools/registry'
 import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
 import { IncompleteTurnError, type TurnEngine } from './engine'
@@ -59,7 +62,8 @@ export const MAX_ASKS_PER_CHAIN = 12
 export const EXCHANGE_TIMEOUT_MS = 10 * 60_000
 const SHUTDOWN_WAIT_MS = 4_000
 
-export type RuntimeDeps = Omit<Services, 'providers' | 'runtime' | 'routines' | 'webhooks' | 'missions'> & { providers: RuntimeProviders }
+export type RuntimeDeps = Omit<Services, 'providers' | 'runtime' | 'routines' | 'webhooks' | 'missions' | 'store'> &
+  { providers: RuntimeProviders; store: PlatformStore }
 
 export interface RuntimeOptions {
   engines: Record<EngineKind, TurnEngine>
@@ -72,6 +76,7 @@ export interface TurnOutcome {
   status: 'sent' | 'pass' | 'error' | 'cancelled' | 'skipped' | 'limited'
   posts: Entry[]
   error?: string
+  needsReconciliation?: boolean
 }
 
 interface TurnRequest {
@@ -88,6 +93,7 @@ interface TurnRequest {
   cascade?: Cascade
   /** Shared by a turn and every exchange it starts, however deep (bounds bot-to-bot fan-out). */
   askBudget?: { left: number }
+  assignment?: { lease: DelegationLease; questionSeq: number; origin: NonNullable<Conversation['origin']> }
 }
 
 interface ActiveTurn {
@@ -163,8 +169,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly runs = new Map<Id, ConversationRun>()
   private readonly active = new Map<Id, ActiveTurn>()
   private readonly background = new Set<Promise<unknown>>()
-  /** Outcome of the latest turn that really ran, per conversation and bot (in memory only). */
-  private readonly lastRealOutcome = new Map<string, { status: TurnOutcome['status']; error?: string }>()
+  private readonly delegations: ReturnType<typeof createDelegationRepo>
   private readonly unsubscribe: () => void
   private readonly exchangeTimeoutMs: number
   private readonly now: () => Date
@@ -177,6 +182,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.live = new LiveStates(deps.bus)
     this.exchangeTimeoutMs = options.exchangeTimeoutMs ?? EXCHANGE_TIMEOUT_MS
     this.now = options.now ?? (() => new Date())
+    this.delegations = createDelegationRepo(deps.store.db, deps.store.entries)
+    this.delegations.recover()
     this.recoverInterruptedTurns()
     this.unsubscribe = deps.approvals.subscribe((event) => {
       const turn = this.active.get(event.ctx.turnId)
@@ -390,46 +397,56 @@ export class Orchestrator implements Runtime, CollabRuntime {
       asking.asks++
       asking.askBudget.left--
     }
-    const card = asking?.recorder.findToolEntry(ctx.callId, ['send_to_agent'])
-    const origin = { conversationId: ctx.conversation.id, entryId: card?.id ?? '', fromBotId: from.id }
-    const found = store.conversations.findExchange(from.id, target.id)
-    // The latest request decides where the exchange's approval cards surface.
-    const exchange = found
-      ? store.conversations.update(found.id, { origin })
-      : store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
+    // Bridge call IDs are independent of the engine's card IDs. Never bind a durable return
+    // to an unrelated running card merely because it was the last one shown for this tool.
+    const candidate = asking?.recorder.findToolEntry(ctx.callId, ['send_to_agent'])
+    const card = candidate?.toolCall?.callId === ctx.callId ? candidate : undefined
+    const id = ctx.actionId ?? nativeActionId(ctx)
+    const inputHash = createHash('sha256').update(message.trim()).digest('hex')
+    const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
+      const parent = card ?? store.entries.append({
+        conversationId: ctx.conversation.id, kind: 'event', author: { kind: 'system' },
+        text: `Messaging ${target.name}`, mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
+      })
+      const origin = { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id }
+      const found = store.conversations.findExchange(from.id, target.id)
+      const exchange = found ??
+        store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
+      const question = store.entries.append({
+        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id },
+        text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
+      })
+      return { parent, question }
+    })
+    if (assignment.existing) {
+      const work = assignment.existing
+      if (work.state === 'answered' && work.receipt) {
+        return { reply: work.receipt.text, exchange: store.conversations.get(work.exchangeId)! }
+      }
+      throw new CollabError(work.receipt?.text ?? 'The delegated task is already running.', work.receipt?.partial, work.exchangeId)
+    }
+    const { lease, parent, question } = assignment
+    const exchange = store.conversations.get(question.conversationId)!
     bus.emit('conv:changed', { conversation: exchange })
     if (card) asking?.recorder.annotateTool(card.id, { title: `Messaging ${target.name}`, exchangeConversationId: exchange.id })
-
-    const entry = store.entries.append({
-      conversationId: exchange.id,
-      kind: 'message',
-      author: { kind: 'bot', botId: from.id },
-      text: message.trim(),
-      mentions: [target.id],
-      mentionsEveryone: false,
-      attachments: [],
-      isStreaming: false
-    })
-    this.emitEntry(entry)
+    else this.emitEntry(parent)
+    this.emitEntry(question)
 
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), this.exchangeTimeoutMs)
+    let failure: 'failed' | 'reconciliation_required' = 'reconciliation_required'
+    let reply: string
     try {
       const outcome = await this.scheduleTurn(exchange.id, target.id, {
         trigger: 'agent',
         mustAnswer: true,
         inGroup: false,
+        assignment: { lease, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
         ...(asking && { askBudget: asking.askBudget })
       })
-      // Normally the turn's own posts. If an earlier queued turn of the same bot already
-      // answered this message (two bots asked it at once), use what it wrote after the question.
-      const posts =
-        outcome.posts.length > 0
-          ? outcome.posts
-          : store.entries.since(exchange.id, entry.seq).filter((e) => e.kind === 'message' && isOwn(e, target.id))
-      const reply = posts.map((p) => p.text).join('\n\n').trim()
+      reply = truncateText(this.deps.secrets.redact(outcome.posts.map((p) => p.text).join('\n\n').trim()), MAX_RESULT_CHARS)
       const partial = reply || undefined
       if (ctx.signal.aborted) throw new CollabError('Cancelled.', partial, exchange.id)
       if (timeout.signal.aborted) {
@@ -437,22 +454,25 @@ export class Orchestrator implements Runtime, CollabRuntime {
         const limit = ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.max(1, Math.round(ms / 1000))} seconds`
         throw new CollabError(`${target.name} did not answer within ${limit}.`, partial, exchange.id)
       }
-      // Text never decides success: an errored, cancelled or limited turn is unfinished even if it wrote.
-      // A skipped turn borrowed another turn's posts, so it is only as successful as that turn was.
-      const judged =
-        outcome.status === 'skipped' && outcome.posts.length === 0
-          ? this.lastRealOutcome.get(`${exchange.id}\u0000${target.id}`) ?? outcome
-          : outcome
-      const failed = Boolean(judged.error) || judged.status === 'error' || judged.status === 'cancelled' || judged.status === 'limited'
+      if (outcome.status !== 'cancelled' && !outcome.needsReconciliation) failure = 'failed'
+      const failed = Boolean(outcome.error) || outcome.status === 'error' || outcome.status === 'cancelled' || outcome.status === 'limited'
       if (failed) {
-        const reason = judged.error ?? `its turn ended as ${judged.status}`
+        const reason = outcome.error ?? `its turn ended as ${outcome.status}`
         throw new CollabError(`${target.name} could not answer: ${reason}`, partial, exchange.id)
       }
       if (!reply) throw new CollabError(`${target.name} did not reply.`, undefined, exchange.id)
-      return { reply, exchange }
+    } catch (error) {
+      const text = this.deps.secrets.redact(error instanceof Error ? error.message : String(error))
+      const partial = error instanceof CollabError && error.partial ? this.deps.secrets.redact(error.partial) : undefined
+      this.delegations.finish(lease, failure, { text, ...(partial && { partial }) })
+      if (!card) this.emitEntry(store.entries.get(parent.id)!)
+      throw error
     } finally {
       clearTimeout(timer)
     }
+    this.delegations.finish(lease, 'answered', { text: reply, responder: this.deps.secrets.redact(`${target.name} (@${target.handle})`) })
+    if (!card) this.emitEntry(store.entries.get(parent.id)!)
+    return { reply, exchange }
   }
 
   // -------------------------------------------------------------------------------------------
@@ -586,15 +606,16 @@ export class Orchestrator implements Runtime, CollabRuntime {
 
   private async runTurn(conversationId: Id, botId: Id, req: TurnRequest, stopSignal: AbortSignal): Promise<TurnOutcome> {
     const { store, bus, providers, tools, secrets } = this.deps
-    const conversation = store.conversations.get(conversationId)
+    const conversation = req.assignment ? store.conversations.update(conversationId, { origin: req.assignment.origin }) : store.conversations.get(conversationId)
     const bot = store.bots.get(botId)
     if (!conversation || !bot || !conversation.botIds.includes(botId)) return { status: 'skipped', posts: [] }
 
     const context = store.botContext.get(conversationId, botId)
-    const unseen = store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.kind === 'message' && !isOwn(e, botId))
+    // An assignment can only consume its own question. A second one may already be queued in this exchange.
+    const upToSeq = req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+    const unseen = store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
-    const upToSeq = store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
 
     let route: ReturnType<RuntimeProviders['resolve']> | undefined
     let routeError: string | undefined
@@ -680,6 +701,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.manifestLite && { manifestLite: req.manifestLite })
       })
       const userName = settings.userName
+      if (req.assignment) {
+        const systemHash = createHash('sha256').update(JSON.stringify([system.stable, system.volatile])).digest('hex')
+        this.delegations.pin(req.assignment.lease, route.engine, systemHash)
+      }
       const labels = new Map(turnTools.map((t) => [t.name, t.activityLabel]))
       await engine.run({
         turnId,
@@ -721,6 +746,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       : signal.aborted
         ? { status: 'cancelled', posts }
         : { status: posts.length > 0 ? 'sent' : 'pass', posts }
+    if (active.unresolvedActions.size) outcome.needsReconciliation = true
     store.turns.record({
       id: turnId,
       botId,
@@ -735,7 +761,6 @@ export class Orchestrator implements Runtime, CollabRuntime {
       endedAt: Date.now(),
       ...(error && { error })
     })
-    this.lastRealOutcome.set(`${conversationId}\u0000${botId}`, { status: outcome.status, ...(outcome.error && { error: outcome.error }) })
     return outcome
   }
 
@@ -758,6 +783,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
       result = await this.deps.tools.execute(call.name, call.input, { ...ctx, actionId })
     }
     recorder.toolEnd(call.id, result, toolContext.signal.aborted)
+    if (call.name === 'send_to_agent' && !result.recovery) {
+      const card = recorder.findToolEntry(call.id, ['send_to_agent'])
+      if (card?.toolCall?.actionId === actionId && card.toolCall.status !== 'running') this.delegations.acknowledge(actionId, card.id)
+    }
     const active = this.active.get(toolContext.turnId)
     if (result.recovery) active?.unresolvedActions.add(result.recovery.actionId)
     else if (!result.isError) active?.unresolvedActions.delete(actionId)

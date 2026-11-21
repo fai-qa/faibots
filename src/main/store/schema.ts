@@ -299,5 +299,26 @@ export const MIGRATIONS: string[] = [
     ended_at integer
   );
   create index journey_runs_project on journey_runs(project_id, started_at);
+  `,
+
+  /* 8: durable send_to_agent assignments, fenced child execution and parent delivery. */ `
+  create table delegations (
+    id text primary key,
+    caller_id text not null,
+    child_id text not null,
+    input_hash text not null,
+    parent_entry_id text not null references entries(id) on delete cascade,
+    question_id text not null references entries(id) on delete cascade,
+    state text not null check (state in ('assigned','answered','failed','reconciliation_required')),
+    lease text,
+    engine text,
+    system_hash text,
+    receipt text,
+    delivered_at integer,
+    created_at integer not null,
+    updated_at integer not null,
+    check ((state = 'assigned') = (lease is not null))
+  );
+  create index delegations_pending on delegations(id) where delivered_at is null;
   `
 ]
