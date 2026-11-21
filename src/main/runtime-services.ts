@@ -29,7 +29,7 @@ export function createRuntimeServices(deps: Omit<Services, 'providers' | 'runtim
   deps.tools.register(escalationTool(deps.store as PlatformStore, deps))
   const routines = createRoutineService({ store: deps.store, runtime, bus: deps.bus })
   for (const tool of routineTools(routines)) deps.tools.register(tool)
-  const missions = createMissionRunService({ store: deps.store as PlatformStore, runtime, attachments: deps.attachments, dataDir: deps.dataDir, bus: deps.bus })
+  const missions = createMissionRunService({ store: deps.store as PlatformStore, runtime, providers, skills: deps.skills, attachments: deps.attachments, dataDir: deps.dataDir, bus: deps.bus })
   // Runs left working/waiting_review by a crash are unknown, not success (A20).
   missions.closeInterrupted(Date.now())
   const webhooks = createWebhookServer({ triggerWebhook: (id, token, payload) => routines.triggerWebhook(id, token, payload) })

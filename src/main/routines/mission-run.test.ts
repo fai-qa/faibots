@@ -11,6 +11,7 @@ import { createHarness, type Harness } from '../agent/testing/fakes'
 import { createNativeEngine } from '../agent/native-engine'
 import { ScriptedAdapter, callTools, say, type ScriptedStep } from '../agent/testing/scripted-adapter'
 import { fileTools } from '../tools/builtin/files'
+import { createSkillService } from '../skills/skills'
 import { createAttachmentStore } from '../attachments/attachments'
 import { pdfFixture } from '../attachments/testing/pdf-fixture'
 import { createSnapshotService } from '../attachments/snapshots'
@@ -49,11 +50,12 @@ describe('mission run (M1c)', () => {
       })
     })
     for (const tool of fileTools({ homeDir: h.services.dataDir, skillDirsForBot: () => [] })) h.services.tools.register(tool)
+    Object.assign(h.services.skills, createSkillService({ dataDir: h.services.dataDir, homeDir: h.services.dataDir, store: h.services.store, bus: h.services.bus }))
     const attachments = createAttachmentStore({ dataDir: h.services.dataDir })
-    const missions = createMissionRunService({ store: h.services.store, runtime: h.runtime, attachments, dataDir: h.services.dataDir, bus: h.services.bus })
+    const missions = createMissionRunService({ store: h.services.store, runtime: h.runtime, providers: h.providers, skills: h.services.skills, attachments, dataDir: h.services.dataDir, bus: h.services.bus })
 
     const chief = h.bot('Atlas', { isPrimary: true })
-    const reviewer = h.bot('Iris')
+    const reviewer = h.bot('Iris', { label: 'Proposal reviewer' })
     const project = h.services.store.projects.create({ name: 'Launch', description: 'Ship the desktop app.' })
     mkdirSync(h.services.dataDir, { recursive: true })
     const notePath = join(h.services.dataDir, name)
@@ -79,11 +81,14 @@ describe('mission run (M1c)', () => {
 
   /** The chief sends the run-specific brief, source evidence and draft verbatim. */
   const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT, source: string | Buffer = NOTE_BODY): ScriptedStep => (events, signal) => {
-    const message = REVIEW_MESSAGE.exec(latestTask(harness, chiefId))![1]!.trim()
+    const task = latestTask(harness, chiefId)
+    const to = /Now the review step\. Ask @(\S+) to review/.exec(task)![1]!
+    const requiredSkills = /Include requiredSkills: (\[[^\n]+\]) so dispatch/.exec(task)?.[1]
+    const message = REVIEW_MESSAGE.exec(task)![1]!.trim()
     expect(message).toContain(DEFAULT_PROPOSAL_RUBRIC)
     expect(message).toContain(draft.trim())
     expect(message).toContain(sha(source))
-    return callTools([{ id: 'send-1', name: 'send_to_agent', input: { to: 'iris', message } }])(events, signal)
+    return callTools([{ id: 'send-1', name: 'send_to_agent', input: { to, message, ...(requiredSkills && { requiredSkills: JSON.parse(requiredSkills) }) } }])(events, signal)
   }
 
   it('drafts using a virtual PDF note and gives the reviewer its text and original snapshot hash', async () => {
@@ -345,6 +350,95 @@ describe('mission run (M1c)', () => {
     const revisions = h!.services.store.artifacts.revisions(artifact.id)
     expect(revisions).toHaveLength(1)
     expect(h!.services.store.artifacts.reviews(revisions[0]!.id)).toEqual([])
+  })
+
+  it('chooses a ready review skill over older disabled, unrelated and missing-key specialists', async () => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const harness = h!
+    const { store, skills } = harness.services
+    const disabled = harness.providers.save({ kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', label: 'Off', enabled: false, defaultModelId: 'local' })
+    store.bots.update(reviewerId, { model: { providerId: disabled.id, modelId: '' } })
+    const code = harness.bot('Code Reviewer', { description: 'Review source code.' })
+    const keyless = harness.providers.save({ kind: 'openai', label: 'No key', enabled: true, defaultModelId: 'test-model' })
+    harness.bot('Bid Reviewer', { model: { providerId: keyless.id, modelId: '' } })
+    const general = harness.bot('Editor')
+    const specialist = harness.bot('Orchid')
+    skills.save({ name: 'proposal-review', description: 'Review bids against the evidence.', body: 'Check each claim.', ownerBotId: specialist.id })
+    adapter.push(writeDraft(harness, chiefId), say('Draft saved.'), reviewDispatch(harness, chiefId),
+      say('VERDICT: accepted — the evidence supports the proposal.'), endTurn)
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run.status).toBe('complete')
+    const [revision] = store.artifacts.revisions(run.artifactId!)
+    expect(store.artifacts.reviews(revision!.id)[0]?.reviewer).toBe(specialist.id)
+    expect(store.conversations.findExchange(chiefId, reviewerId)).toBeUndefined()
+    expect(store.conversations.findExchange(chiefId, general.id)).toBeUndefined()
+    expect(store.conversations.findExchange(chiefId, code.id)).toBeUndefined()
+  })
+
+  it.each([
+    ['Code reviewer', 'Does not review proposals.'],
+    ['مراجع الشيفرة', 'لا أراجع المقترحات.']
+  ])('keeps a saved draft when the only specialist role is %s', async (label, description) => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const store = h!.services.store
+    store.bots.update(reviewerId, { label, description })
+    adapter.push(writeDraft(h!, chiefId), say('Draft saved.'))
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run).toMatchObject({ status: 'partial', error: expect.stringMatching(/No visible specialist.*draft awaits review/) })
+    expect(store.artifacts.revisions(run.artifactId!)[0]?.sha256).toBe(sha(DRAFT))
+    expect(store.artifacts.get(run.artifactId!)?.status).toBe('draft')
+  })
+
+  it.each([['مُرَاجِعة العروض والمقترحات', true], ['مدققة برمجيات', false]])(
+    'uses the Arabic role %s and falls back to a declared editor when appropriate', async (role, specific) => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const harness = h!
+    const { store } = harness.services
+    store.bots.update(reviewerId, { label: 'مراجع الشيفرة البرمجية', description: 'لا أراجع المقترحات.' })
+    const person = harness.bot('مريم', { handle: 'mariam' })
+    const editor = harness.bot('نور', { handle: 'nour', label: 'محررة' })
+    const specialist = harness.bot('ريم', { handle: 'reem', label: role })
+    adapter.push(writeDraft(harness, chiefId), say('Draft saved.'), reviewDispatch(harness, chiefId),
+      say('VERDICT: accepted — the reviewed claims are supported.'), endTurn)
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run.status).toBe('complete')
+    const [revision] = store.artifacts.revisions(run.artifactId!)
+    expect(store.artifacts.reviews(revision!.id)[0]?.reviewer).toBe(specific ? specialist.id : editor.id)
+    for (const unused of [reviewerId, person.id, specific ? editor.id : specialist.id]) {
+      expect(store.conversations.findExchange(chiefId, unused)).toBeUndefined()
+    }
+  })
+
+  it('rechecks availability after drafting and retains the draft if dispatch later loses its review skill', async () => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const harness = h!
+    const { store, skills } = harness.services
+    const provider = harness.providers.save({ kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', label: 'For review', enabled: true, defaultModelId: 'test-model' })
+    store.bots.update(reviewerId, { model: { providerId: provider.id, modelId: '' } })
+    const alternate = harness.bot('Orchid')
+    const skill = skills.save({ name: 'document-review', description: 'Review written drafts.', body: 'Check claims.', ownerBotId: alternate.id })
+    adapter.push(writeDraft(harness, chiefId), (events, signal) => {
+      harness.providers.save({ ...provider, enabled: false })
+      return say('Draft saved.')(events, signal)
+    }, (events, signal) => {
+      expect(latestTask(harness, chiefId)).toContain('Ask @orchid to review')
+      skills.delete(skill.id)
+      return reviewDispatch(harness, chiefId)(events, signal)
+    }, endTurn)
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run).toMatchObject({ status: 'partial', error: expect.stringContaining('@orchid did not receive') })
+    const [revision] = store.artifacts.revisions(run.artifactId!)
+    expect(revision!.sha256).toBe(sha(DRAFT))
+    expect(store.artifacts.reviews(revision!.id)).toEqual([])
+    expect(store.conversations.findExchange(chiefId, alternate.id)).toBeUndefined()
   })
 
   it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {

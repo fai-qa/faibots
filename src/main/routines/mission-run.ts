@@ -14,7 +14,9 @@ import type {
   Artifact, Bot, EntryTrigger, Id, JourneyRun, JourneyRunBudgets, ManifestLiteSource, Project,
   ProjectSource, ReviewDecisionKind
 } from '@shared/domain'
-import type { AttachmentStore, EventBus, MissionRunService, Runtime } from '../contracts'
+import type { AttachmentStore, EventBus, MissionRunService, SkillService } from '../contracts'
+import type { Orchestrator } from '../agent/orchestrator'
+import type { RuntimeProviders } from '../providers/provider-service'
 import { prepareNoteReader, revisionText } from '../attachments/project-reads'
 import type { ProjectInstruction } from '@shared/project-improvements'
 import { createProjectImprovements } from '../store/project-improvements'
@@ -36,9 +38,29 @@ const EXPLANATION_CHARS = 4_000
 const MAX_REVIEW_SOURCE_CHARS = 24_000
 const VERDICT_LINE = /^VERDICT\s*:\s*(accepted|repair|rejected)(?:\s+[^\n]*)?$/i
 
+// A general editor can check the supplied text. A bot declared only as a code reviewer cannot.
+function reviewFit(declaration: string): number {
+  const review = /\b(?:review(?:er|ers|ing|s)?|edit(?:or|ors|orial|ing|s)?|proofread(?:er|ing)?|fact[ -]?check(?:er|ing)?|quality assurance)\b|مراجع|يراجع|تراجع|محرر|تحرير|مدقق|تدقيق|يدقق|ضمان الجودة/i
+  const proposal = /\b(?:proposals?|procurement|bids?|quotes?|tenders?)\b|عروض|عرض سعر|مقترح|مشتريات|مناقص|عطاء|تسعير/i
+  const document = /\b(?:drafts?|documents?|copy|content|writing|workshops?|rubrics?|evidence|editorial)\b|مسود|وثائق|وثيق|مستند|نصوص|النص|محتوى|صياغة|ورش|معايير|ادلة/i
+  const general = /^(?:(?:general|independent|senior|lead|peer) )?(?:reviewer|editor|proofreader|fact checker|quality assurance)$|^(?:ال)?(?:مراجع|محرر|مدقق)(?:ة)?(?: (?:عام|مستقل|لغوي|حقائق)(?:ة)?)?$|^ضمان الجودة$/i
+  const negated = /\b(?:no|never|not|cannot|without|don't|doesn't|can't)\b|(?:^|\s)(?:لا|ليس|لست|لن|بدون|غير)\s/i
+  const normalized = declaration.normalize('NFKC').replace(/[\u064b-\u065f\u0670\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/[-_]/g, ' ')
+  let fit = 0
+  for (const part of normalized.split(/[.!?;,،؛؟\n]/)) {
+    const text = part.trim()
+    if (!review.test(text) || negated.test(text)) continue
+    if (proposal.test(text)) return 2
+    if (document.test(text) || general.test(text)) fit = 1
+  }
+  return fit
+}
+
 export interface MissionRunServiceDeps {
   store: PlatformStore
-  runtime: Pick<Runtime, 'runAutomated'>
+  runtime: Pick<Orchestrator, 'runAutomated' | 'jobHistory'>
+  providers: Pick<RuntimeProviders, 'resolve'>
+  skills: Pick<SkillService, 'list'>
   attachments: AttachmentStore
   dataDir: string
   bus: EventBus
@@ -90,8 +112,10 @@ export function reviewMessageFor(rubric: string, draft: string, deliverable: str
   ].join('\n')
 }
 
-const reviewTask = (reviewer: string, message: string): string => [
+const reviewTask = (reviewer: string, reason: string, message: string, skill?: string): string => [
   `Now the review step. Ask ${reviewer} to review your draft.`,
+  `Why this specialist: ${reason} Include this reason in the send_to_agent call.`,
+  ...(skill ? [`Include requiredSkills: ${JSON.stringify([skill])} so dispatch can verify the review skill again.`] : []),
   '',
   `Call send_to_agent to "${reviewer}" with EXACTLY the message between the markers below (it already contains the rubric, selected notes and draft). ` +
     'Do not change, shorten or add to it. Then end your turn without writing anything else.',
@@ -119,6 +143,40 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
   const repo: JourneyRunRepo = store.journeyRuns
 
   const changed = (projectId: Id) => bus.emit('journey:changed', { projectId })
+
+  // Review is a text task. It needs an available model and a declared review role or accessible review skill.
+  function chooseReviewer(chief: Bot): { bot: Bot; reason: string; skill?: string } | { unavailable: string } {
+    const sendPermission = chief.toolPermissions.send_to_agent ?? store.settings.get().toolPermissions.send_to_agent
+    if (sendPermission === 'never') return { unavailable: 'The chief cannot send work to a reviewer under its current tool permissions.' }
+    const chat = store.conversations.findDm(chief.id)?.id ?? ''
+    const choices: { bot: Bot; reason: string; fit: number; running: number; skill?: string }[] = []
+    let setupIssue = ''
+    for (const bot of store.bots.list()) {
+      if (bot.id === chief.id || bot.isPrimary || bot.hidden) continue
+      const roleFit = Math.max(...[bot.label, bot.name, bot.handle, bot.description].map(reviewFit))
+      const skill = deps.skills.list(bot.id)
+        .map(s => ({ name: s.name, fit: Math.max(reviewFit(s.name), reviewFit(s.description)) }))
+        .sort((a, b) => b.fit - a.fit)[0]
+      const fit = Math.max(roleFit, skill?.fit ?? 0)
+      if (!fit) continue
+      try {
+        deps.providers.resolve(bot.model)
+      } catch (err) {
+        setupIssue ||= `@${bot.handle}: ${err instanceof Error ? err.message : 'its model is unavailable.'}`
+        continue
+      }
+      const history = runtime.jobHistory(bot, chat)
+      if (history.remaining === 0) {
+        setupIssue ||= `@${bot.handle} reached its daily automatic-run limit.`
+        continue
+      }
+      const requiredSkill = skill && skill.fit > roleFit ? skill.name : undefined
+      const reason = requiredSkill ? 'An accessible skill covers this review.' : 'Its profile declares review or editing work.'
+      choices.push({ bot, reason, fit, running: history.running, skill: requiredSkill })
+    }
+    choices.sort((a, b) => b.fit - a.fit || a.running - b.running)
+    return choices[0] ?? { unavailable: setupIssue || 'No visible specialist declares a review or editing role or skill.' }
+  }
 
   const finish = (runId: Id, patch: Parameters<JourneyRunRepo['finish']>[1]): JourneyRun | undefined => {
     try {
@@ -240,7 +298,6 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
     sources: ProjectSource[],
     chief: Bot,
     artifact: Artifact,
-    reviewer: Bot | undefined,
     rubric: string,
     instruction?: ProjectInstruction
   ): Promise<void> => {
@@ -302,11 +359,12 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       const budgets = () =>
         computeBudgets({ run, sources, revision: revisionBudget, revisions: store.artifacts.revisions(artifact.id).length })
 
-      if (!reviewer) {
+      const selection = chooseReviewer(store.bots.get(chief.id) ?? chief)
+      if ('unavailable' in selection) {
         // Optional reviewer (FJ-03): no bot review happened, so nothing may look accepted.
         finish(run.id, {
           status: 'partial',
-          error: 'No reviewer bot is available for the review exchange; the draft awaits a review.',
+          error: `No reviewer bot is available. ${selection.unavailable} The saved draft awaits review.`,
           endedAt: now(),
           budgets: budgets()
         })
@@ -314,6 +372,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         return
       }
 
+      const reviewer = selection.bot
       // One reviewer exchange, as its own automatic turn so waiting_review is a real, persisted state.
       finish(run.id, { status: 'waiting_review' })
       changed(project.id)
@@ -325,7 +384,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         : 0
       const reviewTurn = await runtime.runAutomated({
         botId: chief.id,
-        text: reviewTask(`@${reviewer.handle}`, message),
+        text: reviewTask(`@${reviewer.handle}`, selection.reason, message, selection.skill),
         projectRun: { projectId: project.id, runId: run.id },
         trigger: missionTrigger(project, artifact)
       })
@@ -340,6 +399,12 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         : []
       const isChief = (e: (typeof messages)[number]) => e.author.kind === 'bot' && e.author.botId === chief.id
       const request = messages.findIndex((e) => isChief(e) && e.text === message)
+      if (request < 0) {
+        finish(run.id, { status: 'partial', endedAt: now(), budgets: budgets(),
+          error: `@${reviewer.handle} did not receive the requested review. The draft is saved. Check the specialist's current permissions, capacity and model.` })
+        changed(project.id)
+        return
+      }
       const nextRequest = messages.findIndex((e, index) => index > request && isChief(e))
       const reviewerReply = request < 0 ? undefined : messages.slice(request + 1, nextRequest < 0 ? undefined : nextRequest)
         .findLast((e) => e.author.kind === 'bot' && e.author.botId === reviewer.id)
@@ -409,7 +474,6 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
       }
       const chief = store.bots.list().find((b) => b.isPrimary && !b.hidden) ?? store.bots.list().find((b) => !b.hidden)
       if (!chief) throw new Error('There is no bot to run the mission.')
-      const reviewer = store.bots.list().find((b) => b.id !== chief.id && !b.hidden && b.model.providerId !== '')
 
       const { artifact, run, instruction } = transaction(store.db, () => {
         const artifact = store.artifacts.create({ projectId, name: `${safeFileName(project.name)} ${trialCandidateId ? 'instruction trial' : 'proposal'}.md`, kind: 'proposal' })
@@ -417,7 +481,7 @@ export function createMissionRunService(deps: MissionRunServiceDeps): MissionRun
         store.projectContent.recordContext(run,sources,rubric,baselineRunId)
         return { artifact, run, instruction: improvements.pin(run,baselineRunId,trialCandidateId) }
       })
-      const done = runMission(run, project, sources, chief, artifact, reviewer, rubric, instruction)
+      const done = runMission(run, project, sources, chief, artifact, rubric, instruction)
       active.set(run.id, done)
       void done.finally(() => active.delete(run.id))
       changed(projectId)
