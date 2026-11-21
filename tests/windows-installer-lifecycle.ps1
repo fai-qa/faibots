@@ -24,7 +24,7 @@ if (-not ($hosted -or $sandbox)) { throw 'Refused outside Windows Sandbox or a G
 $hardware = Get-CimInstance Win32_ComputerSystem
 if ($hardware.Model -notmatch 'Virtual Machine') { throw 'Requires a recognized disposable virtual machine.' }
 if ($PreviousSha256 -eq $CurrentSha256) { throw 'The installers must have different expected hashes.' }
-$node = (Get-Command node.exe -CommandType Application).Source
+$node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
 & $node -e "if (Number(process.versions.node.split('.')[0]) < 24) process.exit(1); require('node:sqlite')"
 if ($LASTEXITCODE -ne 0) { throw 'The runner must provide Node 24+ with node:sqlite.' }
 
