@@ -223,7 +223,7 @@ export class TurnRecorder {
       mentions: [],
       mentionsEveryone: false,
       attachments: [],
-      toolCall: { callId, ...(actionId && { actionId }), toolName, title, input: redactDeep(input, this.deps.redact), status: 'running' },
+      toolCall: { callId, ...(actionId && { actionId }), toolName, title, input: toolName === 'read_project_result' ? {} : redactDeep(input, this.deps.redact), status: 'running' },
       isStreaming: false
     })
     if (entry) this.tools.set(callId, entry)
@@ -274,6 +274,8 @@ export class TurnRecorder {
     if (toolCall.toolName === 'read_handoff' && patch.resultText !== undefined) {
       toolCall.resultText = toolCall.status === 'done' ? 'Handoff checked against current access.' : 'The handoff could not be read.'
     }
+    if (toolCall.toolName === 'read_project_result' && patch.resultText !== undefined)
+      toolCall.resultText = toolCall.status === 'done' ? 'The selected result was checked against current access.' : 'The selected result could not be read.'
     const updated = this.update(entry.id, { toolCall, text: toolCall.title })
     this.tools.set(callId, updated ?? { ...entry, toolCall })
   }

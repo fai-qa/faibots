@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
 import type { SDKMessage, Options, query as claudeQuery } from '@anthropic-ai/claude-agent-sdk'
 import type { ThreadEvent } from '@openai/codex-sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -12,6 +13,8 @@ import { safeModelId, turnContextHandlers } from '../store/turn-context'
 import { createCodexEngine } from './codex-engine'
 import { createClaudeCodeEngine } from './claude-code-engine'
 import { createNativeEngine } from './native-engine'
+import { projectResultTool } from './project-result-tool'
+import { projectSessionHandlers } from '../ipc/project-sessions'
 import { createHarness } from './testing/fakes'
 import { say, ScriptedAdapter } from './testing/scripted-adapter'
 
@@ -45,7 +48,7 @@ it.each(['native', 'codex', 'claude-code'] as const)(
   async (engine) => {
     let offered: string[] = []
     let transport: ToolBridge | undefined
-    const adapter = new ScriptedAdapter([say('Fixture received.')])
+    const adapter = new ScriptedAdapter([say('Fixture received.'),say('Selected result received.')])
     const h = createHarness({
       engines(services, providers) {
         services.mcp.toolsForBot = async () => [connector]
@@ -142,6 +145,7 @@ it.each(['native', 'codex', 'claude-code'] as const)(
     })
     try {
       const { store, tools } = h.services
+      tools.register(projectResultTool(store,h.services))
       const providerId =
         engine === 'native'
           ? h.providerId
@@ -187,6 +191,7 @@ it.each(['native', 'codex', 'claude-code'] as const)(
       expect(receipt!.tools.find((t) => t.name === 'list_bots')).toMatchObject({ permission: 'ask' })
       expect(receipt!.tools.some((t) => t.name === connector.name)).toBe(engine !== 'codex')
       expect(receipt!.tools.some((t) => t.name === 'send_to_agent')).toBe(false)
+      expect(receipt!.tools.some((t) => t.name === 'read_project_result')).toBe(false)
       expect(receipt!.omissions).toContain('Turned off by permission: send_to_agent.')
       expect(receipt!.tools.some((t) => t.name === 'pass_turn')).toBe(room.kind === 'group')
       expect(
@@ -205,6 +210,25 @@ it.each(['native', 'codex', 'claude-code'] as const)(
       expect(get({ scope }).turns[0]!.sources).toEqual([{ kind: 'withheld' }])
       h.runtime.reset(room.id)
       expect(get({ scope }).turns).toEqual([])
+      mkdirSync(h.services.dataDir,{recursive:true})
+      const chief = h.bot('fai',{isPrimary:true,model:{providerId,modelId:'unit-model'}})
+      const selectedChat = h.runtime.openDm(chief.id)
+      const project = store.projects.create({name:'Fixture selection'})
+      store.projectSources.insert({projectId:project.id,attachmentId:'fixture-copy',name:'note.md',sizeBytes:3,kind:'md',
+        sha256:createHash('sha256').update('abc').digest('hex')})
+      const handlers = projectSessionHandlers({...h.services,runtime:h.runtime,providers:h.providers},store)
+      const address = handlers['session:project']({projectId:project.id}).address
+      const session = handlers['session:open']({...address,mode:'fresh'}).session
+      const selected = await handlers['session:lookup']({...address,sessionId:session.id,query:'abc',requestId:randomUUID()})
+      await handlers['session:ask-fai']({...address,sessionId:session.id,answerId:selected.id,requestId:randomUUID(),instruction:'Summarize the result.'})
+      await h.runtime.idle()
+      if (engine === 'native') offered = adapter.specs.at(-1)!.tools.map(t=>t.name)
+      const [authorized] = get({scope:{kind:'chat',conversationId:selectedChat.id}}).turns
+      expect(authorized!.tools.map(t=>t.exposedAs).sort()).toEqual(offered.sort())
+      expect(authorized!.tools.find(t=>t.name==='read_project_result')).toMatchObject({
+        exposedAs:engine==='native'?'read_project_result':'mcp__faibots__read_project_result',
+        ...(engine==='codex' && {hostApproval:'app'})
+      })
     } finally {
       await h.runtime.shutdown()
       await transport?.shutdown()

@@ -212,5 +212,22 @@ export function createProjectSessions(store: PlatformStore, dataDir: string) {
     })
     return { history, omittedHistory: rows.length - history.length }
   }
-  return { list, ready, sessionAt, open, save, historyAt, checkAnswer }
+  function selectedAnswer(scope: ProjectAddress, id: string, answerId: string, verify: (id: string, pin: SessionSource) => void) {
+    const session = ready(scope, id)
+    const row = db.prepare(`select a.payload,a.session_id from project_answers a where a.id=? and
+      (a.session_id=? or exists(select 1 from project_history_selection where session_id=? and answer_id=a.id))`).get(answerId,id,id)
+    if (!row) throw new Error('Choose a result visible in this project session.')
+    const answer = JSON.parse(str(row.payload)) as ProjectAnswer
+    const origin = sessionAt({ ...scope, projectId: answer.projectId }, str(row.session_id))
+    if (origin.ownerId !== session.ownerId || answer.ownerId !== session.ownerId || answer.id !== answerId || answer.sessionId !== origin.id)
+      throw new Error('The selected result does not belong to the current owner.')
+    if (!answer.citations.length || !['found','conflict'].includes(answer.status))
+      throw new Error('Choose a result with verified citations.')
+    checkAnswer(scope.projectId, answer, session.sources, verify)
+    if (origin.projectId !== scope.projectId) checkAnswer(origin.projectId, answer, selected(origin.projectId), verify)
+    const verified = new Set(keys(answer.sources.filter(s => answer.verifiedSourceIds.includes(s.sourceId))))
+    if (!answer.citations.every(c => verified.has(keys([c.source])[0]!))) throw new Error('The citation is unverified.')
+    return answer
+  }
+  return { list, ready, sessionAt, open, save, historyAt, checkAnswer, selectedAnswer }
 }

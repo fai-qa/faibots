@@ -33,7 +33,7 @@ const TOOL_TIMEOUT_SEC = 30 * 60
 const desktopTools = [
   'read_file', 'write_file', 'send_to_agent', 'list_bots', 'create_bot', 'pass_turn',
   'assign_to_agent', 'assignment_status', 'wait_for_assignment', 'cancel_assignment', 'group_work_snapshot',
-  'plan_work', 'review_work', 'read_handoff'
+  'plan_work', 'review_work', 'read_handoff', 'read_project_result'
 ]
 const DESKTOP_BRIDGE_TOOLS = `{ ${desktopTools.map((tool) => `${tool} = { approval_mode = "approve" }`).join(', ')} }`
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp)$/i

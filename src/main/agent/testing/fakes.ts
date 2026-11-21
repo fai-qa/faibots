@@ -260,11 +260,13 @@ export function createHarness(
     runtime?: CreateRuntimeOptions
     providers?: Partial<ProviderServiceDeps>
     diskProfile?: string
+    attachments?: (dataDir: string) => AttachmentStore
     /** Build real engines from the harness services (the fake engine covers the rest). */
     engines?: (services: TestServices, providers: RuntimeProviders) => Partial<Record<EngineKind, TurnEngine>>
   } = {}
 ): Harness {
   const services = createTestServices(opts.diskProfile ? { homeDir: opts.diskProfile, databasePath: join(opts.diskProfile, 'faibots.db') } : {})
+  if (opts.attachments) services.attachments = opts.attachments(services.dataDir)
   const providers = createProviderService({ store: services.store, secrets: services.secrets, bus: services.bus, ...opts.providers })
   const provider = providers.save({
     kind: 'openai-compatible',

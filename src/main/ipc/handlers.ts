@@ -120,7 +120,11 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
     },
     'conv:entries': ({ conversationId, beforeSeq, limit }) =>
       s.store.entries.page(conversationId, { beforeSeq, limit: Math.min(limit ?? 100, 500) }),
-    'conv:send': (req) => s.runtime.send(req),
+    'conv:send': (req) => {
+      if (typeof req.clientNonce === 'string' && /^(?:project-result-|work-)/.test(req.clientNonce))
+        throw new Error('This message ID is reserved for a saved application request.')
+      return s.runtime.send(req)
+    },
     'conv:stop': ({ conversationId }) => s.runtime.stop(conversationId),
     'conv:reset': ({ conversationId }) => s.runtime.reset(conversationId),
     'conv:mark-read': ({ conversationId }) => {

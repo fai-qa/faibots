@@ -318,6 +318,8 @@ export interface ToolResult {
 export interface ToolContext {
   /** User message actually included in this turn. Used to identify a durable work brief. */
   userEntryId?: Id
+  /** The host's actual input entry and optional trusted scheduler wake. Never taken from tool arguments. */
+  projectResultTrigger?: {entryId: Id; wake?: {id: Id; revision: number}}
   bot: Bot
   conversation: Conversation
   /** Resolve a selected virtual project note in this turn, checking its current access. */
@@ -366,14 +368,14 @@ export interface ToolDefinition {
   /** Plain-words summary for an approval card. */
   summarize?(input: unknown, ctx: ToolContext): string
   /** Only offered when this returns true (e.g. pass_turn only in group turns). */
-  isAvailable?(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup'>): boolean
+  isAvailable?(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup' | 'projectResultTrigger'>): boolean
   execute(input: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 
 export interface ToolRegistry {
   register(def: ToolDefinition): void
   /** Tools the bot can call in this context; 'never' tools are omitted. Includes MCP tools. */
-  forTurn(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup'>, omitted?: (name: string, reason: 'scope' | 'permission') => void): Promise<ToolDefinition[]>
+  forTurn(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup' | 'projectResultTrigger'>, omitted?: (name: string, reason: 'scope' | 'permission') => void): Promise<ToolDefinition[]>
   /** UI listing with effective permissions. */
   info(botId?: Id): Promise<ToolInfo[]>
   setPermission(toolName: string, mode: PermissionMode | null, botId?: Id): void

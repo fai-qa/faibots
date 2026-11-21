@@ -52,7 +52,8 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
       const conversationId = turn.conversation.id
 
       let summary = turn.context.summary
-      let entries = deps.store.entries.since(conversationId, turn.context.summarizedUpToSeq).filter((e) => e.seq <= turn.upToSeq)
+      let entries = turn.selectedResultTrigger ? [turn.selectedResultTrigger] : deps.store.entries.since(conversationId, turn.context.summarizedUpToSeq)
+        .filter((e) => e.seq <= turn.upToSeq && !e.meta?.selectedResultEntryId)
       const view = () => buildBotView({ botId: bot.id, entries, summary, nameOf: turn.nameOf, loadImage })
       let messages = view()
 

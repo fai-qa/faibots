@@ -311,6 +311,7 @@ export function createClaudeCodeEngine(deps: ClaudeCodeEngineDeps): TurnEngine {
     // files are free to read; anything else there asks.
     const readableFiles = newEntries.flatMap((e) => e.attachments.map((a) => a.path))
     const options: Options = {
+      ...(turn.selectedResultTrigger && { persistSession: false }),
       cwd: workspace,
       additionalDirectories: attachmentDirs(newEntries),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: promptText(turn.system) },

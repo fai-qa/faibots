@@ -51,6 +51,7 @@ import { startOfLocalDay } from '../store/turns'
 import { MAIN_BOT_NAME } from '../store/bots'
 import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
+import { projectReplyOrigin, projectResultOrigin, queueProjectReply } from '../store/project-result-requests'
 import { IncompleteTurnError, type TurnEngine } from './engine'
 import { speakerName } from './history'
 import { LiveStates } from './live-state'
@@ -185,6 +186,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly delegations: ReturnType<typeof createDelegationRepo>
   private readonly briefs: ReturnType<typeof workBriefs>
   private readonly scheduledWakes = new Set<string>()
+  private readonly scheduledResults = new Set<string>()
   readonly assignments: BackgroundAssignments
   private readonly unsubscribe: () => void
   private readonly exchangeTimeoutMs: number
@@ -205,6 +207,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.recoverInterruptedTurns()
     for (const item of this.briefs.interrupted()) this.systemEvent(item.chat, `The app closed while fai was reviewing brief ${item.id}. Its returns are saved. Ask fai to continue reviewing them.`)
     queueMicrotask(() => this.wakeBriefs())
+    queueMicrotask(() => this.recoverProjectResults())
     this.unsubscribe = deps.approvals.subscribe((event) => {
       const turn = this.active.get(event.ctx.turnId)
       if (event.state === 'pending') this.emitConversationAndRoot(event.ctx.conversation.id)
@@ -231,25 +234,41 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (conversation.kind === 'exchange') throw new Error('Conversations between bots are read-only.')
     if (req.clientNonce) {
       const existing = store.entries.findByNonce(conversation.id, req.clientNonce)
-      if (existing) return existing
+      if (existing) {
+        if (existing.meta?.selectedResultEntryId && (existing.replyToId !== req.replyToId || existing.text !== req.text.trim()))
+          throw new Error('This message ID already belongs to a different selected-result reply.')
+        if (req.clientNonce.startsWith('project-result-') || existing.replyToId) this.dispatchProjectResult(existing)
+        return existing
+      }
     }
     const text = req.text.trim()
-    const attachments = req.attachmentPaths.length > 0 ? this.deps.attachments.ingest(req.attachmentPaths) : []
-    if (!text && attachments.length === 0) throw new Error('Type a message or attach a file.')
+    if (!text && req.attachmentPaths.length === 0) throw new Error('Type a message or attach a file.')
 
     const mentions = resolveMentionHints(text, this.membersOf(conversation), req.mentions, req.mentionsEveryone)
-    const entry = store.entries.append({
-      conversationId: conversation.id,
-      kind: 'message',
-      author: { kind: 'user' },
-      text,
-      mentions: mentions.ids,
-      mentionsEveryone: mentions.everyone,
-      ...(req.replyToId && { replyToId: req.replyToId }),
-      attachments,
-      isStreaming: false,
-      ...(req.clientNonce && { clientNonce: req.clientNonce })
-    })
+    const replyOrigin = conversation.kind === 'dm' && req.replyToId && projectReplyOrigin(store, conversation.id, req.replyToId)
+    const append = () => {
+      const attachments = req.attachmentPaths.length ? this.deps.attachments.ingest(req.attachmentPaths) : []
+      if (!text && !attachments.length) throw new Error('Type a message or attach a file.')
+      return store.entries.append({
+        conversationId: conversation.id,
+        kind: 'message',
+        author: { kind: 'user' },
+        text,
+        mentions: mentions.ids,
+        mentionsEveryone: mentions.everyone,
+        ...(req.replyToId && { replyToId: req.replyToId }),
+        ...(replyOrigin && { meta: { selectedResultEntryId: replyOrigin } }),
+        attachments,
+        isStreaming: false,
+        ...(req.clientNonce && { clientNonce: req.clientNonce })
+      })
+    }
+    if (replyOrigin) {
+      const reply = queueProjectReply(store, this.deps, conversation.id, replyOrigin, append)
+      this.dispatchProjectResult(reply)
+      return reply
+    }
+    const entry = append()
     this.emitEntry(entry)
 
     if (conversation.kind === 'dm') {
@@ -695,6 +714,33 @@ export class Orchestrator implements Runtime, CollabRuntime {
     }
   }
 
+  private recoverProjectResults(): void {
+    if (this.closed) return
+    const { store } = this.deps
+    for (const row of store.db.prepare("select * from project_result_requests where state='started'").all()) {
+      const finished = store.db.prepare('select 1 from turns where id=?').get(row.turn_id!)
+      store.db.prepare('update project_result_requests set state=? where id=?').run(finished ? 'finished':'interrupted',row.id!)
+      if (!finished) this.systemEvent(String(row.conversation_id), 'The app closed while fai was answering a selected project result. Review any existing reply. You can ask again from the project.')
+    }
+    for (const row of store.db.prepare("select entry_id from project_result_requests where state='queued' order by rowid").all()) {
+      const entry = store.entries.get(String(row.entry_id))
+      if (entry) this.dispatchProjectResult(entry)
+    }
+  }
+
+  private dispatchProjectResult(entry: Entry): void {
+    const { store } = this.deps
+    if (this.closed || this.scheduledResults.has(entry.id)) return
+    const row = store.db.prepare("select owner_id from project_result_requests where entry_id=? and conversation_id=? and state='queued'").get(entry.id,entry.conversationId)
+    if (!row) return
+    this.scheduledResults.add(entry.id)
+    this.emitEntry(entry)
+    this.track(this.scheduleTurn(entry.conversationId, String(row.owner_id), {trigger:'user',mustAnswer:true,inGroup:false,chain:[],
+      userRequest:{id:entry.id,seq:entry.seq}}).then(() => {
+      if (!this.closed) store.db.prepare("update project_result_requests set state='finished' where entry_id=? and state in ('queued','started')").run(entry.id)
+    }).finally(() => this.scheduledResults.delete(entry.id)))
+  }
+
   private scheduleTurn(conversationId: Id, botId: Id, req: TurnRequest): Promise<TurnOutcome> {
     // Captured now, so a Stop also cancels turns still waiting in the queue.
     const stopSignal = this.runFor(conversationId).stop.signal
@@ -713,8 +759,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const context = store.botContext.get(conversationId, botId)
     // An assignment can only consume its own question. A second one may already be queued in this exchange.
     const wakeEntry = req.wake ? store.entries.get(req.wake.entryId) : undefined
+    const triggerEntry = wakeEntry ?? (req.userRequest && store.entries.get(req.userRequest.id))
+    const resultOrigin = triggerEntry && projectResultOrigin(store,conversationId,triggerEntry,req.wake)
+    const selectedResultTrigger = resultOrigin ? triggerEntry : undefined
+    if (selectedResultTrigger && selectedResultTrigger.id !== resultOrigin)
+      store.entries.update(selectedResultTrigger.id,{meta:{...selectedResultTrigger.meta,selectedResultEntryId:resultOrigin}})
     const upToSeq = req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
-    const unseen = wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
+    const unseen = selectedResultTrigger ? [selectedResultTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
 
@@ -730,6 +781,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const signal = AbortSignal.any([stopSignal, abort.signal, ...(req.parentSignal ? [req.parentSignal] : [])])
     const members = this.membersOf(conversation)
     const turnId = randomUUID()
+    if (selectedResultTrigger?.id === resultOrigin && resultOrigin) {
+      const claimed = store.db.prepare("update project_result_requests set state='started',turn_id=? where entry_id=? and state='queued'").run(turnId,resultOrigin)
+      if (!claimed.changes) return {status:'skipped',posts:[]}
+    }
     if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
     let lateBuffer = ''
     const recorder = new TurnRecorder(
@@ -745,7 +800,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.assignment && { onLateText: (delta: string) => {
           if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
         } }),
-        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId } }),
+        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId, ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) } }),
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
       }
     )
@@ -780,12 +835,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const settings = store.settings.get()
       const workspaceDir = join(settings.workspaceRoot, bot.handle)
       const excluded: Record<'scope' | 'permission', string[]> = { scope: [], permission: [] }
-      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup }, (name, reason) => excluded[reason].push(name))
+      const projectResultTrigger = selectedResultTrigger && {entryId:selectedResultTrigger.id, ...(req.wake && {wake:req.wake})}
+      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup, projectResultTrigger }, (name, reason) => excluded[reason].push(name))
       const mcpTools = new Map<string, { serverId: Id; remoteName: string }>()
       for (const t of turnTools) if (t.serverId && t.remoteName) mcpTools.set(t.name, { serverId: t.serverId, remoteName: t.remoteName })
       const userEntry = [...unseen].reverse().find((entry) => entry.author.kind === 'user')
       const toolContext: Omit<ToolContext, 'callId'> = {
         ...(userEntry && { userEntryId: userEntry.id }),
+        projectResultTrigger,
         bot,
         conversation,
         turnId,
@@ -838,6 +895,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
             engine: route.engine, providerId: route.provider.id, modelId: safeModelId(route.modelId, (v) => secrets.redact(v)),
             ...(req.projectRun && { projectId: req.projectRun.projectId }),
             sources, omissions: [...omissions,
+              ...(selectedResultTrigger ? ['Only the selected project result is available through read_project_result. It is checked at each tool call. Earlier chat messages and prior project summaries are excluded.'] : []),
               ...(req.projectRun && !req.manifestLite ? ['No project file access was passed to this turn.'] : []),
               ...(excluded.permission.length ? [`Turned off by permission: ${excluded.permission.join(', ')}.`] : []),
               ...(excluded.scope.length ? [`Outside this bot or chat scope: ${excluded.scope.join(', ')}.`] : [])],
@@ -849,10 +907,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
           })
         },
         toolContext,
-        context,
+        context: selectedResultTrigger ? {botId,conversationId,lastSeenSeq:0,summarizedUpToSeq:0,summary:''} : context,
+        selectedResultTrigger,
         upToSeq,
         turnNote: [turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
-          ...(req.wake ? [`Resume the specialist returns for work ${req.wake.id}. Check this work and its assignment receipts before submitting a result.`] : [])
+          ...(req.wake ? [`Resume the specialist returns for work ${req.wake.id}. Check this work and its assignment receipts before submitting a result.`] : []),
+          ...(selectedResultTrigger ? ['Use read_project_result for the owner’s selected evidence and instruction. If access is withheld, explain that. Cite the actual source revision and line.'] : [])
         ].filter(Boolean).join('\n'),
         recorder,
         signal,
@@ -862,7 +922,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         runTool: (call) => this.runTool(recorder, toolContext, turnTools, call),
         // After a stop or reset, an engine's late state (an old session id) must not come back.
         saveContext: (patch) => {
-          if (!signal.aborted) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
+          if (!signal.aborted && !selectedResultTrigger) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
         }
       })
       if (active.unresolvedActions.size > 0 && !signal.aborted) throw new Error('A tool action remains unresolved or its outcome is unknown. Reconcile it before accepting this run.')

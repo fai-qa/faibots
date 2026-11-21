@@ -6,10 +6,12 @@ import type { RuntimeProviders } from '../providers/provider-service'
 import type { PlatformStore } from '../store'
 import { safeModelId, saveTurnContext } from '../store/turn-context'
 import { createProjectSessions } from '../store/project-sessions'
+import { chiefForHandoff } from '../store/escalations'
+import { queueProjectResult } from '../store/project-result-requests'
 
 type Lookup = SessionInvoke['session:lookup']['req']
 
-export function projectSessionHandlers(services: Services, store: PlatformStore) {
+export function projectSessionHandlers(services: Pick<Services,'runtime'|'dataDir'|'attachments'|'providers'|'secrets'>, store: PlatformStore) {
   let repo: ReturnType<typeof createProjectSessions> | undefined
   const sessions = () => (repo ??= createProjectSessions(store, services.dataDir))
   const active = new Map<string, { signature: string; result: Promise<ProjectAnswer> }>()
@@ -97,6 +99,13 @@ export function projectSessionHandlers(services: Services, store: PlatformStore)
     return answer
   }
   return {
+    'session:ask-fai': async (req: SessionInvoke['session:ask-fai']['req']) => {
+      const chat = services.runtime.openDm(chiefForHandoff(store).id)
+      const entry = queueProjectResult(store, services, chat.id, req)
+      await services.runtime.send({conversationId:chat.id,clientNonce:'project-result-'+req.requestId,text:entry.text,
+        mentions:[],mentionsEveryone:false,attachmentPaths:[]})
+      return {conversationId:chat.id,entryId:entry.id}
+    },
     'session:project': ({ projectId }: { projectId: string }) => sessions().list(projectId),
     'session:open': (req: SessionInvoke['session:open']['req']) => sessions().open(req, verify),
     'session:history': (req: SessionInvoke['session:history']['req']) =>

@@ -349,5 +349,16 @@ export const MIGRATIONS: string[] = [
   create index admissions_by_root on automatic_run_admissions(root_turn_id);
   create index entries_by_turn on entries(json_extract(meta,'$.turnId')) where json_valid(meta);
   `,
-  workConstraintsSchema
+  /* 19: an explicit selected-result request owns exactly one user entry in fai's DM. */ `
+  create table project_result_requests (
+    id text primary key, session_id text not null references project_sessions(id),
+    answer_id text not null references project_answers(id), owner_id text not null,
+    conversation_id text not null references conversations(id) on delete cascade,
+    entry_id text not null unique references entries(id) on delete cascade,
+    instruction text not null, state text not null check(state in ('queued','started','finished','interrupted')),
+    turn_id text
+  );
+  create index project_result_dispatch on project_result_requests(state) where state in ('queued','started');
+  `,
+  /* 20: keep the original per-job scope and assignment limit across turns. */ workConstraintsSchema
 ]
