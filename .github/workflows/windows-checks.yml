@@ -36,3 +36,5 @@ jobs:
           Copy-Item -Path 'node_modules/electron/dist/*' -Destination $runtime -Recurse
           $env:FAIBOTS_SMOKE_ELECTRON = Join-Path $runtime 'electron.exe'
           node tests/windows-desktop-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/windows-delegation-restart.cjs

@@ -151,11 +151,20 @@ async function waitForWindow(evaluate, condition, description) {
   assert.fail(`Timed out waiting for ${description}`)
 }
 
-async function checkDirectChat(invoke, evaluate, mode, profile, baseUrl) {
+async function checkDirectChat(invoke, window, mode, profile, baseUrl) {
+  const evaluate = (expression) => window.webContents.executeJavaScript(expression)
   const proofPath = join(profile, 'chat-proof.json')
   const chief = await primaryFai(invoke)
   await waitForWindow(evaluate, `Boolean(document.querySelector('main textarea[aria-label="Message fai"]'))`, 'the fai conversation on startup')
   if (mode === 'chat') {
+    const work = await invoke('conv:open-dm', { botId: chief.id })
+    const last = Date.now() - 65_000
+    const state = { botId: chief.id, conversationId: work.id, phase: 'tool', activity: 'Checking the fixture', updatedAt: last }
+    window.webContents.send('bot:state', { state })
+    await waitForWindow(evaluate, "document.querySelector('main')?.innerText.includes('Status unknown · last reported Checking the fixture')", 'the stale status and its last observation')
+    window.webContents.send('bot:state', { state: { ...state, phase: 'typing', updatedAt: Date.now() } })
+    await waitForWindow(evaluate, "document.querySelector('main')?.innerText.includes('fai is typing')", 'current activity after a fresh observation')
+    window.webContents.send('bot:state', { state: { ...state, phase: 'idle', updatedAt: Date.now() } })
     const model = await configureModel(invoke, profile, baseUrl)
     await invoke('bots:update', { id: chief.id, patch: { model } })
     await invoke('bots:create', { name: 'Editor', handle: 'editor', model, notify: false })
@@ -200,7 +209,7 @@ function runDesktop() {
         assert.equal(await window.webContents.executeJavaScript('document.title'), 'faibots')
         assert.equal(window.getTitle(), 'faibots')
         if (mode === 'chat' || mode === 'chat-reopen') {
-          await checkDirectChat(invoke, (expression) => window.webContents.executeJavaScript(expression), mode, profile, baseUrl)
+          await checkDirectChat(invoke, window, mode, profile, baseUrl)
           app.quit()
           return
         }
