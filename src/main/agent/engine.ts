@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto'
 import type { Bot,Conversation, Entry, Id } from '@shared/domain'
+import type { OfferedTool } from '@shared/turn-context'
 import type { BotContextState, ToolContext, ToolDefinition, ToolResult } from '../contracts'
 import type { ResolvedRoute } from '../providers/provider-service'
 import type { SystemPrompt, ToolCallRequest } from '../providers/types'
@@ -18,11 +19,15 @@ export interface EngineTurn {
   system: SystemPrompt
   /** FaiBots tools this bot may call in this turn (MCP ones included). */
   tools: ToolDefinition[]
+  /** Only the adapter's outbound tool metadata and selected references enter storage. */
+  disclose?(tools: Pick<OfferedTool, 'name' | 'exposedAs' | 'hostApproval'>[], entries: Entry[], omissions: string[]): void
   toolContext: Omit<ToolContext, 'callId'>
   /** The bot's saved state for this conversation, as it was when the turn started. */
   context: BotContextState
   /** The turn sees entries up to this seq; later ones wait for its next turn. */
   upToSeq: number
+  /** A selected project result gets an isolated provider turn with only its actual trigger. */
+  selectedResultTrigger?: Entry
   /** Per-turn instructions for the end of the newest message ('' = none). */
   turnNote: string
   recorder: TurnRecorder

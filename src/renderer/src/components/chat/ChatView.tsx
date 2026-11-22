@@ -4,7 +4,7 @@ import type { Conversation } from '@shared/domain'
 import { liveFor, useData } from '../../store/data'
 import { navigate, useUi } from '../../store/ui'
 import { loadEntries, markRead, sendMessage, stopConversation } from '../../store/actions'
-import { conversationTitle, membersOf } from '../../lib/bots'
+import { conversationTitle, mainBotRole, membersOf } from '../../lib/bots'
 import { billingFor, routeLabel } from '../../lib/providers'
 import { joinNames, modKey, plural } from '../../lib/format'
 import { BotAvatar, GroupAvatar } from '../avatar/BotAvatar'
@@ -13,7 +13,10 @@ import { IconButton } from '../ui/Button'
 import { Composer } from '../composer/Composer'
 import { FindBar } from './FindBar'
 import { PresenceLine } from './PresenceLine'
+import { WorkBriefPanel } from './WorkBriefPanel'
 import { Transcript } from './Transcript'
+import { SpecialistHandoff } from './SpecialistHandoff'
+import { isMockBridge } from '../../lib/bridge'
 
 export function ChatView({ conv }: { conv: Conversation }) {
   const botMap = useData((s) => s.botMap)
@@ -42,12 +45,14 @@ export function ChatView({ conv }: { conv: Conversation }) {
   const placeholder =
     conv.kind === 'dm' ? `Message ${members[0]?.name ?? 'bot'}` : conv.kind === 'group' ? 'Message group' : ''
 
+  const directBot = conv.kind === 'dm' ? members[0] : undefined
+  const defaultGreeting = directBot?.isPrimary ? mainBotRole : 'Say hello, or ask for something specific.'
   const empty =
     conv.kind === 'dm' && members[0] ? (
       <div className="flex flex-col items-center text-center">
         <BotAvatar bot={members[0]} size={64} />
         <div className={`bot-${members[0].avatar.color} mt-3 text-[15px] font-semibold text-bot-fg`}>{members[0].name}</div>
-        <p className="mt-1 max-w-[320px] text-[12.5px] text-fg-3">{members[0].description || (members[0].model.providerId ? 'Say hello, or ask for something specific.' : 'Set up a model to start chatting.')}</p>
+        <p className="mt-1 max-w-[320px] text-[12.5px] text-fg-3">{members[0].description || (members[0].model.providerId ? defaultGreeting : 'Set up a model to start chatting.')}</p>
       </div>
     ) : conv.kind === 'group' ? (
       <div className="flex flex-col items-center text-center">
@@ -64,6 +69,8 @@ export function ChatView({ conv }: { conv: Conversation }) {
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-pane" aria-label={conversationTitle(conv, botMap)}>
       <ChatHeader conv={conv} />
+      {conv.kind === 'dm' && members[0]?.isPrimary && <WorkBriefPanel key={conv.id} conversationId={conv.id} />}
+      {!isMockBridge() && conv.kind === 'dm' && members[0] && !members[0].isPrimary && <SpecialistHandoff key={conv.id} conversationId={conv.id}/>}
       {readOnly && <ExchangeBanner conv={conv} />}
       <div className="relative flex min-h-0 flex-1 flex-col">
         {findOpen && <FindBar scrollRef={scrollRef} conversationId={conv.id} />}
@@ -103,12 +110,12 @@ function ChatHeader({ conv }: { conv: Conversation }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h1 className={`truncate text-[14px] font-semibold text-fg`}>{title}</h1>
-          {bot?.isPrimary && <span className="text-2xs font-medium text-fg-3">Primary bot</span>}
+          {bot?.isPrimary && <span className="text-2xs font-medium text-fg-3">Main bot</span>}
         </div>
         <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-3">
           {bot ? (
             <>
-              {bot.label && <span className="shrink-0">{bot.label}</span>}
+              {bot.label && !(bot.isPrimary && bot.label.trim().toLowerCase() === 'main bot') && <span className="shrink-0">{bot.label}</span>}
               <span className="min-w-0 truncate">{routeLabel(bot.model, providers)}</span>
               {provider && <BillingBadge route={billingFor(provider, tests[provider.id]?.billing)} />}
             </>

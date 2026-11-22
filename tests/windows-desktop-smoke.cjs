@@ -15,6 +15,8 @@ const modelId = 'proposal-fixture'
 const projectName = 'Community Workshop Smoke Test'
 const chatQuestion = 'Which column identifies the owner in the sample task list?'
 const chatAnswer = 'The Assignee column identifies the owner.'
+const chiefQuestion = 'What should the sample team decide first?'
+const chiefAnswer = 'Decide who owns the first task.'
 const hash = (value) => createHash('sha256').update(value).digest('hex')
 const proposal = [
   '# Workshop proposal',
@@ -33,7 +35,18 @@ function fixtureResponse(messages) {
   const prompt = textOf(messages[promptIndex])
   const result = messages.slice(promptIndex + 1).findLast((message) => message.role === 'tool')
 
+  if (prompt.includes('Plan the pickup note.') || prompt.includes('Answer for work')) {
+    const answering = prompt.includes('Answer for work')
+    if (!result) return {name:'plan_work',arguments:{objective:'Arrange pickup',deliverable:'Pickup note',checks:'Verify the gate'}}
+    if (result.tool_call_id === 'call_plan_work') {
+      const brief = JSON.parse(textOf(result))
+      return {name:'review_work',arguments:{id:brief.id,revision:brief.revision,action:answering?'result':'question',
+        text:answering?'Meet at Gate 4.':'Which pickup gate?'}}
+    }
+    return answering ? 'Your pickup note is ready.' : 'Please choose a gate.'
+  }
   if (prompt.includes(chatQuestion)) return chatAnswer
+  if (prompt.includes(chiefQuestion)) return chiefAnswer
   if (prompt.includes('<<<REVIEW MESSAGE')) {
     if (result) return 'Review received.'
     return {
@@ -107,25 +120,14 @@ async function configureModel(invoke, profile, baseUrl) {
   return { providerId: provider.id, modelId }
 }
 
-async function checkDirectChat(invoke, mode, profile, baseUrl) {
-  const proofPath = join(profile, 'chat-proof.json')
-  if (mode === 'chat') {
-    const model = await configureModel(invoke, profile, baseUrl)
-    await invoke('bots:create', { name: 'Coordinator', handle: 'coordinator', model, isPrimary: true })
-    await invoke('bots:create', { name: 'Editor', handle: 'editor', model, notify: false })
-  }
-  const bots = await invoke('bots:list')
-  const primary = bots.find((bot) => bot.isPrimary)
-  const editor = bots.find((bot) => bot.handle === 'editor')
-  assert.equal(primary?.handle, 'coordinator')
-  assert(editor && editor.id !== primary.id)
-  const dm = await invoke('conv:open-dm', { botId: editor.id })
+async function checkChatHistory(invoke, mode, bot, question, answer) {
+  const dm = await invoke('conv:open-dm', { botId: bot.id })
   assert.equal(dm.kind, 'dm')
-  assert.deepEqual(dm.botIds, [editor.id])
+  assert.deepEqual(dm.botIds, [bot.id])
   const conversationId = dm.id
   if (mode === 'chat') {
     await invoke('conv:send', {
-      conversationId, text: chatQuestion, clientNonce: 'smoke-direct-message',
+      conversationId, text: question, clientNonce: 'smoke-' + bot.id,
       mentions: [], mentionsEveryone: false, attachmentPaths: []
     })
   }
@@ -133,17 +135,109 @@ async function checkDirectChat(invoke, mode, profile, baseUrl) {
   let userMessage, reply
   do {
     const { entries } = await invoke('conv:entries', { conversationId })
-    userMessage = entries.find((entry) => entry.kind === 'message' && entry.author.kind === 'user' && entry.text === chatQuestion)
-    reply = entries.find((entry) => entry.author.kind === 'bot' && entry.author.botId === editor.id &&
-      entry.kind === 'message' && !entry.isStreaming && entry.text === chatAnswer)
+    userMessage = entries.find((entry) => entry.kind === 'message' && entry.author.kind === 'user' && entry.text === question)
+    reply = entries.find((entry) => entry.author.kind === 'bot' && entry.author.botId === bot.id &&
+      entry.kind === 'message' && !entry.isStreaming && entry.text === answer)
     if (reply || mode === 'chat-reopen') break
     await delay(150)
   } while (Date.now() < deadline)
-  assert(userMessage && reply && reply.seq > userMessage.seq, 'Expected the user message followed by the editor reply')
-  const proof = { conversationId, editorId: editor.id, userEntryId: userMessage.id, replyId: reply.id }
-  if (mode === 'chat') writeFileSync(proofPath, JSON.stringify(proof))
-  else assert.deepEqual(proof, JSON.parse(readFileSync(proofPath, 'utf8')))
-  console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for the editor DM`)
+  assert(userMessage && reply && reply.seq > userMessage.seq, `Expected the user message followed by ${bot.name}'s reply`)
+  return { conversationId, botId: bot.id, userEntryId: userMessage.id, replyId: reply.id }
+}
+
+async function primaryFai(invoke) {
+  const primaries = (await invoke('bots:list')).filter((bot) => bot.isPrimary)
+  assert.equal(primaries.length, 1, 'Expected one permanent primary bot')
+  assert.equal(primaries[0].name, 'fai')
+  return primaries[0]
+}
+
+async function waitForWindow(evaluate, condition, description) {
+  const deadline = Date.now() + 15_000
+  do {
+    if (await evaluate(condition)) return
+    await delay(100)
+  } while (Date.now() < deadline)
+  assert.fail(`Timed out waiting for ${description}`)
+}
+
+async function checkDirectChat(invoke, window, mode, profile, baseUrl) {
+  const evaluate = (expression) => window.webContents.executeJavaScript(expression)
+  const proofPath = join(profile, 'chat-proof.json')
+  const chief = await primaryFai(invoke)
+  await waitForWindow(evaluate, `Boolean(document.querySelector('main textarea[aria-label="Message fai"]'))`, 'the fai conversation on startup')
+  if (mode === 'chat') {
+    const work = await invoke('conv:open-dm', { botId: chief.id })
+    const last = Date.now() - 65_000
+    const state = { botId: chief.id, conversationId: work.id, phase: 'tool', activity: 'Checking the fixture', updatedAt: last }
+    window.webContents.send('bot:state', { state })
+    await waitForWindow(evaluate, "document.querySelector('main')?.innerText.includes('Status unknown · last reported Checking the fixture')", 'the stale status and its last observation')
+    window.webContents.send('bot:state', { state: { ...state, phase: 'typing', updatedAt: Date.now() } })
+    await waitForWindow(evaluate, "document.querySelector('main')?.innerText.includes('fai is typing')", 'current activity after a fresh observation')
+    window.webContents.send('bot:state', { state: { ...state, phase: 'idle', updatedAt: Date.now() } })
+    const model = await configureModel(invoke, profile, baseUrl)
+    await invoke('bots:update', { id: chief.id, patch: { model } })
+    await invoke('bots:create', { name: 'Editor', handle: 'editor', model, notify: false })
+  }
+  const editor = (await invoke('bots:list')).find((bot) => bot.handle === 'editor')
+  assert(editor && !editor.isPrimary && editor.id !== chief.id)
+  const chiefChat = await checkChatHistory(invoke, mode, chief, chiefQuestion, chiefAnswer)
+  await waitForWindow(evaluate, `document.querySelector('main')?.innerText.includes(${JSON.stringify(chiefAnswer)})`, 'the saved fai reply on screen')
+  const editorChat = await checkChatHistory(invoke, mode, editor, chatQuestion, chatAnswer)
+  const proof = { chiefChat, editorChat }
+  if (mode === 'chat') {
+    await waitForWindow(evaluate, `Boolean(document.querySelector('button[aria-label="Open Editor"]'))`, 'the editor sidebar button')
+    await evaluate(`document.querySelector('button[aria-label="Open Editor"]').click()`)
+    await waitForWindow(evaluate, `Boolean(document.querySelector('main textarea[aria-label="Message Editor"]'))`, 'the specialist conversation')
+    // Older releases saved the last open specialist. Recreate that preference on exit.
+    await evaluate(`(() => {
+      const saved = JSON.parse(localStorage.getItem('faibots.ui.v1') || '{}')
+      saved.lastConversationId = ${JSON.stringify(editorChat.conversationId)}
+      const persist = () => localStorage.setItem('faibots.ui.v1', JSON.stringify(saved))
+      persist()
+      window.addEventListener('pagehide', persist, { once: true })
+    })()`)
+    writeFileSync(proofPath, JSON.stringify(proof))
+  } else {
+    assert.deepEqual(proof, JSON.parse(readFileSync(proofPath, 'utf8')))
+  }
+  console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for fai startup and both saved DMs`)
+}
+
+async function checkWorkBrief(invoke, window, mode, profile, baseUrl) {
+  const evaluate = (expression) => window.webContents.executeJavaScript(expression)
+  const chief = await primaryFai(invoke)
+  const dm = await invoke('conv:open-dm', {botId: chief.id})
+  const query = {conversationId: dm.id}
+  const panel = 'aside[aria-label="Work in this chat"]'
+  const contains = (value) => `document.querySelector(${JSON.stringify(panel)})?.innerText.includes(${JSON.stringify(value)})`
+  if (mode === 'brief') {
+    const model = await configureModel(invoke,profile,baseUrl)
+    await invoke('bots:update', {id: chief.id, patch: {model}})
+    await invoke('conv:send', {...query, text:'Plan the pickup note.', clientNonce:'pickup', mentions:[],mentionsEveryone:false,attachmentPaths:[]})
+    await waitForWindow(evaluate, contains('Which pickup gate?'), 'the owner question')
+    const [brief] = await invoke('work:list',query)
+    assert.equal(brief.state,'needs_input')
+    writeFileSync(join(profile,'brief-id.txt'),brief.id)
+  } else if (mode === 'brief-answer') {
+    await waitForWindow(evaluate,contains('Which pickup gate?'),'the recovered owner question')
+    await evaluate(`document.querySelector('textarea[aria-label="Your answer"]').focus()`)
+    await window.webContents.insertText('Gate 4')
+    await waitForWindow(evaluate, `[...document.querySelectorAll('button')].some(b=>b.textContent==='Send answer' && !b.disabled)`, 'the answer button')
+    await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Send answer').click()`)
+    await waitForWindow(evaluate,contains('Meet at Gate 4.'),'the pickup note')
+    await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Accept result').click()`)
+    await waitForWindow(evaluate,contains('Accepted'),'the owner acceptance')
+  } else {
+    await waitForWindow(evaluate,contains('Accepted'),'the persisted acceptance')
+    const briefs = await invoke('work:list',query)
+    assert.equal(briefs.length,1)
+    assert.equal(briefs[0].id,readFileSync(join(profile,'brief-id.txt'),'utf8'))
+    assert.equal(briefs[0].state,'accepted')
+    const {entries} = await invoke('conv:entries',query)
+    assert.equal(entries.filter(entry=>entry.clientNonce?.startsWith('work-')).length,1)
+  }
+  console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for the same work brief.`)
 }
 
 function runDesktop() {
@@ -158,8 +252,15 @@ function runDesktop() {
       )
       try {
         assert.equal((await invoke('app:info')).platform, 'win32')
+        assert.equal(await window.webContents.executeJavaScript('document.title'), 'faibots')
+        assert.equal(window.getTitle(), 'faibots')
+        if (mode.startsWith('brief')) {
+          await checkWorkBrief(invoke,window,mode,profile,baseUrl)
+          app.quit()
+          return
+        }
         if (mode === 'chat' || mode === 'chat-reopen') {
-          await checkDirectChat(invoke, mode, profile, baseUrl)
+          await checkDirectChat(invoke, window, mode, profile, baseUrl)
           app.quit()
           return
         }
@@ -167,7 +268,8 @@ function runDesktop() {
         let project
         if (mode === 'draft') {
           const model = await configureModel(invoke, profile, baseUrl)
-          await invoke('bots:create', { name: 'Proposal Drafter', handle: 'proposal-drafter', model, isPrimary: true })
+          const chief = await primaryFai(invoke)
+          await invoke('bots:update', { id: chief.id, patch: { model } })
           await invoke('bots:create', { name: 'Proposal Reviewer', handle: 'proposal-reviewer', model, notify: false })
           project = await invoke('projects:create', { name: projectName, description: 'Fictional workshop example' })
           const sources = await invoke('projects:attach-notes', { projectId: project.id, paths: [notes] })
@@ -213,7 +315,7 @@ async function runSmoke() {
   const electron = process.env.FAIBOTS_SMOKE_ELECTRON || require('electron')
   const { server, baseUrl } = await startFixture()
   try {
-    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen']]) {
+    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen'], ['brief','brief-answer','brief-reopen']]) {
       const profile = mkdtempSync(join(tmpdir(), 'faibots-desktop-'))
       mkdirSync(join(profile, 'workspaces'))
       for (const mode of stages) {

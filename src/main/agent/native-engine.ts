@@ -52,7 +52,8 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
       const conversationId = turn.conversation.id
 
       let summary = turn.context.summary
-      let entries = deps.store.entries.since(conversationId, turn.context.summarizedUpToSeq).filter((e) => e.seq <= turn.upToSeq)
+      let entries = turn.selectedResultTrigger ? [turn.selectedResultTrigger] : deps.store.entries.since(conversationId, turn.context.summarizedUpToSeq)
+        .filter((e) => e.seq <= turn.upToSeq && !e.meta?.selectedResultEntryId)
       const view = () => buildBotView({ botId: bot.id, entries, summary, nameOf: turn.nameOf, loadImage })
       let messages = view()
 
@@ -86,7 +87,7 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
         } catch (err) {
           if (!signal.aborted) {
             compactionFailedAt.set(`${conversationId}:${bot.id}`, Date.now())
-            console.warn(`[runtime] compaction failed for ${bot.handle}:`, err instanceof Error ? err.message : String(err))
+            console.warn(`[runtime] compaction failed for ${bot.handle}:`, turn.selectedResultTrigger ? 'Selected-result context unavailable.' : err instanceof Error ? err.message : String(err))
           }
           return false
         }
@@ -108,14 +109,17 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
         if (signal.aborted) return
       }
 
-      const start = () =>
-        adapter.startTurn({
+      const start = () => {
+        turn.disclose?.(tools.map(({ name }) => ({ name, exposedAs: name })), entries,
+          ['Host tools outside the faibots catalog are unavailable on this route.'])
+        return adapter.startTurn({
           modelId: route.modelId,
           ...(route.effort && { effort: route.effort }),
           system: turn.system,
           messages: withTurnNote(messages, turn.turnNote),
           tools
         })
+      }
       let modelTurn = start()
       let retriedTooLong = false
 

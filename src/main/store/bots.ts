@@ -7,6 +7,11 @@ export const HANDLE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/
 /** Windows device names: a bot's workspace folder is named after its handle and cannot use them. */
 const RESERVED_HANDLE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/
 const MAX_NAME = 80
+export const MAIN_BOT_NAME = 'fai'
+
+export function assertRemovableBot(bot: Bot | undefined): void {
+  if (bot?.isPrimary && bot.name === MAIN_BOT_NAME) throw new Error('fai is your permanent main bot.')
+}
 
 /** What a bot delete removed or changed, so listeners can clean files and notify the UI. */
 export interface BotDeletion {
@@ -77,7 +82,8 @@ export function createBotRepo(
   const selectAll = db.prepare('select * from bots order by created_at, rowid')
   const selectOne = db.prepare('select * from bots where id = ?')
   const selectByHandle = db.prepare('select * from bots where handle = ?')
-  const clearPrimary = db.prepare('update bots set is_primary = 0 where id != ?')
+  const clearPrimary = db.prepare('update bots set is_primary = 0 where id != ? and is_primary = 1')
+  const mainBot = db.prepare('select id from bots where name = ? and is_primary = 1')
 
   const get = (id: Id) => {
     const row = selectOne.get(id)
@@ -137,6 +143,9 @@ export function createBotRepo(
     create(input) {
       return transaction(db, () => {
         const name = checkName(input.name)
+        if ((input.isPrimary || name.toLowerCase() === MAIN_BOT_NAME) && mainBot.get(MAIN_BOT_NAME)) {
+          throw new Error('fai is your permanent main bot. Give the specialist its own name and role.')
+        }
         let handle: string
         if (input.handle) {
           handle = input.handle.replace(/^@/, '').toLowerCase()
@@ -176,6 +185,16 @@ export function createBotRepo(
       return transaction(db, () => {
         const current = get(id)
         if (!current) throw new Error('Bot not found')
+        if (current.isPrimary && current.name === MAIN_BOT_NAME) {
+          if ((patch.name !== undefined && patch.name !== current.name) ||
+              (patch.handle !== undefined && patch.handle !== current.handle) ||
+              patch.hidden === true || patch.isPrimary === false) {
+            throw new Error('fai keeps its name, handle and role as your main bot.')
+          }
+        } else if ((patch.isPrimary || (patch.name !== undefined && patch.name !== current.name &&
+                   patch.name.trim().toLowerCase() === MAIN_BOT_NAME)) && mainBot.get(MAIN_BOT_NAME)) {
+          throw new Error('fai is your permanent main bot. Give the specialist its own name and role.')
+        }
         const next: Bot = { ...current, ...defined(patch), id, createdAt: current.createdAt, updatedAt: Date.now() }
         if (patch.name !== undefined) next.name = checkName(patch.name)
         if (patch.dailyRunLimit !== undefined) next.dailyRunLimit = checkLimit(patch.dailyRunLimit)
@@ -192,6 +211,7 @@ export function createBotRepo(
       const deletion = transaction(db, () => {
         const bot = get(id)
         if (!bot) return undefined
+        assertRemovableBot(bot)
         const deletedConversationIds: Id[] = []
         const changedConversationIds: Id[] = []
         const rows = db

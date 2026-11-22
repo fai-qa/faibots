@@ -20,7 +20,7 @@ import {
   expandEnv, parseClaudeConfig, parseCodexConfig, parseCursorConfig, parseMcpJson, type McpServerInput
 } from './config-import'
 
-const CLIENT_INFO = { name: 'FaiBots', version: '0.1.0' }
+const CLIENT_INFO = { name: 'faibots', version: '0.1.0' }
 const DEFAULT_STARTUP_SEC = 30
 const TOOL_CALL_TIMEOUT_MS = 10 * 60_000
 /** Delays before restarting a crashed server; after the last one we wait for the next use. */

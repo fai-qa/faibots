@@ -196,7 +196,7 @@ export function webFetchTool(deps: { fetch?: typeof fetch; lookup?: Lookup } = {
             redirect: 'manual',
             signal,
             headers: {
-              'user-agent': 'Mozilla/5.0 (compatible; FaiBots/0.1; local desktop assistant)',
+              'user-agent': 'Mozilla/5.0 (compatible; faibots/0.1; local desktop assistant)',
               accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5'
             }
           })

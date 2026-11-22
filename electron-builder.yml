@@ -25,6 +25,7 @@ npmRebuild: false
 # Windows cannot start programs from inside it, so the two engine CLIs stay outside, in
 # resources/app.asar.unpacked (src/main/providers/external.ts points the SDKs there).
 asarUnpack:
+  - node_modules/unpdf/**
   - node_modules/@anthropic-ai/claude-agent-sdk-*/**
   - node_modules/@openai/codex-*/vendor/**
 

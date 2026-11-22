@@ -5,12 +5,13 @@
 // from the environment and quietly bill an API account instead of the subscription the UI shows.
 // We remove those variables; Codex only gets a key when the user stored one for that provider.
 
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 import { existsSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { AccountInfo, ModelInfo as ClaudeCodeModel, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { BillingRoute } from '@shared/domain'
+import type { BillingRoute, ModelInfo } from '@shared/domain'
 
 const CLAUDE_CODE_DROPPED_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 const CODEX_DROPPED_ENV = ['OPENAI_API_KEY', 'CODEX_API_KEY']
@@ -259,4 +260,22 @@ export async function probeCodex(opts: { hasStoredKey: boolean; timeoutMs?: numb
       resolve(parseCodexLoginStatus(code, output, opts.hasStoredKey))
     })
   })
+}
+
+/** Read only selectable model identities from the bundled CLI's account catalog. */
+export async function listCodexModels(): Promise<ModelInfo[]> {
+  const bin = findCodexBinary()
+  if (!bin) return []
+  try {
+    const { stdout } = await promisify(execFile)(bin.path, ['debug', 'models'], {
+      env: withPathDirs(codexEnv(), bin.pathDirs), windowsHide: true, timeout: 12_000, maxBuffer: 6 * 1024 * 1024,
+      encoding: 'utf8'
+    })
+    const data = JSON.parse(stdout) as { models?: { slug?: string; display_name?: string; visibility?: string }[] }
+    return (data.models ?? []).flatMap((model) => model.visibility === 'list' && typeof model.slug === 'string' && model.slug
+      ? [{ id: model.slug, label: typeof model.display_name === 'string' ? model.display_name : model.slug, supportsTools: true }] : [])
+  } catch {
+    // Older or offline CLIs can still use a manually selected model or their configured default.
+    return []
+  }
 }

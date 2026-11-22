@@ -2,7 +2,7 @@ import clsx from 'clsx'
 import { Ellipsis, Eye, EyeOff, MailOpen, Pencil, Pin, PinOff, RotateCcw, Settings2, Star, Trash } from 'lucide-react'
 import { useState } from 'react'
 import type { Bot, Conversation } from '@shared/domain'
-import { botStatus, liveFor, useData } from '../../store/data'
+import { botStatus, lastActivityLabel, liveFor, useData } from '../../store/data'
 import { confirmDialog, navigate, openDetails, useUi } from '../../store/ui'
 import { deleteBot, deleteConversation, markRead, openBot, resetConversation, updateBot } from '../../store/actions'
 import type { SidebarItem } from '../../lib/sidebar'
@@ -33,10 +33,10 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
   const status = bot
     ? botStatus(live, bot.id)
     : conv
-      ? liveFor(live, conv.id).sort((a, b) => Number(b.phase === 'waiting') - Number(a.phase === 'waiting'))[0]
+      ? liveFor(live, conv.id).sort((a, b) => Number(!!a.stale) - Number(!!b.stale) || Number(b.phase === 'waiting') - Number(a.phase === 'waiting'))[0]
       : undefined
-  const waiting = status?.phase === 'waiting'
-  const statusText = waiting ? 'Waiting for you' : status ? 'Working' : undefined
+  const waiting = !status?.stale && status?.phase === 'waiting'
+  const statusText = status?.stale ? lastActivityLabel(status) : waiting ? 'Waiting for you' : status ? 'Working' : undefined
 
   let preview = ''
   if (draft?.text) preview = `Draft: ${plainPreview(draft.text, 80)}`
@@ -58,8 +58,10 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
 
   const items: MenuEntry[] = []
   if (bot) {
+    if (!bot.isPrimary) {
+      items.push({ label: bot.pinned ? 'Unpin' : 'Pin', icon: bot.pinned ? PinOff : Pin, onSelect: () => void updateBot(bot.id, { pinned: !bot.pinned }) })
+    }
     items.push(
-      { label: bot.pinned ? 'Unpin' : 'Pin', icon: bot.pinned ? PinOff : Pin, onSelect: () => void updateBot(bot.id, { pinned: !bot.pinned }) },
       ...(unread && conv ? [{ label: 'Mark as Read', icon: MailOpen, onSelect: () => markRead(conv) }] : []),
       {
         label: 'Bot settings',
@@ -68,16 +70,17 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
           open()
           openDetails('profile', null)
         }
-      },
-      {
+      }
+    )
+    if (!bot.isPrimary) {
+      items.push({
         label: bot.hidden ? 'Show in sidebar' : 'Hide from sidebar',
         icon: bot.hidden ? Eye : EyeOff,
         onSelect: () => void updateBot(bot.id, { hidden: !bot.hidden, pinned: bot.hidden ? bot.pinned : false })
-      },
-      ...(conv ? [{ label: 'Reset conversation', icon: RotateCcw, onSelect: () => void confirmReset(conv) }] : []),
-      'separator',
-      { label: 'Delete Bot', icon: Trash, danger: true, onSelect: () => void confirmDeleteBot(bot) }
-    )
+      })
+    }
+    if (conv) items.push({ label: 'Reset conversation', icon: RotateCcw, onSelect: () => void confirmReset(conv) })
+    if (!bot.isPrimary) items.push('separator', { label: 'Delete Bot', icon: Trash, danger: true, onSelect: () => void confirmDeleteBot(bot) })
   } else if (conv) {
     items.push(
       { label: 'Rename chat', icon: Pencil, onSelect: () => setRenaming(true) },
@@ -92,7 +95,7 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
     item.kind === 'group' ? (
       <GroupAvatar bots={members} size={compact ? 34 : 30} />
     ) : bot ? (
-      <BotAvatar bot={bot} size={compact ? 34 : 30} state={status?.phase} attention={waiting} />
+      <BotAvatar bot={bot} size={compact ? 34 : 30} state={status?.stale ? 'idle' : status?.phase} attention={waiting} />
     ) : null
 
   if (compact) {
@@ -139,7 +142,7 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
         <span className="flex items-center gap-1.5">
           <span className={clsx('truncate text-ui', unread ? 'font-semibold text-fg' : 'font-medium text-fg')}>{title}</span>
           {bot?.isPrimary && (
-            <span role="img" aria-label="Primary bot" title="Primary bot" className="shrink-0">
+            <span role="img" aria-label="Main bot" title="Main bot" className="shrink-0">
               <Star size={11} className="fill-current text-fg-4" aria-hidden="true" />
             </span>
           )}

@@ -308,7 +308,56 @@ describe('list_bots, create_bot, pass_turn', () => {
       result = await api.tool('list_bots', {})
     })
     await h.send(dm.id, 'who is around?')
-    expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths')
+    expect(text(result!)).toBe('- @beta: Beta, Numbers (primary bot). Does the maths | Model configured: test-model via Local test model | Running assignments: 0 | Billing configuration: local')
+  })
+
+  it('rules out roles whose required tool only works in groups', async () => {
+    const chief = h.bot('fai', {isPrimary:true})
+    const specialist = h.bot('Editor')
+    const dm = h.runtime.openDm(chief.id)
+    let listed = '', refusal = ''
+    h.engine.script(chief.handle, async api => {
+      listed = text(await api.tool('list_bots', { requiredTools: ['pass_turn'] }))
+      refusal = text(await api.tool('send_to_agent', { to: specialist.handle, message: 'Handle the room.', requiredTools: ['pass_turn'] }))
+    })
+    await h.send(dm.id,'Check who can handle this.')
+    expect(listed).toContain('tool pass_turn unavailable')
+    expect(refusal).toContain('tool pass_turn unavailable')
+    expect(h.services.store.conversations.findExchange(chief.id,specialist.id)).toBeUndefined()
+  })
+
+  it('rechecks skills and permissions after listing and before creating an exchange', async () => {
+    const lead = h.bot('fai')
+    const editor = h.bot('Editor', { label: 'Copy editor' })
+    const dm = h.runtime.openDm(lead.id)
+    const checks = { requiredTools: ['read_file'], requiredSkills: ['brand-voice'] }
+    let listed: ToolResult | undefined, sent: ToolResult | undefined
+    h.engine.script(lead.handle, async (api) => {
+      listed = await api.tool('list_bots', checks)
+      h.services.tools.setPermission('read_file', 'never', editor.id)
+      sent = await api.tool('send_to_agent', { to: editor.handle, message: 'Edit the attached copy.', ...checks })
+    })
+    await h.send(dm.id, 'Find a qualified editor')
+    expect(text(listed!)).toContain('skill brand-voice unavailable')
+    expect(sent).toMatchObject({ isError: true, refusedBeforeRun: true })
+    expect(text(sent!)).toContain('tool read_file unavailable')
+    expect(h.services.store.conversations.findExchange(lead.id, editor.id)).toBeUndefined()
+  })
+
+  it('reports a model disabled after discovery without starting the specialist', async () => {
+    const lead = h.bot('fai')
+    const editor = h.bot('Editor')
+    const dm = h.runtime.openDm(lead.id)
+    let refusal: ToolResult | undefined
+    h.engine.script(lead.handle, async (api) => {
+      await api.tool('list_bots', {})
+      h.services.store.bots.update(editor.id, { model: { providerId: '', modelId: '' } })
+      refusal = await api.tool('send_to_agent', { to: editor.handle, message: 'Edit this copy.' })
+    })
+    await h.send(dm.id, 'Choose an editor')
+    expect(text(refusal!)).toContain('model needs setup')
+    expect(refusal?.refusedBeforeRun).toBe(true)
+    expect(h.services.store.conversations.findExchange(lead.id, editor.id)).toBeUndefined()
   })
 
   it('create_bot asks first and creates nothing when denied', async () => {
@@ -323,7 +372,7 @@ describe('list_bots, create_bot, pass_turn', () => {
       await new Promise((r) => setTimeout(r, 5))
     }
     const card = h.services.bus.of('conv:entry').find((e) => e.entry.kind === 'approval')!.entry
-    expect(card.approval).toMatchObject({ toolName: 'create_bot', summary: 'Create a new bot "Intern": Helps' })
+    expect(card.approval).toMatchObject({ toolName: 'create_bot', summary: 'Create a new bot "Intern": Helps. Model: test-model via Local test model.' })
     h.services.approvals.resolve(card.approval!.approvalId, 'deny')
     await done
     expect(result?.isError).toBe(true)

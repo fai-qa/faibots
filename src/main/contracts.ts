@@ -121,6 +121,8 @@ export interface BotContextState {
   engineBinding?: string
   /** Codex: hash of the last system block delivered to the thread. */
   systemHash?: string
+  /** Last valid cumulative counters from this exact Codex CLI thread. */
+  codexUsageBaseline?: { threadId: string; inputTokens: number; outputTokens: number }
 }
 
 export interface BotContextRepo {
@@ -144,6 +146,7 @@ export interface ProviderRepo {
 /** One bot turn that reached a model, as the turn log keeps it. */
 export interface TurnRecord {
   id?: Id
+  rootTurnId?: Id
   botId: Id
   conversationId: Id
   conversationKind: Conversation['kind']
@@ -153,6 +156,7 @@ export interface TurnRecord {
   modelId: string
   inputTokens: number
   outputTokens: number
+  codexUsageState?: 'measured' | 'unknown'
   startedAt: number
   endedAt: number
   error?: string
@@ -160,7 +164,7 @@ export interface TurnRecord {
 
 export interface TurnLogRepo {
   /** Persist a daily slot before automatic work. False also rejects reused IDs/missing bots. */
-  reserveAutomatic(input: { id: Id; botId: Id; startedAt: number }): boolean
+  reserveAutomatic(input: { id: Id; botId: Id; startedAt: number; rootTurnId?: Id }): boolean
   record(turn: TurnRecord): void
   /** Automatic reservations plus legacy logged turns at/after `since`, without double counting. */
   automaticRunsSince(botId: Id, since: number): number
@@ -312,8 +316,16 @@ export interface ToolResult {
 }
 
 export interface ToolContext {
+  /** User message actually included in this turn. Used to identify a durable work brief. */
+  userEntryId?: Id
+  /** The host's actual input entry and optional trusted scheduler wake. Never taken from tool arguments. */
+  projectResultTrigger?: {entryId: Id; wake?: {id: Id; revision: number}}
+  /** Host authority over the selected result, checked again before any later tool action. */
+  selectedResultAvailable?(): boolean
   bot: Bot
   conversation: Conversation
+  /** Resolve a selected virtual project note in this turn, checking its current access. */
+  readProjectNote?: (path: string) => string | undefined
   /** Unique per bot turn. */
   turnId: Id
   /** Model-provided tool call id. */
@@ -329,6 +341,8 @@ export interface ToolContext {
   workspaceDir: string
   /** Turn-start identity of each connector tool the model was offered: model-facing name -> server and the tool's own name there.
    * Names can be renumbered when grants change, so execute resolves connectors by this identity. Absent for older callers. */
+  /** Built-in names admitted to this dispatch; the bridge also rechecks current permissions. */
+  admittedTools?: ReadonlySet<string>
   mcpTools?: ReadonlyMap<string, { serverId: Id; remoteName: string }>
 }
 
@@ -347,19 +361,23 @@ export interface ToolDefinition {
    * Change version when the remote target/account or recovery semantics change. */
   recovery?: { version: string; recover(input: unknown, ctx: ToolContext): Promise<ToolResult | undefined> }
   defaultPermission: PermissionMode
+  /** Registry permission when the outbound catalog was selected. */
+  effectivePermission?: PermissionMode
   /** Human label for activity lines and cards, e.g. "Running a command". */
   activityLabel: string
+  /** An Ask permission can allow local workspace operations without prompting. */
+  autoAllowedInWorkspace?: boolean
   /** Plain-words summary for an approval card. */
   summarize?(input: unknown, ctx: ToolContext): string
   /** Only offered when this returns true (e.g. pass_turn only in group turns). */
-  isAvailable?(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup'>): boolean
+  isAvailable?(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup' | 'projectResultTrigger'>): boolean
   execute(input: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 
 export interface ToolRegistry {
   register(def: ToolDefinition): void
   /** Tools the bot can call in this context; 'never' tools are omitted. Includes MCP tools. */
-  forTurn(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup'>): Promise<ToolDefinition[]>
+  forTurn(ctx: Pick<ToolContext, 'bot' | 'conversation' | 'inGroup' | 'projectResultTrigger'>, omitted?: (name: string, reason: 'scope' | 'permission') => void): Promise<ToolDefinition[]>
   /** UI listing with effective permissions. */
   info(botId?: Id): Promise<ToolInfo[]>
   setPermission(toolName: string, mode: PermissionMode | null, botId?: Id): void
@@ -437,7 +455,7 @@ export interface RecipeService {
 export interface AttachmentStore {
   /** Copy files into <dataDir>/attachments and describe them. */
   ingest(paths: string[]): Attachment[]
-  read(attachment: Attachment): Buffer
+  read(attachment: Attachment, expectedSize?: number): Buffer
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +472,8 @@ export interface ProviderService {
 
 /** How an automatic run (a routine) ended. */
 export interface AutomatedRunResult {
+  /** Ledger row of the executed turn, when a model was attempted. */
+  turnId?: Id
   /** 'limited': the bot reached its daily run limit, so no model was called. */
   status: 'done' | 'error' | 'cancelled' | 'skipped' | 'limited'
   conversationId: Id
@@ -472,10 +492,13 @@ export interface Runtime {
    * the bot's turn. Counts against the bot's daily run limit. Mission runs pass the selected
    * sources as manifest-lite so the prompt can cite them.
    */
-  runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
+  runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; projectRun?: { projectId: Id; runId: Id }; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult>
+  cancelBrief(workId: Id): void
   stop(conversationId: Id): void
   reset(conversationId: Id): void
   liveStates(): BotLiveState[]
+  /** Current text of one already public streaming message. No persisted context or pending evidence. */
+  streamingText(conversationId: Id, entryId: Id): string | undefined
   /** Create a group conversation (validates members, MAX_GROUP_BOTS). */
   createGroup(input: { title?: string; botIds: Id[]; settings?: Partial<GroupSettings> }): Conversation
   /** Find or create the dm with a bot. */
@@ -491,7 +514,7 @@ export interface Runtime {
  */
 export interface MissionRunService {
   /** Start a mission run for a project (refuses: unknown project, no sources, a run already active). */
-  start(projectId: Id): JourneyRun
+  start(projectId: Id, baselineRunId?: Id, trialCandidateId?: Id): JourneyRun
   /** Runs of a project, newest first. */
   runs(projectId: Id, limit?: number): JourneyRun[]
   /** Startup only: close runs left working/waiting_review by a crash as failed (A20). */

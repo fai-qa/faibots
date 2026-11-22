@@ -4,7 +4,7 @@ import type { Bot } from '@shared/domain'
 import { useData } from '../../store/data'
 import { toast, useUi } from '../../store/ui'
 import { attempt, updateBot } from '../../store/actions'
-import { findDm } from '../../lib/bots'
+import { findDm, mainBotRole } from '../../lib/bots'
 import { useDraftValue } from '../../lib/hooks'
 import { BotAvatar } from '../avatar/BotAvatar'
 import { Button } from '../ui/Button'
@@ -209,10 +209,12 @@ export function ProfileTab({ bot }: { bot: Bot }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <BotTextField bot={bot} field="name" label="Name" />
-        <BotTextField bot={bot} field="handle" label="Handle" prefix="@" />
-      </div>
+      {!bot.isPrimary && (
+        <div className="grid grid-cols-2 gap-3">
+          <BotTextField bot={bot} field="name" label="Name" />
+          <BotTextField bot={bot} field="handle" label="Handle" prefix="@" />
+        </div>
+      )}
       <BotTextField bot={bot} field="label" label="Label" placeholder="Add a label" hint="For example: Research, marketing, admin" />
       <BotTextField
         bot={bot}
@@ -220,7 +222,7 @@ export function ProfileTab({ bot }: { bot: Bot }) {
         label="Description"
         placeholder="Add a description"
         multiline
-        hint={`Other bots read this to decide when to ask ${bot.name} for help.`}
+        hint={bot.isPrimary ? mainBotRole : `Other bots read this to decide when to ask ${bot.name} for help.`}
       />
 
       <SoulEditor bot={bot} />
@@ -228,9 +230,6 @@ export function ProfileTab({ bot }: { bot: Bot }) {
       <ModelPicker bot={bot} />
 
       <div className="divide-y divide-line-soft rounded-xl border border-line-soft px-3">
-        <SettingRow title="Primary bot" description="Your main point of contact. It coordinates work with your other bots.">
-          <Toggle label="Primary bot" checked={bot.isPrimary} onChange={(v) => void updateBot(bot.id, { isPrimary: v })} />
-        </SettingRow>
         <SettingRow title="Notifications" description="Get notified when this Bot finishes or is waiting for you.">
           <Toggle label="Notifications" checked={bot.notify} onChange={(v) => void updateBot(bot.id, { notify: v })} />
         </SettingRow>
@@ -251,9 +250,11 @@ export function ProfileTab({ bot }: { bot: Bot }) {
             Reset conversation
           </Button>
         )}
-        <Button size="sm" variant="danger-ghost" icon={Trash} onClick={() => void confirmDeleteBot(bot)}>
-          Delete Bot
-        </Button>
+        {!bot.isPrimary && (
+          <Button size="sm" variant="danger-ghost" icon={Trash} onClick={() => void confirmDeleteBot(bot)}>
+            Delete Bot
+          </Button>
+        )}
       </div>
     </div>
   )

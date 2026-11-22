@@ -1,5 +1,6 @@
 import { ArrowDown } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import type { ExchangeSummary } from '@shared/exchange-activity'
 import type { Author, Conversation, Entry } from '@shared/domain'
 import { useData } from '../../store/data'
 import { loadEntries, loadOlder } from '../../store/actions'
@@ -7,10 +8,13 @@ import { dayLabel, sameDay } from '../../lib/format'
 import { Spinner } from '../ui/Badge'
 import { AuthorRun } from './AuthorRun'
 import { EventLine } from './EventLine'
+import { ExchangeActivity } from './ExchangeActivity'
+import { useExchangeSummaries } from './useExchangeActivity'
 
 type Block =
   | { type: 'day'; key: string; label: string }
   | { type: 'event'; key: string; entry: Entry }
+  | { type: 'exchange'; key: string; rows: ExchangeSummary[] }
   | { type: 'run'; key: string; author: Author; entries: Entry[] }
 
 const RUN_GAP_MS = 10 * 60_000
@@ -21,7 +25,7 @@ function isEventLike(e: Entry): boolean {
   return e.kind === 'event' || e.author.kind === 'system' || (e.kind === 'tool-call' && e.toolCall?.toolName === 'pass_turn')
 }
 
-function buildBlocks(entries: Entry[]): Block[] {
+function buildBlocks(entries: Entry[], summaries: ReadonlyMap<string, ExchangeSummary>): Block[] {
   const blocks: Block[] = []
   let run: Extract<Block, { type: 'run' }> | null = null
   let prev: Entry | undefined
@@ -29,6 +33,18 @@ function buildBlocks(entries: Entry[]): Block[] {
     if (!prev || !sameDay(prev.createdAt, e.createdAt)) {
       blocks.push({ type: 'day', key: `day-${e.id}`, label: dayLabel(e.createdAt) })
       run = null
+    }
+    const summary = summaries.get(e.id)
+    if (summary) {
+      const preceding = blocks[blocks.length - 1]
+      if (preceding?.type === 'exchange' && preceding.rows[0]?.callerId === summary.callerId && preceding.rows.length < 100) {
+        preceding.rows.push(summary)
+      } else {
+        blocks.push({ type: 'exchange', key: 'exchange-' + e.id, rows: [summary] })
+      }
+      run = null
+      // A failed or unconfirmed call still needs its original diagnostic in the transcript.
+      if (!summary.attention) { prev = e; continue }
     }
     if (isEventLike(e)) {
       blocks.push({ type: 'event', key: e.id, entry: e })
@@ -51,7 +67,8 @@ export function Transcript({ conv, scrollRef, empty }: { conv: Conversation; scr
   const entries = useData((s) => s.entries[conv.id])
   const loadError = useData((s) => s.loadErrors[conv.id])
   const hasMore = useData((s) => s.hasMore[conv.id] ?? false)
-  const blocks = useMemo(() => buildBlocks(entries ?? []), [entries])
+  const summaries = useExchangeSummaries(conv.id, entries)
+  const blocks = useMemo(() => buildBlocks(entries ?? [], summaries), [entries, summaries])
   const atBottom = useRef(true)
   const prevHeight = useRef<number | null>(null)
   const lastCount = useRef(0)
@@ -156,6 +173,8 @@ export function Transcript({ conv, scrollRef, empty }: { conv: Conversation; scr
                     <span className="text-2xs font-medium text-fg-3">{b.label}</span>
                     <span className="h-px flex-1 bg-line-soft" />
                   </div>
+                ) : b.type === 'exchange' ? (
+                  <ExchangeActivity key={b.key} conversationId={conv.id} rows={b.rows} />
                 ) : b.type === 'event' ? (
                   <EventLine key={b.key} entry={b.entry} />
                 ) : (

@@ -1,7 +1,14 @@
+import type { WorkBrief, WorkReply, WorkScope } from './work-brief'
 // Typed contract between the renderer and the main process.
 // Every request/response channel and every push event is declared here once;
 // the preload bridge only forwards names that appear in INVOKE_CHANNELS / EVENT_CHANNELS.
 
+import { CONTENT_CHANNELS, type ContentInvoke } from './project-content'
+import type { TurnContextInvoke } from './turn-context'
+import { SESSION_CHANNELS, type SessionInvoke } from './project-sessions'
+import { IMPROVEMENT_CHANNELS, type ImprovementInvoke } from './project-improvements'
+import { ESCALATION_CHANNELS, type EscalationInvoke } from './escalations'
+import { EXCHANGE_ACTIVITY_CHANNELS, type ExchangeActivityInvoke } from './exchange-activity'
 import type {
   AppSettings,
   ApprovalDecision,
@@ -95,7 +102,10 @@ export interface ArtifactWithRevisions {
   content?: string
 }
 
-export interface InvokeMap {
+export interface InvokeMap extends ContentInvoke, TurnContextInvoke, SessionInvoke, ImprovementInvoke, EscalationInvoke, ExchangeActivityInvoke {
+  'work:list': { req: { conversationId: Id }; res: WorkBrief[] }
+  'work:scope': { req: { conversationId: Id; id: Id }; res: WorkScope }
+  'work:decide': { req: WorkReply & { conversationId: Id }; res: WorkBrief }
   'app:info': { req: void; res: AppInfo }
 
   // Bots
@@ -219,6 +229,7 @@ export interface InvokeMap {
 }
 
 export interface EventMap {
+  'work:changed': { conversationId: Id }
   'app:ready': { at: number }
   /** An entry was created or replaced (also fires when streaming finishes). */
   'conv:entry': { entry: Entry }
@@ -245,7 +256,15 @@ export interface EventMap {
 export type InvokeChannel = keyof InvokeMap
 export type EventChannel = keyof EventMap
 
+
 export const INVOKE_CHANNELS = [
+  ...CONTENT_CHANNELS,
+  'work:list', 'work:scope', 'work:decide',
+  'context:turns',
+  ...SESSION_CHANNELS,
+  ...EXCHANGE_ACTIVITY_CHANNELS,
+  ...IMPROVEMENT_CHANNELS,
+  ...ESCALATION_CHANNELS,
   'app:info',
   'bots:list', 'bots:create', 'bots:update', 'bots:delete', 'bots:export-recipe', 'bots:import-recipe',
   'conv:list', 'conv:open-dm', 'conv:create-group', 'conv:update', 'conv:delete', 'conv:entries',
@@ -268,6 +287,7 @@ export const INVOKE_CHANNELS = [
 ] as const satisfies readonly InvokeChannel[]
 
 export const EVENT_CHANNELS = [
+  'work:changed',
   'app:ready', 'conv:entry', 'conv:delta', 'conv:changed', 'conv:deleted', 'bot:state',
   'bots:changed', 'skills:changed', 'memory:changed', 'mcp:changed', 'routines:changed', 'journey:changed',
   'providers:changed', 'settings:changed',

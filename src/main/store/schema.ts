@@ -1,5 +1,15 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
+import { TURN_CONTEXT_SCHEMA } from './turn-context-schema'
+import { DELEGATION_ATTEMPT_SCHEMA } from './delegation-attempt-schema'
+import { ARTIFACT_SAVE_SCHEMA } from './artifact-save-schema'
+import { workBriefSchema, workConstraintsSchema } from './work-brief-schema'
+import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
+
+import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
+import { SESSION_SCHEMA } from './session-schema'
+import { PROJECT_IMPROVEMENTS_SCHEMA } from './project-improvements-schema'
+import { ESCALATION_SCHEMA } from './escalation-schema'
 
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
@@ -299,5 +309,62 @@ export const MIGRATIONS: string[] = [
     ended_at integer
   );
   create index journey_runs_project on journey_runs(project_id, started_at);
+  `,
+
+  /* 8: durable send_to_agent assignments, fenced child execution and parent delivery. */ `
+  create table delegations (
+    id text primary key,
+    caller_id text not null,
+    child_id text not null,
+    input_hash text not null,
+    parent_entry_id text not null references entries(id) on delete cascade,
+    question_id text not null references entries(id) on delete cascade,
+    state text not null check (state in ('assigned','answered','failed','reconciliation_required')),
+    lease text,
+    engine text,
+    system_hash text,
+    receipt text,
+    delivered_at integer,
+    created_at integer not null,
+    updated_at integer not null,
+    check ((state = 'assigned') = (lease is not null))
+  );
+  create index delegations_pending on delegations(id) where delivered_at is null;
+  `,
+  PROJECT_CONTENT_SCHEMA,
+  PROJECT_IMPROVEMENTS_SCHEMA,
+  workBriefSchema,
+  ASSIGNMENT_BUDGET_SCHEMA,
+  SESSION_SCHEMA,
+  ESCALATION_SCHEMA,
+  ARTIFACT_SAVE_SCHEMA,
+  DELEGATION_ATTEMPT_SCHEMA,
+  TURN_CONTEXT_SCHEMA,
+  /* 18: Codex exec reports cumulative thread usage. Older turn values remain as observed. */ `
+  alter table bot_context add column codex_usage_baseline text;
+  alter table turns add column codex_usage_state text check(codex_usage_state in ('measured','unknown'));
+  alter table turns add column root_turn_id text;
+  alter table automatic_run_admissions add column root_turn_id text;
+  create index turns_by_root on turns(root_turn_id);
+  create index admissions_by_root on automatic_run_admissions(root_turn_id);
+  create index entries_by_turn on entries(json_extract(meta,'$.turnId')) where json_valid(meta);
+  `,
+  /* 19: an explicit selected-result request owns exactly one user entry in fai's DM. */ `
+  create table project_result_requests (
+    id text primary key, session_id text not null references project_sessions(id),
+    answer_id text not null references project_answers(id), owner_id text not null,
+    conversation_id text not null references conversations(id) on delete cascade,
+    entry_id text not null unique references entries(id) on delete cascade,
+    instruction text not null, state text not null check(state in ('queued','started','finished','interrupted')),
+    turn_id text
+  );
+  create index project_result_dispatch on project_result_requests(state) where state in ('queued','started');
+  `,
+  /* 20: keep the original per-job scope and assignment limit across turns. */ workConstraintsSchema,
+  /* 21: index existing assignment and reply links for the scoped exchange transcript. */ `
+  create index delegation_parent_entry on delegations(parent_entry_id);
+  create index delegation_question on delegations(question_id);
+  create index assignment_children on assignment_admissions(parent_assignment_id);
+  create index message_replies on entries(reply_to_id) where kind='message' and reply_to_id is not null;
   `
 ]
