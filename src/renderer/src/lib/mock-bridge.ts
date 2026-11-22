@@ -32,6 +32,7 @@ import {
   type SkillWithBody,
   type ToolCallInfo
 } from '@shared/domain'
+import type { ExchangeMessage, ExchangeSummary } from '@shared/exchange-activity'
 import { nextRunAfter, normalizeSchedule } from '@shared/routines'
 import type {
   EventChannel,
@@ -355,6 +356,51 @@ export function createMockBridge(): FaiBotsBridge {
     return x
   }
 
+  function exchangeMessageId(anchorId: Id): Id {
+    const id = uid('e')
+    db.exchangeAnchorByMessage.set(id, anchorId)
+    return id
+  }
+
+  function exchangeActivity(conversationId: Id, entryIds: Id[]) {
+    const validId = (id: Id) => typeof id === 'string' && id.length > 0 && id.length <= 256
+    if (!validId(conversationId) || !Array.isArray(entryIds) || entryIds.length > 100 || !entryIds.every(validId)) {
+      throw new Error('Choose up to 100 activity entries from one conversation.')
+    }
+    const wanted = new Set(entryIds)
+    const summaries = new Map<Id, ExchangeSummary>()
+    const messages: ExchangeMessage[] = []
+    for (const anchor of db.entries) {
+      const call = anchor.toolCall
+      if (anchor.conversationId !== conversationId || !wanted.has(anchor.id) || anchor.author.kind !== 'bot' ||
+        call?.toolName !== 'send_to_agent') continue
+      const pair = getConv(call.exchangeConversationId)
+      const callerId = anchor.author.botId
+      if (pair?.kind !== 'exchange' || !pair.botIds.includes(callerId)) continue
+      const other = pair.botIds.find(id => id !== callerId)
+      if (!other) continue
+      summaries.set(anchor.id, {
+        anchorId: anchor.id, callerId, botIds: [callerId, other], messageCount: 0, active: call.status === 'running',
+        ...(call.status !== 'running' && call.status !== 'done' && { attention: 'failed' })
+      })
+    }
+    for (const entry of db.entries) {
+      const anchorId = db.exchangeAnchorByMessage.get(entry.id)
+      if (!anchorId || entry.kind !== 'message' || entry.author.kind !== 'bot') continue
+      const summary = summaries.get(anchorId)
+      if (!summary) continue
+      const authorId = entry.author.botId
+      const recipientId = summary.botIds.find(id => id !== authorId)
+      if (!recipientId || !summary.botIds.includes(authorId)) continue
+      summary.messageCount++
+      messages.push({
+        id: entry.id, conversationId: entry.conversationId, authorId, recipientId,
+        text: entry.text, createdAt: entry.createdAt, isStreaming: entry.isStreaming
+      })
+    }
+    return { summaries: [...summaries.values()], messages }
+  }
+
   async function exchangeFlow(c: Conversation, bot: Bot, userText: string, signal: AbortSignal): Promise<void> {
     const peer = db.bots.find((b) => b.id !== bot.id && b.handle === (bot.handle === 'iris' ? 'fai' : 'iris')) ??
       db.bots.find((b) => b.id !== bot.id && !b.hidden)
@@ -371,13 +417,13 @@ export function createMockBridge(): FaiBotsBridge {
     })
     const x = findOrCreateExchange(bot, peer, c, call.id)
     updateTool(call, { exchangeConversationId: x.id })
-    append(x.id, { kind: 'message', author: { kind: 'bot', botId: bot.id }, text: message })
+    append(x.id, { id: exchangeMessageId(call.id), kind: 'message', author: { kind: 'bot', botId: bot.id }, text: message })
     try {
       setLive(peer.id, x.id, 'reading')
       await sleep(700, signal)
       setLive(peer.id, x.id, 'thinking')
       await sleep(900, signal)
-      const reply = await stream(x.id, peer.id, replyFor(peer, userText, 'exchange'), signal)
+      const reply = await stream(x.id, peer.id, replyFor(peer, userText, 'exchange'), signal, { id: exchangeMessageId(call.id) })
       updateTool(call, {
         status: 'done',
         title: `Messaged ${peer.name}`,
@@ -953,6 +999,19 @@ export function createMockBridge(): FaiBotsBridge {
         .sort((a, b) => a.seq - b.seq)
       const size = Math.min(limit ?? 100, 500)
       return { entries: all.slice(-size), hasMore: all.length > size }
+    },
+    'conv:exchange-summaries': ({ conversationId, entryIds }) => exchangeActivity(conversationId, entryIds).summaries,
+    'conv:exchange-messages': ({ conversationId, entryIds, before, limit }) => {
+      const size = limit ?? 50
+      if (!Number.isInteger(size) || size < 1 || size > 100 ||
+        (before !== undefined && (typeof before !== 'string' || !before || before.length > 256))) {
+        throw new Error('Invalid exchange transcript page.')
+      }
+      const { messages } = exchangeActivity(conversationId, entryIds)
+      const end = before === undefined ? messages.length : messages.findIndex(message => message.id === before)
+      if (end <= 0) return { messages: [] }
+      const start = Math.max(0, end - size)
+      return { messages: messages.slice(start, end), ...(start > 0 && { before: messages[start]!.id }) }
     },
     'conv:send': (req) => {
       const c = mustConv(req.conversationId)

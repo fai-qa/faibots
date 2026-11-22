@@ -37,6 +37,7 @@ export interface MockDb {
   bots: Bot[]
   conversations: Conversation[]
   entries: Entry[]
+  exchangeAnchorByMessage: Map<Id, Id>
   facts: MemoryFact[]
   profiles: Record<Id, BotMemoryProfile>
   skills: SkillWithBody[]
@@ -305,7 +306,7 @@ export function seedMockData(now = Date.now()): MockDb {
     author: user,
     text: 'Morning! What did Iris find on competitor pricing?'
   })
-  add('c-atlas', now - 39 * MIN, {
+  const pricingCall = add('c-atlas', now - 39 * MIN, {
     kind: 'tool-call',
     author: by('b-atlas'),
     toolCall: {
@@ -349,12 +350,12 @@ export function seedMockData(now = Date.now()): MockDb {
   })
 
   // --- Exchange fai <-> Iris ------------------------------------------------
-  add('x-atlas-iris', now - 39 * MIN, {
+  const pricingQuestion = add('x-atlas-iris', now - 39 * MIN, {
     kind: 'message',
     author: by('b-atlas'),
     text: 'What did you find on competitor pricing for the launch? Alex wants a short summary.'
   })
-  add('x-atlas-iris', now - 38 * MIN, {
+  const pricingAnswer = add('x-atlas-iris', now - 38 * MIN, {
     kind: 'message',
     author: by('b-iris'),
     text: [
@@ -560,7 +561,8 @@ export function seedMockData(now = Date.now()): MockDb {
   const { routines, runs } = seedRoutines(now, weekAgo)
   const usage = seedUsage(now, bots)
 
-  return { settings, bots, conversations, entries, facts, profiles, skills, tools, mcp, providers, secrets, routines, runs, usage, live: new Map() }
+  const exchangeAnchorByMessage = new Map([[pricingQuestion.id, pricingCall.id], [pricingAnswer.id, pricingCall.id]])
+  return { settings, bots, conversations, entries, exchangeAnchorByMessage, facts, profiles, skills, tools, mcp, providers, secrets, routines, runs, usage, live: new Map() }
 }
 
 function seedRoutines(now: number, at: number): { routines: Routine[]; runs: RoutineRun[] } {
