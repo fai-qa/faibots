@@ -24,7 +24,8 @@ jobs:
       - run: npm audit --omit=dev --audit-level=moderate
       - run: npm audit --audit-level=high
       - run: npm run typecheck
-      - run: npm test
+      # Database recovery tests share the hosted Windows disk. Run one test file at a time.
+      - run: npm test -- --maxWorkers=1
       - run: npm run build
       - name: Check desktop chat, workflows and persistence
         shell: pwsh
