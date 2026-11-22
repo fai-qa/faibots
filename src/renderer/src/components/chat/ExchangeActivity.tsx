@@ -49,7 +49,12 @@ export function ExchangeActivity({ conversationId, rows }: { conversationId: str
           title={<span className="flex flex-wrap items-center gap-2">
             <span className="sr-only">Bot conversation with </span>
             {ids.map((id, i) => (
-              <Fragment key={id}>{i > 0 && <ArrowLeftRight size={13} className="shrink-0 text-fg-3" aria-hidden="true" />}<FaceName bot={byId.get(id)} /></Fragment>
+              <Fragment key={id}>
+                {i > 0 && (ids.length === 2
+                  ? <ArrowLeftRight size={13} className="shrink-0 text-fg-3" aria-hidden="true" />
+                  : <span aria-hidden="true" className="text-fg-3">·</span>)}
+                <FaceName bot={byId.get(id)} />
+              </Fragment>
             ))}
           </span>}
           onClose={() => setOpen(false)} width={680} bodyClassName="!overflow-hidden !p-0"
