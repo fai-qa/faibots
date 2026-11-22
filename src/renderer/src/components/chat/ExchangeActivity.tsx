@@ -22,9 +22,8 @@ function FaceName({ bot }: { bot?: Bot }) {
 }
 
 export function ExchangeActivity({ conversationId, rows }: { conversationId: string; rows: ExchangeSummary[] }) {
-  const bots = useData((state) => state.bots)
+  const byId = useData((state) => state.botMap)
   const [open, setOpen] = useState(false)
-  const byId = new Map(bots.map((bot) => [bot.id, bot]))
   const ids = [...new Set(rows.flatMap((row) => row.botIds))]
   const peers = ids.filter((id) => id !== rows[0]?.callerId)
   const count = rows.reduce((sum, row) => sum + row.messageCount, 0)
@@ -128,7 +127,7 @@ function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
       {incomplete && <p className="mb-3 text-xs text-fg-3">Some older messages could not be linked to this exchange.</p>}
       {error && <div role="status" className="mb-3 flex items-center gap-2 text-xs text-fg-2">Couldn’t load the conversation. <Button size="sm" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
       {!view && !error && <p role="status" className="text-xs text-fg-3">Loading messages…</p>}
-      {view?.more && <div className="mb-3 text-center"><Button size="sm" variant="ghost" disabled={pages !== view.pages && !error} onClick={loadEarlier}>Show earlier messages</Button></div>}
+      {view?.more && <div className="mb-3 text-center"><Button size="sm" variant="ghost" disabled={pages !== view.pages} onClick={loadEarlier}>Show earlier messages</Button></div>}
       {view?.messages.length === 0 && <p className="text-xs text-fg-3">No messages available for this exchange.</p>}
       <ol className="space-y-3">
         {view?.messages.map((message) => {
