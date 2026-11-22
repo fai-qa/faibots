@@ -1,4 +1,31 @@
-# faibots desktop preview
+# faibots
+
+Local Windows desktop app for a team of AI agents.
+
+Create bots, pick their models, and chat one-to-one or in a group. Run routines. Bring your own model providers and MCP connectors. Chats and settings stay on your computer.
+
+[![Windows checks](https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml/badge.svg)](https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml)
+[![MIT license](https://img.shields.io/github/license/fai-qa/faibots)](https://github.com/fai-qa/faibots/blob/main/LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/fai-qa/faibots?include_prereleases)](https://github.com/fai-qa/faibots/releases)
+
+<!-- demo GIF: two-bot group chat, added in a later PR -->
+
+## Quick start
+
+Use Windows x64, Git and Node.js 24.20.0.
+
+```powershell
+git clone https://github.com/fai-qa/faibots.git
+cd faibots
+npm ci
+npm run dev
+```
+
+1. In **Settings**, open **Models & providers**, choose **Add provider**, and press **Test**.
+2. Choose **New Bot**, give it a name and a **Label**, and select its model on **Profile**.
+3. Open its chat. Create a second bot, then use **New chat** and select both for a group.
+
+## faibots desktop preview
 
 faibots is a local Windows workspace for running your own team of AI bots. Give each bot a role and model, talk to it directly or bring several bots into a group chat. Bots can ask each other for help. You control which tools and connectors they can use, and which actions need your approval.
 
