@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { migrate, openDatabase, schemaVersion } from '../src/main/store/db'
+import { migrate, openDatabase, schemaVersion, transaction } from '../src/main/store/db'
 import { MIGRATIONS } from '../src/main/store/schema'
 
 import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
@@ -214,7 +214,7 @@ function build(path: string, version: number): DatabaseSync {
   db.exec('pragma foreign_keys = on')
   for (let v = 1; v <= version; v++) {
     migrate(db, MIGRATIONS.slice(0, v))
-    seed(db, v)
+    transaction(db, () => seed(db, v))
   }
   return db
 }
