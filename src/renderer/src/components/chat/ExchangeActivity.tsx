@@ -2,7 +2,7 @@ import { ArrowLeftRight, ArrowRight } from 'lucide-react'
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Bot } from '@shared/domain'
 import type { ExchangeMessage, ExchangeSummary } from '@shared/exchange-activity'
-import { invoke } from '../../lib/bridge'
+import { invoke, on } from '../../lib/bridge'
 import { formatFull, formatTime } from '../../lib/format'
 import { useData } from '../../store/data'
 import { BotAvatar, GroupAvatar } from '../avatar/BotAvatar'
@@ -55,7 +55,7 @@ export function ExchangeActivity({ conversationId, rows }: { conversationId: str
           onClose={() => setOpen(false)} width={680} bodyClassName="!overflow-hidden !p-0"
           footer={<Button data-autofocus size="sm" onClick={() => setOpen(false)}>Close chat</Button>}
         >
-          <ExchangeHistory conversationId={conversationId} anchorKey={key} bots={byId}
+          <ExchangeHistory key={conversationId + key} conversationId={conversationId} anchorKey={key} bots={byId}
             incomplete={rows.some((row) => row.incompleteHistory)} />
         </Dialog>
       )}
@@ -71,52 +71,103 @@ function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
   conversationId: string; anchorKey: string; bots: Map<string, Bot>; incomplete: boolean
 }) {
   const version = useExchangeChanges(conversationId, true, true)
-  const [pages, setPages] = useState(1)
-  const [retry, setRetry] = useState(0)
-  const [view, setView] = useState<{ messages: ExchangeMessage[]; more: boolean; pages: number }>()
+  const [view, setView] = useState<{ messages: ExchangeMessage[]; before?: string }>()
   const [error, setError] = useState(false)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const read = useRef<(older?: boolean) => void>(() => {})
+  const retryOlder = useRef(false)
   const scroll = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const earlier = useRef<{ id: string; offset: number } | undefined>(undefined)
 
   useEffect(() => {
-    let current = true
     const entryIds: string[] = JSON.parse(anchorKey)
-    async function load() {
-      let messages: ExchangeMessage[] = []
-      let before: string | undefined
-      for (let i = 0; current && i < pages; i++) {
-        const page = await invoke('conv:exchange-messages', { conversationId, entryIds, before, limit: 50 })
-        messages = [...page.messages, ...messages]
-        before = page.before
-        if (!before) break
-      }
-      if (current) {
-        setView({ messages, more: Boolean(before), pages })
-        setError(false)
+    let generation = 0
+    let current = true
+    let running = false
+    let pending = false
+    let pendingOlder = false
+    let visible: { messages: ExchangeMessage[]; before?: string } | undefined
+    async function drain() {
+      if (running) return
+      running = true
+      try {
+        while (current && (pending || pendingOlder)) {
+          const older = Boolean(pendingOlder && visible?.before)
+          const start = generation
+          if (older) pendingOlder = false
+          else { pending = false; pendingOlder = false }
+          try {
+            let page = await invoke('conv:exchange-messages', { conversationId, entryIds, before: older ? visible?.before : undefined, limit: 50 })
+            if (!current || generation !== start) continue
+            if (older && visible) {
+              page = { before: page.before, messages: [...page.messages, ...visible.messages] }
+            } else if (visible && page.messages.length) {
+              // Catch up from the newest page to the first message we already have.
+              // Keep older pages open while new messages arrive.
+              const positions = new Map(visible.messages.map((message, index) => [message.id, index]))
+              while (current && generation === start && page.before && !page.messages.some((m) => positions.has(m.id))) {
+                const previous = await invoke('conv:exchange-messages', { conversationId, entryIds, before: page.before, limit: 50 })
+                page = { before: previous.before, messages: [...previous.messages, ...page.messages] }
+              }
+              if (!current || generation !== start) continue
+              const first = page.messages[0]
+              const overlap = first ? positions.get(first.id) : undefined
+              if (overlap !== undefined && overlap > 0) {
+                page = { before: visible.before, messages: [...visible.messages.slice(0, overlap), ...page.messages] }
+              }
+            }
+            visible = page
+            setView(page)
+            setError(false)
+          } catch {
+            if (current && start === generation) {
+              retryOlder.current = older
+              setError(true)
+            }
+          } finally {
+            if (current && older) setLoadingEarlier(false)
+          }
+        }
+      } finally {
+        running = false
       }
     }
-    void load().catch(() => { if (current) setError(true) })
-    return () => { current = false }
-  }, [conversationId, anchorKey, pages, retry, version])
+    read.current = (older = false) => {
+      if (older && visible?.before) { pendingOlder = true; setLoadingEarlier(true) }
+      else pending = true
+      void drain()
+    }
+    const off = on('conv:deleted', () => {
+      generation++
+      visible = undefined
+      earlier.current = undefined
+      setView(undefined)
+      setLoadingEarlier(false)
+      read.current()
+    })
+    return () => { current = false; off(); read.current = () => {} }
+  }, [conversationId, anchorKey])
+
+  useEffect(() => { read.current() }, [version, conversationId, anchorKey])
 
   useLayoutEffect(() => {
     const el = scroll.current
     if (!el || !view) return
     const saved = earlier.current
-    if (saved && pages === view.pages) {
+    if (saved && !loadingEarlier) {
       const anchor = Array.from(el.querySelectorAll<HTMLElement>('[data-exchange-message]')).find((item) => item.dataset.exchangeMessage === saved.id)
       if (anchor) el.scrollTop += anchor.getBoundingClientRect().top - saved.offset
       earlier.current = undefined
     } else if (pinned.current && !saved) {
       el.scrollTop = el.scrollHeight
     }
-  }, [view, pages])
+  }, [view, loadingEarlier])
 
   function loadEarlier() {
     const first = scroll.current?.querySelector<HTMLElement>('[data-exchange-message]')
     if (first?.dataset.exchangeMessage) earlier.current = { id: first.dataset.exchangeMessage, offset: first.getBoundingClientRect().top }
-    setPages((n) => n + 1)
+    read.current(true)
   }
 
   return (
@@ -125,9 +176,9 @@ function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
       pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
     }}>
       {incomplete && <p className="mb-3 text-xs text-fg-3">Some older messages could not be linked to this exchange.</p>}
-      {error && <div role="status" className="mb-3 flex items-center gap-2 text-xs text-fg-2">Couldn’t load the conversation. <Button size="sm" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
+      {error && <div role="status" className="mb-3 flex items-center gap-2 text-xs text-fg-2">Couldn’t load the conversation. <Button size="sm" onClick={() => retryOlder.current ? loadEarlier() : read.current()}>Try again</Button></div>}
       {!view && !error && <p role="status" className="text-xs text-fg-3">Loading messages…</p>}
-      {view?.more && <div className="mb-3 text-center"><Button size="sm" variant="ghost" disabled={pages !== view.pages} onClick={loadEarlier}>Show earlier messages</Button></div>}
+      {view?.before && <div className="mb-3 text-center"><Button size="sm" variant="ghost" disabled={loadingEarlier} onClick={loadEarlier}>Show earlier messages</Button></div>}
       {view?.messages.length === 0 && <p className="text-xs text-fg-3">No messages available for this exchange.</p>}
       <ol className="space-y-3">
         {view?.messages.map((message) => {
