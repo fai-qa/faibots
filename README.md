@@ -72,7 +72,7 @@ python -B scripts/package-windows-preview.py dist/win-unpacked dist/faibots-wind
 
 ## Troubleshooting
 
-If Electron exits immediately on Windows, run `npm run prestart` to download the locked runtime. Copy `node_modules/electron/dist` to a standalone folder outside `node_modules`, set `ELECTRON_EXEC_PATH` in your current PowerShell session to the copied `electron.exe`, then run `npm run dev` again. Keep sandboxing enabled. [Electron's Windows launch issue](https://github.com/electron/electron/issues/54614)
+If Electron exits immediately on Windows, run `npm run prestart` to download the locked runtime. Check that `node_modules/electron/dist` exists, then run `npm run dev` again. Keep sandboxing enabled. [Electron's Windows launch issue](https://github.com/electron/electron/issues/54614)
 
 ## Licensing
 
