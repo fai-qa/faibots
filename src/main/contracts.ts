@@ -497,6 +497,8 @@ export interface Runtime {
   stop(conversationId: Id): void
   reset(conversationId: Id): void
   liveStates(): BotLiveState[]
+  /** Current text of one already public streaming message. No persisted context or pending evidence. */
+  streamingText(conversationId: Id, entryId: Id): string | undefined
   /** Create a group conversation (validates members, MAX_GROUP_BOTS). */
   createGroup(input: { title?: string; botIds: Id[]; settings?: Partial<GroupSettings> }): Conversation
   /** Find or create the dm with a bot. */

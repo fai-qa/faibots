@@ -105,7 +105,7 @@ interface TurnRequest {
   root?: AssignmentRoot
   userRequest?: { id: Id; seq: number }
   wake?: { id: string; revision: number; entryId: string }
-  assignment?: { lease: DelegationLease; questionSeq: number; origin: NonNullable<Conversation['origin']> }
+  assignment?: { lease: DelegationLease; questionId: Id; questionSeq: number; origin: NonNullable<Conversation['origin']> }
 }
 
 interface ActiveTurn {
@@ -311,6 +311,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
     store.botContext.clearConversation(conversationId)
     const conversation = store.conversations.get(conversationId)
     if (conversation) bus.emit('conv:changed', { conversation })
+  }
+
+  streamingText(conversationId: Id, entryId: Id): string | undefined {
+    for (const turn of this.active.values()) {
+      if (turn.conversationId !== conversationId) continue
+      const text = turn.recorder.streamingText(entryId)
+      if (text !== undefined) return text
+    }
   }
 
   liveStates() {
@@ -530,7 +538,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         mustAnswer: true,
         inGroup: false,
         ...(asking?.projectRun && { projectRun: asking.projectRun }),
-        assignment: { lease, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
+        assignment: { lease, questionId: question.id, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
         root: { ...root, parentAssignmentId: id }
@@ -806,6 +814,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         conversation,
         members,
         ...(req.userRequest && { replyToId: req.userRequest.id }),
+        ...(req.assignment && { replyToId: req.assignment.questionId }),
         ...(wakeEntry && { replyToId: wakeEntry.id }),
         signal,
         selectedResultAvailable,

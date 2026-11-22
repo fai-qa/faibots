@@ -360,5 +360,11 @@ export const MIGRATIONS: string[] = [
   );
   create index project_result_dispatch on project_result_requests(state) where state in ('queued','started');
   `,
-  /* 20: keep the original per-job scope and assignment limit across turns. */ workConstraintsSchema
+  /* 20: keep the original per-job scope and assignment limit across turns. */ workConstraintsSchema,
+  /* 21: index existing assignment and reply links for the scoped exchange transcript. */ `
+  create index delegation_parent_entry on delegations(parent_entry_id);
+  create index delegation_question on delegations(question_id);
+  create index assignment_children on assignment_admissions(parent_assignment_id);
+  create index message_replies on entries(reply_to_id) where kind='message' and reply_to_id is not null;
+  `
 ]

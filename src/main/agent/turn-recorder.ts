@@ -108,6 +108,10 @@ export class TurnRecorder {
     return this.opts.conversation.id
   }
 
+  streamingText(entryId: Id): string | undefined {
+    return this.current?.entry.id === entryId ? this.current.text : undefined
+  }
+
   /** True when the post budget stopped this turn. */
   get budgetRefused(): boolean {
     return this.refused

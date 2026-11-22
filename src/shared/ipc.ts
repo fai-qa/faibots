@@ -8,6 +8,7 @@ import type { TurnContextInvoke } from './turn-context'
 import { SESSION_CHANNELS, type SessionInvoke } from './project-sessions'
 import { IMPROVEMENT_CHANNELS, type ImprovementInvoke } from './project-improvements'
 import { ESCALATION_CHANNELS, type EscalationInvoke } from './escalations'
+import { EXCHANGE_ACTIVITY_CHANNELS, type ExchangeActivityInvoke } from './exchange-activity'
 import type {
   AppSettings,
   ApprovalDecision,
@@ -101,7 +102,7 @@ export interface ArtifactWithRevisions {
   content?: string
 }
 
-export interface InvokeMap extends ContentInvoke, TurnContextInvoke, SessionInvoke, ImprovementInvoke, EscalationInvoke {
+export interface InvokeMap extends ContentInvoke, TurnContextInvoke, SessionInvoke, ImprovementInvoke, EscalationInvoke, ExchangeActivityInvoke {
   'work:list': { req: { conversationId: Id }; res: WorkBrief[] }
   'work:scope': { req: { conversationId: Id; id: Id }; res: WorkScope }
   'work:decide': { req: WorkReply & { conversationId: Id }; res: WorkBrief }
@@ -261,6 +262,7 @@ export const INVOKE_CHANNELS = [
   'work:list', 'work:scope', 'work:decide',
   'context:turns',
   ...SESSION_CHANNELS,
+  ...EXCHANGE_ACTIVITY_CHANNELS,
   ...IMPROVEMENT_CHANNELS,
   ...ESCALATION_CHANNELS,
   'app:info',

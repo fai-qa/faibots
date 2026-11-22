@@ -19,6 +19,7 @@ import { improvementHandlers } from './project-improvements'
 import { escalationHandlers } from './escalations'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
+import { exchangeActivityHandlers } from './exchange-activity'
 
 type Handler<C extends InvokeChannel> = (req: InvokeMap[C]['req']) => Promise<InvokeMap[C]['res']> | InvokeMap[C]['res']
 type HandlerTable = { [C in InvokeChannel]: Handler<C> }
@@ -31,6 +32,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
   const store = s.store as PlatformStore
 
   return {
+    ...exchangeActivityHandlers(store.db,(room,entryId) => s.runtime.streamingText(room,entryId)),
     ...projectContentHandlers(s, store),
     'work:scope': ({ conversationId, id }) => workScope(store, s, conversationId, id),
     'work:list': ({ conversationId }) => workBriefs(store.db).list(conversationId),
