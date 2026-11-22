@@ -27,7 +27,7 @@ describe('IPC handlers', () => {
   it('cover exactly the allowlisted invoke channels, and register only those', () => {
     const store = openStore(':memory:', { homeDir: tmpdir() })
     try {
-      const table = buildHandlers({ store } as Services, () => null)
+      const table = buildHandlers({ store } as unknown as Services, () => null)
       expect(Object.keys(table).sort()).toEqual([...INVOKE_CHANNELS].sort())
       registerHandlers(table)
       expect(handle.mock.calls.map((c) => c[0]).sort()).toEqual([...INVOKE_CHANNELS].sort())
