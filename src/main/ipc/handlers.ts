@@ -5,11 +5,21 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { MAX_GROUP_BOTS } from '@shared/domain'
 import type { InvokeChannel, InvokeMap } from '@shared/ipc'
 import type { Services } from '../contracts'
+import { assertRemovableBot } from '../store/bots'
 import { createSnapshotService } from '../attachments/snapshots'
 import { encryptionAvailable, pickFiles } from '../platform/electron'
-import { observeFile, pinWorkspace } from '../routines/acceptance'
+import { revisionText } from '../attachments/project-reads'
+import { workScope } from '../store/work-scope'
+import { workBriefs } from '../store/work-briefs'
+import { deliverWorkReplies } from '../agent/work-brief-tools'
+import { projectContentHandlers } from './project-content'
+import { turnContextHandlers } from '../store/turn-context'
+import { projectSessionHandlers } from './project-sessions'
+import { improvementHandlers } from './project-improvements'
+import { escalationHandlers } from './escalations'
 import { startOfLocalDay } from '../store/turns'
 import type { PlatformStore } from '../store'
+import { exchangeActivityHandlers } from './exchange-activity'
 
 type Handler<C extends InvokeChannel> = (req: InvokeMap[C]['req']) => Promise<InvokeMap[C]['res']> | InvokeMap[C]['res']
 type HandlerTable = { [C in InvokeChannel]: Handler<C> }
@@ -22,6 +32,21 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
   const store = s.store as PlatformStore
 
   return {
+    ...exchangeActivityHandlers(store.db,(room,entryId) => s.runtime.streamingText(room,entryId)),
+    ...projectContentHandlers(s, store),
+    'work:scope': ({ conversationId, id }) => workScope(store, s, conversationId, id),
+    'work:list': ({ conversationId }) => workBriefs(store.db).list(conversationId),
+    'work:decide': async (req) => {
+      const result = workBriefs(store.db).decide(req.conversationId, req)
+      if (req.decision === 'cancel') s.runtime.cancelBrief(req.id)
+      s.bus.emit('work:changed', { conversationId: req.conversationId })
+      await deliverWorkReplies(store, s.runtime)
+      return result
+    },
+    ...turnContextHandlers(s, store),
+    ...projectSessionHandlers(s, store),
+    ...improvementHandlers(s, store),
+    ...escalationHandlers(s, store),
     'app:info': () => ({
       name: app.getName(),
       version: app.getVersion(),
@@ -45,6 +70,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       return bot
     },
     'bots:delete': ({ id }) => {
+      assertRemovableBot(s.store.bots.get(id))
       // Stop the bot's running turns first; the store then removes its dm and exchanges, drops it
       // from groups and emits conv:deleted / conv:changed itself.
       for (const conversation of s.store.conversations.list()) {
@@ -88,13 +114,19 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       return conversation
     },
     'conv:delete': ({ id }) => {
+      const conversation = s.store.conversations.get(id)
+      if (conversation?.kind === 'dm') assertRemovableBot(s.store.bots.get(conversation.botIds[0]!))
       s.runtime.stop(id)
       s.store.conversations.delete(id)
       s.bus.emit('conv:deleted', { conversationId: id })
     },
     'conv:entries': ({ conversationId, beforeSeq, limit }) =>
       s.store.entries.page(conversationId, { beforeSeq, limit: Math.min(limit ?? 100, 500) }),
-    'conv:send': (req) => s.runtime.send(req),
+    'conv:send': (req) => {
+      if (typeof req.clientNonce === 'string' && /^(?:project-result-|work-)/.test(req.clientNonce))
+        throw new Error('This message ID is reserved for a saved application request.')
+      return s.runtime.send(req)
+    },
     'conv:stop': ({ conversationId }) => s.runtime.stop(conversationId),
     'conv:reset': ({ conversationId }) => s.runtime.reset(conversationId),
     'conv:mark-read': ({ conversationId }) => {
@@ -192,15 +224,17 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
       // The snapshot service (built lazily: it is stateless and needs no wiring at startup)
       // copies the files and enforces md/txt/pdf and 10 MB per note before anything is stored;
       // its errors are plain messages for the renderer.
-      return createSnapshotService({
+      const added = createSnapshotService({
         attachments: s.attachments,
         projects: store.projects,
         projectSources: store.projectSources
       }).attach(projectId, paths)
+      s.bus.emit('journey:changed', { projectId })
+      return added
     },
     'projects:list-sources': ({ projectId }) => {
       if (!store.projects.get(projectId)) throw new Error('Project not found')
-      return store.projectSources.listByProject(projectId)
+      return store.projectContent.library(projectId).filter(item => item.readable && item.selected).map(item => item.source)
     },
     'artifacts:list': ({ projectId }) => {
       if (!store.projects.get(projectId)) throw new Error('Project not found')
@@ -213,11 +247,7 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
         const file = latest?.provenance.file
         if (file && latest) {
           try {
-            const pinned = pinWorkspace(file.workspace)
-            const observed = observeFile(file.workspace, file.path, pinned)
-            if (observed.kind === 'ok' && observed.sha256 === latest.sha256.toLowerCase()) {
-              content = observed.data.toString('utf8')
-            }
+            content = revisionText(store, projectId, latest, s.dataDir, s.attachments)
           } catch {
             // Unreadable or moved workspace: no content, the revision record stays authoritative.
           }

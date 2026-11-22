@@ -17,6 +17,7 @@ import { MemoryTab } from './MemoryTab'
 import { ProfileTab } from './ProfileTab'
 import { RoutinesTab } from './RoutinesTab'
 import { SkillsTab } from './SkillsTab'
+import { TurnContext } from './TurnContext'
 import { ToolsTab } from './ToolsTab'
 
 const TABS: { id: DetailsTab; label: string }[] = [
@@ -53,6 +54,7 @@ export function DetailsPane() {
   return (
     <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-line-soft bg-pane" aria-label="Details">
       {body}
+      <TurnContext key={conv.id} scope={{ kind: 'chat', conversationId: conv.id }} />
     </aside>
   )
 }
@@ -64,7 +66,7 @@ function BotPanel({ bot, onClose, backLabel, onBack }: { bot: Bot; onClose: () =
     <>
       <header className={`bot-${bot.avatar.color} drag flex h-[52px] shrink-0 items-center gap-2.5 px-3`}>
         {onBack ? <IconButton icon={ArrowLeft} label={backLabel ?? 'Back'} onClick={onBack} /> : null}
-        <BotAvatar bot={bot} size={26} state={status?.phase} />
+        <BotAvatar bot={bot} size={26} state={status?.stale ? 'idle' : status?.phase} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13.5px] font-semibold text-fg">{bot.name}</div>
         </div>

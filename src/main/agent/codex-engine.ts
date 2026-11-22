@@ -29,7 +29,13 @@ import { promptText } from './prompt'
 const BRIDGE_TOKEN_ENV = 'FAIBOTS_BRIDGE_TOKEN'
 /** send_to_agent can wait 10 minutes and approvals longer; Codex's default MCP timeout is 60 s. */
 const TOOL_TIMEOUT_SEC = 30 * 60
-const MISSION_BRIDGE_TOOLS = '{ read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" } }'
+// These app tools keep their native permission checks, even when invoked by the subscription CLI.
+const desktopTools = [
+  'read_file', 'write_file', 'send_to_agent', 'list_bots', 'create_bot', 'pass_turn',
+  'assign_to_agent', 'assignment_status', 'wait_for_assignment', 'cancel_assignment', 'group_work_snapshot',
+  'plan_work', 'review_work', 'read_handoff', 'read_project_result'
+]
+const DESKTOP_BRIDGE_TOOLS = `{ ${desktopTools.map((tool) => `${tool} = { approval_mode = "approve" }`).join(', ')} }`
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp)$/i
 
 /** The slice of the Codex SDK the engine uses (tests pass a fake). */
@@ -72,7 +78,7 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
     const workspace = turn.toolContext.workspaceDir
     const bot = deps.store.bots.get(turn.bot.id) ?? turn.bot
     const shellMode: PermissionMode | undefined = bot.toolPermissions['shell'] ?? deps.store.settings.get().toolPermissions['shell']
-    const { text, newEntries } = turnPrompt(turn, deps.store, !resume)
+    const { text, newEntries, replayedEntries } = turnPrompt(turn, deps.store, !resume)
 
     const bridge = await deps.bridge.open(turn.toolContext)
     const token = /^Bearer\s+(.+)$/i.exec(bridge.headers['Authorization'] ?? bridge.headers['authorization'] ?? '')?.[1] ?? ''
@@ -91,11 +97,11 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
       ...(found && { codexPathOverride: found.path }),
       env: withPathDirs(codexEnv({ [BRIDGE_TOKEN_ENV]: token }), found?.pathDirs ?? []),
       configOverrides: [
-        `mcp_servers={ ${BRIDGE_SERVER} = { url = ${JSON.stringify(bridge.url)}, bearer_token_env_var = "${BRIDGE_TOKEN_ENV}", tool_timeout_sec = ${TOOL_TIMEOUT_SEC}, tools = ${MISSION_BRIDGE_TOOLS} } }`,
+        `mcp_servers={ ${BRIDGE_SERVER} = { url = ${JSON.stringify(bridge.url)}, bearer_token_env_var = "${BRIDGE_TOKEN_ENV}", tool_timeout_sec = ${TOOL_TIMEOUT_SEC}, tools = ${DESKTOP_BRIDGE_TOOLS} } }`,
         ...disabledServers.map((name) => `mcp_servers.${name}.enabled=false`),
         // Runtime-injected servers have no transport in the underlying user configuration.
         ...disabledRuntimeServers.map((name) => `mcp_servers.${name}={ enabled = false, url = "http://127.0.0.1:1/mcp" }`),
-        // These three tools still pass through FaiBots' registry and its workspace/approval rules.
+        // These app tools still pass through the faibots registry and its workspace/approval rules.
         // The CLI has no callback for its own MCP approval prompts.
         'features.apps=false',
         'features.plugins=false',
@@ -199,14 +205,27 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
       }
     }
 
+    // Codex exec maps turn.completed to the thread's latest total (JSONL processor,
+    // CLI 0.90, 0.110 and 0.163). Snapshot before invalidating the durable checkpoint.
+    let threadId = resume
+    let previous = resume ? turn.context.codexUsageBaseline : { threadId: '', inputTokens: 0, outputTokens: 0 }
+    if (resume && previous?.threadId !== resume) previous = undefined
+    if (previous && (!Number.isSafeInteger(previous.inputTokens) || !Number.isSafeInteger(previous.outputTokens) ||
+      previous.inputTokens < 0 || previous.outputTokens < 0)) previous = undefined
+    let started = false
+    let completed = false
     const handle = (event: ThreadEvent) => {
       switch (event.type) {
         case 'thread.started':
+          if (threadId && event.thread_id !== threadId) previous = undefined
+          threadId = event.thread_id
           turn.saveContext({ engineSessionId: event.thread_id, engineBinding: sessionBinding('codex', route) })
           return
         case 'turn.started':
           // Codex has accepted the input, so the block it carried is delivered: only now remember it.
-          turn.saveContext({ engineBinding: sessionBinding('codex', route), systemHash: hash })
+          started = true
+          // A killed or cancelled process may have consumed tokens and emitted no final receipt.
+          turn.saveContext({ engineBinding: sessionBinding('codex', route), systemHash: hash, codexUsageBaseline: undefined })
           recorder.phase('thinking')
           return
         case 'item.started':
@@ -218,9 +237,22 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         case 'item.completed':
           onItem('completed', event.item)
           return
-        case 'turn.completed':
-          recorder.addUsage({ inputTokens: event.usage.input_tokens, outputTokens: event.usage.output_tokens })
+        case 'turn.completed': {
+          if (completed) return
+          completed = true
+          const { input_tokens: inputTokens, output_tokens: outputTokens } = event.usage
+          const valid = Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens) &&
+            inputTokens >= 0 && outputTokens >= 0 && (inputTokens > 0 || outputTokens > 0)
+          const unchanged = previous && inputTokens === previous.inputTokens && outputTokens === previous.outputTokens
+          const comparable = valid && !unchanged && previous && inputTokens >= previous.inputTokens && outputTokens >= previous.outputTokens
+          recorder.recordCodexUsage(comparable && previous ? {
+            inputTokens: inputTokens - previous.inputTokens, outputTokens: outputTokens - previous.outputTokens
+          } : undefined)
+          turn.saveContext({
+            codexUsageBaseline: valid && threadId && !unchanged ? { threadId, inputTokens, outputTokens } : undefined
+          })
           return
+        }
         case 'turn.failed':
           error ??= new ProviderError(`Codex: ${event.error.message}`)
           return
@@ -233,6 +265,12 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
     try {
       mkdirSync(workspace, { recursive: true })
       const thread = resume ? codex.resumeThread(resume, threadOptions) : codex.startThread(threadOptions)
+      turn.disclose?.(turn.tools.filter((t) => !t.name.startsWith('mcp__')).map(({ name }) => ({
+        name, exposedAs: `mcp__${BRIDGE_SERVER}__${name}`, hostApproval: desktopTools.includes(name) ? 'app' : 'cli-default'
+      })), [...replayedEntries, ...newEntries], [
+        'Connector tools are unavailable through the Codex bridge. The CLI may withhold tools under its default approval policy.',
+        `Codex shell sandbox: ${threadOptions.sandboxMode}. CLI approvals, web search, apps and plugins are disabled. Other host tools are not inventoried by faibots.`
+      ])
       const { events } = await thread.runStreamed(input, { signal: turn.signal })
       for await (const event of events) {
         handle(event)
@@ -241,6 +279,7 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
     } catch (err) {
       if (!turn.signal.aborted) error ??= new ProviderError(err instanceof Error ? err.message.slice(0, 600) : String(err))
     } finally {
+      if (started && !completed) recorder.recordCodexUsage()
       bridge.close()
       recorder.endText()
     }
@@ -260,7 +299,12 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         turn.saveContext({ engineSessionId: undefined, engineBinding: undefined, systemHash: undefined })
         result = await attempt(turn, undefined)
       }
-      if (result.error && !turn.signal.aborted) throw result.error
+      if (result.error && !turn.signal.aborted) {
+        if (/model_not_found|model.+not supported when using Codex/i.test(result.error.message)) {
+          throw new ProviderError(`${result.error.message} Open the bot profile and choose a model listed for your Codex account.`)
+        }
+        throw result.error
+      }
     }
   }
 }

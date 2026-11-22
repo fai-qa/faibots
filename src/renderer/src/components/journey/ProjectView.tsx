@@ -6,7 +6,7 @@ import { FileCheck2, FileText, Paperclip, ChevronDown, Rocket } from 'lucide-rea
 import { useState } from 'react'
 import type { ArtifactWithRevisions } from '@shared/ipc'
 import type { JourneyRun, ProjectSource, ReviewDecision } from '@shared/domain'
-import { invoke } from '../../lib/bridge'
+import { isMockBridge, invoke } from '../../lib/bridge'
 import { useAsync } from '../../lib/hooks'
 import { formatBytes, formatFull, plural } from '../../lib/format'
 import { useData } from '../../store/data'
@@ -16,6 +16,9 @@ import { Markdown } from '../chat/Markdown'
 import { Badge, EmptyState, Spinner } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { StatusChip } from './StatusChip'
+import { ProjectSpace } from './ProjectSpace'
+import { ProjectSessions } from './ProjectSessions'
+import { ProjectImprovements } from './ProjectImprovements'
 import { RunDetails } from './RunDetails'
 import { AgentTrail, type TrailStep } from '../ui/agent-trail-clean'
 
@@ -96,12 +99,14 @@ export function ProjectView({ projectId }: { projectId: string }) {
             <h1 className="text-[20px] font-semibold tracking-[-0.01em] text-fg">{project.name}</h1>
             {project.description && <p className="mt-1 text-[13px] text-fg-3 selectable">{project.description}</p>}
             <p className="mt-1.5 text-[12px] text-fg-4">
-              Created {formatFull(project.createdAt)} · {plural(sourceCount, 'note')} attached
+              Created {formatFull(project.createdAt)} · {plural(sourceCount, 'note')} selected
             </p>
           </header>
 
+          {!isMockBridge() && <ProjectSessions key={projectId + ':' + journeyVersion} projectId={projectId} />}
+
           {/* Notes ------------------------------------------------------------------ */}
-          <section aria-label="Notes">
+          {isMockBridge() ? <section aria-label="Notes">
             <div className="mb-2 flex items-center justify-between gap-2">
               <h2 className="text-[13px] font-semibold text-fg">Notes</h2>
               <StatusChip tone="built" title="Attaching notes works locally: the files are copied into this app's attachment store." />
@@ -129,23 +134,24 @@ export function ProjectView({ projectId }: { projectId: string }) {
                   </Button>
                 }
               >
-                Use Markdown (.md) or plain text (.txt) notes up to 10 MB each. fai reads what you
+                Use Markdown, plain text or PDFs with a readable text layer, up to 10 MB each. fai reads what you
                 attach here.
               </EmptyState>
             )}
-          </section>
+          </section> : <ProjectSpace key={projectId} projectId={projectId} version={journeyVersion} attaching={attaching} onAttach={()=>void attach()} />}
+          <ProjectImprovements key={projectId + '-instructions'} projectId={projectId} version={journeyVersion} />
 
           {/* Mission ----------------------------------------------------------------- */}
-          <section aria-label="Mission">
+          <section aria-label="Proposal workflow">
             <div className="rounded-card border border-line-soft bg-sidebar p-4">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="flex items-center gap-1.5 text-[13px] font-semibold text-fg">
                   <Rocket size={14} className="text-fg-3" />
-                  Mission
+                  Proposal workflow
                 </h2>
                 {(!currentRun || !activeRun) && <RunStatusChip run={currentRun} ready={ready} />}
               </div>
-              {!currentRun && <p className="mt-1.5 text-[12.5px] text-fg-3">Draft a proposal from the notes and have a second bot review it.</p>}
+              {!currentRun && <p className="mt-1.5 text-[12.5px] text-fg-3">Draft from the selected notes and have a second bot review the result.</p>}
               {currentRun && <MissionTrail run={currentRun} artifact={currentArtifact} />}
               <div className="mt-3">
                 <Button
@@ -156,13 +162,13 @@ export function ProjectView({ projectId }: { projectId: string }) {
                   aria-busy={starting}
                   title={
                     activeRun
-                      ? 'A mission is already running.'
+                      ? 'A proposal is already in progress.'
                       : !ready
                         ? 'Attach notes first.'
-                        : 'Start the mission for the attached notes.'
+                        : 'Draft and review a proposal using the selected notes.'
                   }
                 >
-                  {starting ? 'Starting…' : activeRun ? 'Mission running' : 'Start the mission'}
+                  {starting ? 'Starting…' : activeRun ? 'Proposal in progress' : 'Draft proposal'}
                 </Button>
               </div>
               {runList.length > 0 && (
@@ -197,8 +203,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
               </div>
             ) : (
               <EmptyState icon={FileCheck2} title="No artifacts yet">
-                The mission run writes the deliverable here as snapshot revisions, each checked against the rubric.
-                Review comes with the run.
+                Saved drafts and their reviews appear here.
               </EmptyState>
             )}
           </section>

@@ -3,6 +3,8 @@ import type { JsonSchema, ToolContext, ToolDefinition, ToolResult } from '../con
 
 /** ToolDefinition plus the platform-only hook the registry understands. */
 export interface PlatformToolDefinition extends ToolDefinition {
+  /** A read that must recheck grants and must never replay or persist a previous result. */
+  requiresLiveRead?: boolean
   /**
    * Skip the approval card for this call (e.g. file access inside the bot's workspace).
    * A resolved 'never' still wins.

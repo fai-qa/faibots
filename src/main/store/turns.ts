@@ -15,8 +15,8 @@ export function startOfLocalDay(now: number): number {
 export function createTurnLogRepo(db: Db): TurnLogRepo {
   const insert = db.prepare(
     `insert into turns (id, bot_id, conversation_id, conversation_kind, trigger, status, provider_id, model_id,
-       input_tokens, output_tokens, started_at, ended_at, error)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       input_tokens, output_tokens, started_at, ended_at, error, codex_usage_state, root_turn_id)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   const countAutomatic = db.prepare(
     `select count(*) as n from (
@@ -32,7 +32,10 @@ export function createTurnLogRepo(db: Db): TurnLogRepo {
        count(*) as turns,
        sum(case when trigger in ('agent', 'routine') then 1 else 0 end) as automatic_turns,
        sum(case when status = 'error' then 1 else 0 end) as errors,
-       sum(input_tokens) as input_tokens, sum(output_tokens) as output_tokens
+       sum(input_tokens) as input_tokens, sum(output_tokens) as output_tokens,
+       sum(case when codex_usage_state='unknown' then 1 else 0 end) as unreported,
+       sum(case when codex_usage_state is null and provider_id in (select id from providers where kind='codex')
+           then 1 else 0 end) as legacy_codex
      from turns where started_at >= ? and started_at < ?
      group by bot_id, day, provider_id, model_id
      order by day, bot_id`
@@ -44,8 +47,8 @@ export function createTurnLogRepo(db: Db): TurnLogRepo {
         !Number.isFinite(new Date(input.startedAt).getTime())) throw new Error('Invalid automatic run identity or timestamp')
       return transaction(db, () => {
         // First statement is a write: serialize competing processes before reading the ceiling/count.
-        const inserted = db.prepare(`insert into automatic_run_admissions(id, bot_id, started_at)
-          values (?, ?, ?) on conflict(id) do nothing`).run(input.id, input.botId, input.startedAt)
+        const inserted = db.prepare(`insert into automatic_run_admissions(id, bot_id, started_at, root_turn_id)
+          values (?, ?, ?, ?) on conflict(id) do nothing`).run(input.id, input.botId, input.startedAt, input.rootTurnId ?? input.id)
         if (inserted.changes !== 1) return false
         const bot = db.prepare('select daily_run_limit from bots where id = ?').get(input.botId)
         const since = startOfLocalDay(input.startedAt)
@@ -60,11 +63,12 @@ export function createTurnLogRepo(db: Db): TurnLogRepo {
     },
     record(turn: TurnRecord): void {
       // A bot deleted while its turn was finishing has no row to point at; the log is best effort.
+      const id = turn.id ?? randomUUID()
       try {
         insert.run(
-          turn.id ?? randomUUID(), turn.botId, turn.conversationId, turn.conversationKind, turn.trigger, turn.status,
+          id, turn.botId, turn.conversationId, turn.conversationKind, turn.trigger, turn.status,
           turn.providerId, turn.modelId, Math.max(0, Math.round(turn.inputTokens)), Math.max(0, Math.round(turn.outputTokens)),
-          turn.startedAt, turn.endedAt, turn.error ?? null
+          turn.startedAt, turn.endedAt, turn.error ?? null, turn.codexUsageState ?? null, turn.rootTurnId ?? id
         )
       } catch (err) {
         console.warn('[store] could not log a turn:', err instanceof Error ? err.message : String(err))
@@ -85,7 +89,9 @@ export function createTurnLogRepo(db: Db): TurnLogRepo {
         automaticTurns: num(r['automatic_turns']),
         errors: num(r['errors']),
         inputTokens: num(r['input_tokens']),
-        outputTokens: num(r['output_tokens'])
+        outputTokens: num(r['output_tokens']),
+        ...(num(r['unreported']) > 0 && { unreportedTurns: num(r['unreported']) }),
+        ...(num(r['legacy_codex']) > 0 && { legacyCodexTurns: num(r['legacy_codex']) })
       }))
       return { from, to, rows }
     }

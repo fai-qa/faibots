@@ -16,7 +16,7 @@ import {
   upsertEntry,
   useData
 } from './data'
-import { lastConversationId, navigate, toast, useUi, type Draft } from './ui'
+import { navigate, toast, useUi, type Draft } from './ui'
 
 // ---------------------------------------------------------------------------
 // Boot and push events
@@ -41,12 +41,17 @@ export async function boot(): Promise<void> {
       invoke('mcp:list', undefined),
       invoke('projects:list', undefined)
     ])
+    const primary = bots.find((bot) => bot.isPrimary)
+    if (!primary) throw new Error('The main bot fai could not be loaded.')
+    const existingDm = findDm(conversations, primary.id)
+    const home = existingDm ?? await invoke('conv:open-dm', { botId: primary.id })
     setBots(bots)
     setProjects(projects)
-    useData.setState({ appInfo, settings, conversations, providers, mcp, status: 'ready' })
+    useData.setState({ appInfo, settings, conversations: existingDm ? conversations : [...conversations, home], providers, mcp })
+    useUi.setState({ route: { kind: 'conversation', id: home.id } })
+    useData.setState({ status: 'ready' })
     for (const state of live) setLiveState(state)
     void loadPreviews(conversations)
-    openInitialConversation(conversations, bots)
   } catch (err) {
     useData.setState({ status: 'error', bootError: errorMessage(err) })
   }
@@ -108,15 +113,6 @@ async function loadPreviews(conversations: Conversation[]): Promise<void> {
         }
       })
   )
-}
-
-function openInitialConversation(conversations: Conversation[], bots: Bot[]): void {
-  const remembered = conversations.find((c) => c.id === lastConversationId && c.kind !== 'exchange')
-  if (remembered) return navigate({ kind: 'conversation', id: remembered.id })
-  const primary = bots.find((b) => b.isPrimary && !b.hidden) ?? bots.find((b) => !b.hidden)
-  const dm = primary ? findDm(conversations, primary.id) : undefined
-  if (dm) navigate({ kind: 'conversation', id: dm.id })
-  else if (primary) void openBot(primary.id)
 }
 
 export async function refreshProviders(): Promise<void> {

@@ -11,13 +11,18 @@ import { createHarness, type Harness } from '../agent/testing/fakes'
 import { createNativeEngine } from '../agent/native-engine'
 import { ScriptedAdapter, callTools, say, type ScriptedStep } from '../agent/testing/scripted-adapter'
 import { fileTools } from '../tools/builtin/files'
+import { createSkillService } from '../skills/skills'
 import { createAttachmentStore } from '../attachments/attachments'
-import type { MissionRunService } from '../contracts'
+import { pdfFixture } from '../attachments/testing/pdf-fixture'
+import { createSnapshotService } from '../attachments/snapshots'
+import { projectContentHandlers } from '../ipc/project-content'
+import { improvementHandlers } from '../ipc/project-improvements'
+import type { MissionRunService, Services } from '../contracts'
 import {
   createMissionRunService, DELIVERABLE_PATH, DEFAULT_PROPOSAL_RUBRIC, reviewMessageFor, reviewVerdictOf
 } from './mission-run'
 
-const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+const sha = (text: string | Buffer) => createHash('sha256').update(text).digest('hex')
 const DRAFT = '# Proposal\n\nGrounded in the notes: ship the smallest useful version first.\n'
 const NOTE_BODY = '# Launch notes\n\nShip the desktop app behind the verified checklist.\n'
 const REVIEW_MESSAGE = /<<<REVIEW MESSAGE\n([\s\S]*?)REVIEW MESSAGE>>>/
@@ -33,7 +38,7 @@ describe('mission run (M1c)', () => {
   })
 
   /** Harness with the native engine driven by a scripted adapter, file tools, and a real attachment store. */
-  const setup = () => {
+  const setup = (name = 'launch-notes.md', contents: string | Buffer = NOTE_BODY) => {
     const adapter = new ScriptedAdapter()
     h = createHarness({
       engines: (services, providers) => ({
@@ -45,19 +50,17 @@ describe('mission run (M1c)', () => {
       })
     })
     for (const tool of fileTools({ homeDir: h.services.dataDir, skillDirsForBot: () => [] })) h.services.tools.register(tool)
+    Object.assign(h.services.skills, createSkillService({ dataDir: h.services.dataDir, homeDir: h.services.dataDir, store: h.services.store, bus: h.services.bus }))
     const attachments = createAttachmentStore({ dataDir: h.services.dataDir })
-    const missions = createMissionRunService({ store: h.services.store, runtime: h.runtime, attachments, dataDir: h.services.dataDir, bus: h.services.bus })
+    const missions = createMissionRunService({ store: h.services.store, runtime: h.runtime, providers: h.providers, skills: h.services.skills, attachments, dataDir: h.services.dataDir, bus: h.services.bus })
 
     const chief = h.bot('Atlas', { isPrimary: true })
-    const reviewer = h.bot('Iris')
+    const reviewer = h.bot('Iris', { label: 'Proposal reviewer' })
     const project = h.services.store.projects.create({ name: 'Launch', description: 'Ship the desktop app.' })
     mkdirSync(h.services.dataDir, { recursive: true })
-    const notePath = join(h.services.dataDir, 'launch-notes.md')
-    writeFileSync(notePath, NOTE_BODY)
-    const note = attachments.ingest([notePath])[0]!
-    h.services.store.projectSources.insert({
-      projectId: project.id, attachmentId: note.id, name: note.name, sha256: sha(NOTE_BODY), sizeBytes: Buffer.byteLength(NOTE_BODY), kind: 'md'
-    })
+    const notePath = join(h.services.dataDir, name)
+    writeFileSync(notePath, contents)
+    createSnapshotService({ attachments, projects: h.services.store.projects, projectSources: h.services.store.projectSources }).attach(project.id, [notePath])
     return { adapter, missions, projectId: project.id, chiefId: chief.id, reviewerId: reviewer.id }
   }
 
@@ -77,13 +80,83 @@ describe('mission run (M1c)', () => {
   }
 
   /** The chief sends the run-specific brief, source evidence and draft verbatim. */
-  const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT): ScriptedStep => (events, signal) => {
-    const message = REVIEW_MESSAGE.exec(latestTask(harness, chiefId))![1]!.trim()
+  const reviewDispatch = (harness: Harness, chiefId: string, draft = DRAFT, source: string | Buffer = NOTE_BODY): ScriptedStep => (events, signal) => {
+    const task = latestTask(harness, chiefId)
+    const to = /Now the review step\. Ask @(\S+) to review/.exec(task)![1]!
+    const requiredSkills = /Include requiredSkills: (\[[^\n]+\]) so dispatch/.exec(task)?.[1]
+    const message = REVIEW_MESSAGE.exec(task)![1]!.trim()
     expect(message).toContain(DEFAULT_PROPOSAL_RUBRIC)
     expect(message).toContain(draft.trim())
-    expect(message).toContain(sha(NOTE_BODY))
-    return callTools([{ id: 'send-1', name: 'send_to_agent', input: { to: 'iris', message } }])(events, signal)
+    expect(message).toContain(sha(source))
+    return callTools([{ id: 'send-1', name: 'send_to_agent', input: { to, message, ...(requiredSkills && { requiredSkills: JSON.parse(requiredSkills) }) } }])(events, signal)
   }
+
+  it('drafts using a virtual PDF note and gives the reviewer its text and original snapshot hash', async () => {
+    const bytes = pdfFixture('Venue: Cedar')
+    const { adapter, missions, projectId, chiefId } = setup('notice.pdf', bytes)
+    const draft = '# Workshop\nVenue: Cedar'
+    let path: string
+    adapter.push(
+      (events, signal) => callTools([{ id: 'source', name: 'read_file', input: { path } }])(events, signal),
+      (events, signal) => {
+        expect(JSON.stringify(adapter.toolResults)).toContain('Venue: Cedar')
+        return writeDraft(h!,chiefId,draft)(events,signal)
+      },
+      say('Draft saved.'),
+      (events, signal) => {
+        expect(latestTask(h!,chiefId)).toContain('Venue: Cedar')
+        return reviewDispatch(h!,chiefId,draft,bytes)(events,signal)
+      },
+      say('VERDICT: accepted — the selected note identifies the venue.'),
+      endTurn
+    )
+    const started = missions.start(projectId)
+    path = `mission-${started.id}/project-notes/1-notice.pdf`
+    await missions.idle()
+    expect(missions.runs(projectId)[0]).toMatchObject({ status: 'complete' })
+    const artifact = h!.services.store.artifacts.listByProject(projectId)[0]!
+    expect(h!.services.store.artifacts.revisions(artifact.id)[0]?.provenance.sources)
+      .toEqual([expect.objectContaining({ name: 'notice.pdf', revision: 1, sha256: sha(bytes) })])
+  })
+
+  it('records an explicit scan failure before calling a model', async () => {
+    const { adapter, missions, projectId } = setup('scan.pdf', pdfFixture(''))
+    missions.start(projectId)
+    await missions.idle()
+    expect(missions.runs(projectId)[0]).toMatchObject({ status: 'failed', error: expect.stringMatching(/Page 1 has no readable text layer/) })
+    expect(adapter.specs).toHaveLength(0)
+  })
+
+  it('counts only the current mission when the reviewer exchange is reused and unrelated work shares the chief DM', async () => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const store = h!.services.store
+    const reviews = () => say('VERDICT: accepted — the notes support it.')
+    for (const repeat of [false, true]) {
+      adapter.push(writeDraft(h!, chiefId), say('Draft saved.'), reviewDispatch(h!, chiefId),
+        (events, signal) => {
+          if (repeat) {
+            const conversationId = store.conversations.findDm(chiefId)!.id
+            const id = 'unrelated-automatic-turn', startedAt = Date.now()
+            expect(store.turns.reserveAutomatic({ id, botId: chiefId, startedAt })).toBe(true)
+            store.turns.record({ id, botId: chiefId, conversationId, conversationKind: 'dm', trigger: 'routine', status: 'error',
+              providerId: h!.providerId, modelId: 'another-job', inputTokens: 99999, outputTokens: 99999, startedAt, endedAt: startedAt + 50000 })
+            store.entries.append({ conversationId, kind: 'message', author: { kind: 'bot', botId: chiefId }, text: 'Independent job',
+              meta: { turnId: id }, mentions: [], mentionsEveryone: false, isStreaming: false, attachments: [] })
+          }
+          return reviews()(events, signal)
+        }, endTurn)
+      missions.start(projectId)
+      await missions.idle()
+    }
+    expect(store.conversations.findExchange(chiefId, reviewerId)).toBeDefined()
+    const [second, first] = missions.runs(projectId)
+    expect(first?.status).toBe('complete')
+    expect(second?.status).toBe('complete')
+    expect(second!.budgets).toMatchObject({
+      b1: 3, b2: { errors: 0 }, b3: first!.budgets.b3, b5: first!.budgets.b5, b6: first!.budgets.b6, b7: 1, b11: 3
+    })
+    expect(second!.budgets.b4!.wallMs).toBeLessThan(50000)
+  })
 
   it('happy path: draft -> host revision -> one reviewer exchange -> accepted review -> complete', async () => {
     const { adapter, missions, projectId, chiefId, reviewerId } = setup()
@@ -277,6 +350,214 @@ describe('mission run (M1c)', () => {
     const revisions = h!.services.store.artifacts.revisions(artifact.id)
     expect(revisions).toHaveLength(1)
     expect(h!.services.store.artifacts.reviews(revisions[0]!.id)).toEqual([])
+  })
+
+  it('chooses a ready review skill over older disabled, unrelated and missing-key specialists', async () => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const harness = h!
+    const { store, skills } = harness.services
+    const disabled = harness.providers.save({ kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', label: 'Off', enabled: false, defaultModelId: 'local' })
+    store.bots.update(reviewerId, { model: { providerId: disabled.id, modelId: '' } })
+    const code = harness.bot('Code Reviewer', { description: 'Review source code.' })
+    const keyless = harness.providers.save({ kind: 'openai', label: 'No key', enabled: true, defaultModelId: 'test-model' })
+    harness.bot('Bid Reviewer', { model: { providerId: keyless.id, modelId: '' } })
+    const general = harness.bot('Editor')
+    const specialist = harness.bot('Orchid')
+    skills.save({ name: 'proposal-review', description: 'Review bids against the evidence.', body: 'Check each claim.', ownerBotId: specialist.id })
+    adapter.push(writeDraft(harness, chiefId), say('Draft saved.'), reviewDispatch(harness, chiefId),
+      say('VERDICT: accepted — the evidence supports the proposal.'), endTurn)
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run.status).toBe('complete')
+    const [revision] = store.artifacts.revisions(run.artifactId!)
+    expect(store.artifacts.reviews(revision!.id)[0]?.reviewer).toBe(specialist.id)
+    expect(store.conversations.findExchange(chiefId, reviewerId)).toBeUndefined()
+    expect(store.conversations.findExchange(chiefId, general.id)).toBeUndefined()
+    expect(store.conversations.findExchange(chiefId, code.id)).toBeUndefined()
+  })
+
+  it.each([
+    ['Code reviewer', 'Does not review proposals.'],
+    ['مراجع الشيفرة', 'لا أراجع المقترحات.']
+  ])('keeps a saved draft when the only specialist role is %s', async (label, description) => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const store = h!.services.store
+    store.bots.update(reviewerId, { label, description })
+    adapter.push(writeDraft(h!, chiefId), say('Draft saved.'))
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run).toMatchObject({ status: 'partial', error: expect.stringMatching(/No visible specialist.*draft awaits review/) })
+    expect(store.artifacts.revisions(run.artifactId!)[0]?.sha256).toBe(sha(DRAFT))
+    expect(store.artifacts.get(run.artifactId!)?.status).toBe('draft')
+  })
+
+  it.each([['مُرَاجِعة العروض والمقترحات', true], ['مدققة برمجيات', false]])(
+    'uses the Arabic role %s and falls back to a declared editor when appropriate', async (role, specific) => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const harness = h!
+    const { store } = harness.services
+    store.bots.update(reviewerId, { label: 'مراجع الشيفرة البرمجية', description: 'لا أراجع المقترحات.' })
+    const person = harness.bot('مريم', { handle: 'mariam' })
+    const editor = harness.bot('نور', { handle: 'nour', label: 'محررة' })
+    const specialist = harness.bot('ريم', { handle: 'reem', label: role })
+    adapter.push(writeDraft(harness, chiefId), say('Draft saved.'), reviewDispatch(harness, chiefId),
+      say('VERDICT: accepted — the reviewed claims are supported.'), endTurn)
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run.status).toBe('complete')
+    const [revision] = store.artifacts.revisions(run.artifactId!)
+    expect(store.artifacts.reviews(revision!.id)[0]?.reviewer).toBe(specific ? specialist.id : editor.id)
+    for (const unused of [reviewerId, person.id, specific ? editor.id : specialist.id]) {
+      expect(store.conversations.findExchange(chiefId, unused)).toBeUndefined()
+    }
+  })
+
+  it('rechecks availability after drafting and retains the draft if dispatch later loses its review skill', async () => {
+    const { adapter, missions, projectId, chiefId, reviewerId } = setup()
+    const harness = h!
+    const { store, skills } = harness.services
+    const provider = harness.providers.save({ kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', label: 'For review', enabled: true, defaultModelId: 'test-model' })
+    store.bots.update(reviewerId, { model: { providerId: provider.id, modelId: '' } })
+    const alternate = harness.bot('Orchid')
+    const skill = skills.save({ name: 'document-review', description: 'Review written drafts.', body: 'Check claims.', ownerBotId: alternate.id })
+    adapter.push(writeDraft(harness, chiefId), (events, signal) => {
+      harness.providers.save({ ...provider, enabled: false })
+      return say('Draft saved.')(events, signal)
+    }, (events, signal) => {
+      expect(latestTask(harness, chiefId)).toContain('Ask @orchid to review')
+      skills.delete(skill.id)
+      return reviewDispatch(harness, chiefId)(events, signal)
+    }, endTurn)
+    missions.start(projectId)
+    await missions.idle()
+    const run = store.journeyRuns.listByProject(projectId)[0]!
+    expect(run).toMatchObject({ status: 'partial', error: expect.stringContaining('@orchid did not receive') })
+    const [revision] = store.artifacts.revisions(run.artifactId!)
+    expect(revision!.sha256).toBe(sha(DRAFT))
+    expect(store.artifacts.reviews(revision!.id)).toEqual([])
+    expect(store.conversations.findExchange(chiefId, alternate.id)).toBeUndefined()
+  })
+
+  it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {
+    const { adapter, missions, projectId, chiefId } = setup()
+    const services = h!.services
+    const store = services.store
+    const attachments = createAttachmentStore({ dataDir: services.dataDir })
+    const handlers = improvementHandlers({ ...services, missions, attachments } as unknown as Services, store)
+    const other = store.projects.create({ name: 'Separate project' })
+    const requiredText = '## Next decision'
+    const instruction = 'Include a Next decision heading before the final recommendation.'
+    const write = (withRule: boolean, obey = true): ScriptedStep => (events, signal) => {
+      expect(latestTask(h!,chiefId).includes(instruction)).toBe(withRule)
+      return writeDraft(h!,chiefId,withRule && obey ? DRAFT + '\n' + requiredText : DRAFT)(events,signal)
+    }
+    const stage = (withRule: boolean, obey = true, source = NOTE_BODY) =>
+      adapter.push(write(withRule,obey),say('Saved.'),reviewDispatch(h!,chiefId,DRAFT,source),say('VERDICT: accepted — grounded.'),endTurn)
+    stage(false)
+    const matched = missions.start(projectId).id
+    await missions.idle()
+    expect(store.journeyRuns.get(matched)?.status,store.journeyRuns.get(matched)?.error).toBe('complete')
+    const first = store.projectContent.library(projectId)[0]!
+    store.projectContent.select(projectId, first.itemId, false)
+    const path = join(services.dataDir,'heldout.md')
+    const heldNotes = '# Another launch\n\nAsk the venue to approve a smaller workshop.'
+    writeFileSync(path,heldNotes)
+    const att = attachments.ingest([path])[0]!
+    store.projectSources.insert({ projectId,attachmentId:att.id,name:att.name,sha256:sha(heldNotes),sizeBytes:att.sizeBytes,kind:'md' })
+    stage(false,true,heldNotes)
+    const heldout = missions.start(projectId).id
+    await missions.idle()
+    expect(store.journeyRuns.get(heldout)?.status,store.journeyRuns.get(heldout)?.error).toBe('complete')
+    expect(() => handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout:matched})).toThrow(/different/)
+    const candidateId = handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout})
+    const req = { projectId,candidateId }
+    expect(() => handlers['improvement:trial']({...req,lane:'matched'})).toThrow(/Approve/)
+    expect(() => handlers['improvement:review']({...req,projectId:other.id,decision:'approved'})).toThrow()
+    handlers['improvement:review']({...req,decision:'approved'})
+    stage(true)
+    handlers['improvement:trial']({...req,lane:'matched'})
+    await missions.idle()
+    expect(() => handlers['improvement:publish'](req)).toThrow(/heldout/)
+    stage(true,false,heldNotes)
+    handlers['improvement:trial']({...req,lane:'heldout'})
+    await missions.idle()
+    expect(() => handlers['improvement:publish'](req)).toThrow(/heldout/)
+    stage(true,true,heldNotes)
+    handlers['improvement:trial']({...req,lane:'heldout'})
+    await missions.idle()
+    expect(store.projectContent.pages(projectId)).toHaveLength(2)
+    handlers['improvement:publish'](req)
+    expect(handlers['improvement:list']({projectId}).active?.id).toBe(candidateId)
+    expect(handlers['improvement:list']({projectId:other.id}).active).toBeNull()
+    stage(true,true,heldNotes)
+    const live = missions.start(projectId).id
+    await missions.idle()
+    expect(store.db.prepare('select lane,observed from improvement_runs where run_id=?').get(live)).toMatchObject({lane:'production',observed:'passed'})
+    handlers['improvement:rollback'](req)
+    stage(false,true,heldNotes)
+    missions.start(projectId)
+    await missions.idle()
+    const result = handlers['improvement:list']({projectId})
+    expect(result.active).toBeNull()
+    expect(result.history.map((item)=>item.action)).toEqual(['rollback','publish'])
+    expect(result.trials.map((t)=>t.observed)).toEqual(['passed','failed','passed'])
+  })
+
+  it('publishes a Page tied to the accepted revision and captures a failed case to recheck against a later matching run', async () => {
+    const { adapter, missions, projectId, chiefId } = setup()
+    const store = h!.services.store
+    const content = store.projectContent
+    adapter.push(() => { throw new Error('desk fixture unavailable') })
+    const failed = missions.start(projectId)
+    await missions.idle()
+    expect(content.pages(projectId)).toEqual([])
+    expect(content.evaluations(projectId)[0]).toMatchObject({ runId: failed.id, status: 'failed', turns: 1, reason: expect.stringContaining('desk fixture') })
+    expect(content.reevaluate(projectId, failed.id, () => {}).report?.status).toBe('failed')
+
+    const readNote: ScriptedStep = (events, signal) => {
+      const path = /- (mission-[^\s]+\/project-notes\/[^\s]+)/.exec(latestTask(h!, chiefId))![1]!
+      expect(existsSync(join(store.settings.get().workspaceRoot, 'atlas',path))).toBe(false)
+      return callTools([{ id:'read-current-note', name:'read_file', input:{path} }])(events,signal)
+    }
+    adapter.push(readNote,writeDraft(h!,chiefId),say('Saved.'),reviewDispatch(h!,chiefId),say('VERDICT: accepted — grounded.'),endTurn)
+    const accepted = missions.start(projectId, failed.id)
+    await missions.idle()
+    const readEntry = store.entries.page(store.conversations.findDm(chiefId)!.id,{limit:100}).entries.find(e=>e.toolCall?.callId==='read-current-note')
+    expect(readEntry?.toolCall?.resultText).toContain(NOTE_BODY.trim())
+    const [page]=content.pages(projectId)
+    expect(page).toMatchObject({spaceId:content.space(projectId).id, runId:accepted.id,sha256:sha(DRAFT)})
+    const handlers=projectContentHandlers({...h!.services,attachments:createAttachmentStore({dataDir:h!.services.dataDir})} as unknown as Services,store)
+    expect(handlers['content:read-page']({projectId,pageId:page!.id}).body).toBe(DRAFT)
+    expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.report).toMatchObject({status:'passed',candidateId:accepted.id})
+    expect(handlers['content:evaluate']({projectId,runId:failed.id}).report).toMatchObject({status:'passed',candidateId:accepted.id})
+    expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.status).toBe('failed')
+    const other=store.projects.create({name:'Private project'})
+    expect(()=>handlers['content:read-page']({projectId:other.id,pageId:page!.id})).toThrow(/not found/)
+    const source=content.library(projectId)[0]!
+    content.revoke(projectId,source.itemId)
+    expect(()=>handlers['content:read-page']({projectId,pageId:page!.id})).toThrow(/access/)
+    expect(handlers['content:evaluate']({projectId,runId:failed.id}).report?.status).toBe('failed')
+  })
+
+  it('refuses a source revoked while a draft is in progress and does not publish a Page', async () => {
+    const { adapter, missions, projectId, chiefId } = setup()
+    const content = h!.services.store.projectContent
+    adapter.push((events,signal)=>{
+      const path=/- (mission-[^\s]+\/project-notes\/[^\s]+)/.exec(latestTask(h!,chiefId))![1]!
+      content.revoke(projectId,content.library(projectId)[0]!.itemId)
+      return callTools([{id:'read-revoked-note',name:'read_file',input:{path}}])(events,signal)
+    },writeDraft(h!,chiefId),say('Saved.'))
+    const run=missions.start(projectId)
+    await missions.idle()
+    const dm=h!.services.store.conversations.findDm(chiefId)!
+    const read=h!.services.store.entries.page(dm.id,{limit:100}).entries.find(e=>e.toolCall?.callId==='read-revoked-note')
+    expect(read?.toolCall?.resultText).toMatch(/access/)
+    expect(read?.toolCall?.resultText).not.toContain(NOTE_BODY.trim())
+    expect(h!.services.store.journeyRuns.get(run.id)).toMatchObject({status:'failed',error:expect.stringMatching(/access/)})
+    expect(content.pages(projectId)).toEqual([])
   })
 
   it('reads only structural verdict lines from a review reply', () => {

@@ -56,6 +56,7 @@ describe('ProviderService', () => {
             }
           }
         }) as never,
+      codexModels: async () => [{ id: 'catalog-model', label: 'Catalog model', supportsTools: true }],
       probes: {
         claudeCode: async () => ({ ok: true, billing: 'subscription', message: 'Claude Code is signed in and uses your max subscription.', models: [{ value: 'opus', displayName: 'Opus', description: '' }] as never }),
         codex: async (hasKey) => parseCodexLoginStatus(0, 'Logged in using ChatGPT', hasKey)
@@ -182,7 +183,7 @@ describe('ProviderService', () => {
     expect((await service.models(cc.id)).map((m) => m.id)).toEqual(['default', 'opus'])
     const codex = save(service, { kind: 'codex' })
     expect(await service.test(codex.id)).toMatchObject({ ok: true, billing: 'subscription' })
-    expect((await service.models(codex.id)).map((m) => m.id)).toEqual(['default'])
+    expect((await service.models(codex.id)).map((m) => m.id)).toEqual(['default', 'catalog-model'])
     const codexKey = save(service, { kind: 'codex', apiKey: 'sk-codex' })
     expect(await service.test(codexKey.id)).toMatchObject({ ok: true, billing: 'api-key' })
   })

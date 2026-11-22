@@ -31,7 +31,7 @@ export function Sidebar() {
   }, [focusSearch])
 
   const sections = useMemo(() => sidebarSections(bots, conversations, query), [bots, conversations, query])
-  const empty = !sections.pinned.length && !sections.bots.length && !sections.groups.length
+  const empty = (Boolean(query.trim()) || !sections.main) && !sections.pinned.length && !sections.bots.length && !sections.groups.length
 
   const renderList = (items: SidebarItem[]) => items.map((item) => <SidebarRow key={item.key} item={item} compact={compact} />)
 
@@ -56,6 +56,12 @@ export function Sidebar() {
           </>
         )}
       </div>
+
+      {sections.main && (
+        <div className={clsx('px-2 pb-1.5', compact && 'flex justify-center')}>
+          <SidebarRow item={sections.main} compact={compact} />
+        </div>
+      )}
 
       {!compact && (
         <div className="px-2.5 pb-1.5">
@@ -155,7 +161,7 @@ export function Sidebar() {
           </div>
         )}
         {empty && !compact && (
-          <p className="px-3 py-6 text-center text-[12.5px] text-fg-3">{query ? 'No matching Bots' : 'No Bots yet. Create one to get started.'}</p>
+          <p className="px-3 py-6 text-center text-[12.5px] text-fg-3">{query ? 'No matching specialists or groups' : 'No Bots yet. Create one to get started.'}</p>
         )}
       </nav>
 

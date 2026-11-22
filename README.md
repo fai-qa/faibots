@@ -42,12 +42,18 @@ Model availability and sign-in depend on your provider.
 
 If Electron exits immediately on Windows, run `npm run prestart` to download the locked runtime. Copy `node_modules/electron/dist` to a standalone folder outside `node_modules`, set `ELECTRON_EXEC_PATH` in your current PowerShell session to the copied `electron.exe`, then run `npm run dev` again. Keep sandboxing enabled. [Electron's Windows launch issue](https://github.com/electron/electron/issues/54614)
 
-## Try your first bot
+## Start with fai
 
-1. In **Settings → Models & providers**, add a provider you already use and test the connection.
-2. Choose **New Bot**, give it a name and role, and select its model in the bot’s profile.
-3. Open its chat and give it a small task. Close and reopen the app to pick up the conversation.
-4. To work with two bots, create a second bot and use **New chat** to select both. Mention the bot you want to answer.
+1. The app opens in your chat with **fai**, the main bot. In **Settings → Models & providers**, connect a provider you already use. Choose its model in the profile for fai.
+2. Give fai a job. For example, “Find a bot to edit this product description. If we need an editor, propose one. Bring the revised text back here.”
+3. When a new bot is needed, review its role and model in the approval card. A specialist can use the configured default model or the model already assigned to fai.
+4. You can also create bots yourself in **New Bot**, talk directly to a specialist or choose several bots in **New chat**. Reopening the app takes you back to fai.
+
+You can speak to fai in English, Arabic or a mix. Ask for what you want back. A request with a clear answer can finish in one sentence. When a job needs several steps, fai can keep a work brief in the chat. Open it to see the deliverable and checks, update that job, answer a question, or accept a result. **Scope and limits** shows the selected inputs, specialist assignment limit and where fai will return the result. A specialist can work in the background while you speak with fai. The brief and its verified returns survive reopening the app.
+
+When bots work together, select the message count in your chat to read what they said for that job. Choose **Close chat** or press **Esc** to return to the same place.
+
+Projects have a Library for selected source revisions, a Space for reviewed Pages, and separate session histories. You choose which work to bring into a new session. To discuss a search result in your main chat, choose **Ask fai** below the result, enter your instruction, and select **Send to fai**. To ask a follow-up about the same evidence, use **Reply** on the answer in chat. Project instructions can be tried on two sets of notes before you activate them.
 
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
 
@@ -64,6 +70,14 @@ npm run build
 The desktop app uses Electron. The optional browser UI preview uses example data. Routines require the desktop process to be running. This release is a source preview. Build configuration is included for maintainers preparing a Windows installer.
 
 On Windows, `npm run prestart` followed by `node tests/windows-desktop-smoke.cjs` checks the built desktop app with a local model fixture. It exercises the desktop runtime with fictional data and checks that records survive reopening.
+
+Maintainers can assemble a portable ZIP from the same checkout with Python 3.12 or later. After building the app, run these commands from the repository root on Windows. Choose a new ZIP filename for each build.
+
+```powershell
+npm run prestart
+npx --no-install electron-builder --win --x64 --dir --publish never
+python -B scripts/package-windows-preview.py dist/win-unpacked dist/faibots-windows-x64.zip
+```
 
 ## Licensing
 

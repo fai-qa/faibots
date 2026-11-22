@@ -3,7 +3,7 @@
 // the folders of skills the bot can use, so it can open a skill's resource files.
 
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, extname, join } from 'node:path'
+import { dirname, extname, join, relative, sep } from 'node:path'
 import { z } from 'zod'
 import type { ToolContext } from '../../contracts'
 import { defineTool, errorResult, textResult } from '../define'
@@ -62,6 +62,12 @@ export function fileTools(deps: FileToolDeps) {
     autoAllow: (input, ctx) => readable(where(input.path, ctx, deps.homeDir), ctx),
     async execute(input, ctx) {
       const path = where(input.path, ctx, deps.homeDir)
+      try {
+        const virtual = ctx.readProjectNote?.(relative(ctx.workspaceDir, path).split(sep).join('/'))
+        if (virtual !== undefined) return showText(path, virtual, input.offset, input.limit)
+      } catch (error) {
+        return { ...errorResult(error instanceof Error ? error.message : 'The project source could not be read.'), outcome: 'denied' }
+      }
       if (!existsSync(path)) return errorResult(`${path} does not exist.`)
       const stat = statSync(path)
       if (stat.isDirectory()) return errorResult(`${path} is a folder; use list_dir.`)
@@ -79,18 +85,22 @@ export function fileTools(deps: FileToolDeps) {
       if (stat.size > MAX_TEXT_BYTES) return errorResult(`${path} is ${stat.size} bytes; too big to read here. Use shell to look at parts of it.`)
       if (looksBinary(path)) return errorResult(`${path} is a binary file (${stat.size} bytes) and cannot be shown as text.`)
 
-      const lines = readFileSync(path, 'utf8').replace(/^﻿/, '').split(/\r?\n/)
-      const start = (input.offset ?? 1) - 1
-      if (start >= lines.length && lines.length > 0) return errorResult(`${path} has only ${lines.length} lines.`)
-      const slice = lines.slice(start, start + (input.limit ?? DEFAULT_LINE_LIMIT))
-        .map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}… (line cut)` : line))
-      const end = start + slice.length
-      const header = end < lines.length || start > 0
-        ? `${path} (lines ${start + 1}-${end} of ${lines.length})`
-        : `${path} (${lines.length} lines)`
-      return textResult(`${header}\n${slice.join('\n')}`)
+      return showText(path, readFileSync(path, 'utf8'), input.offset, input.limit)
     }
   })
+
+  function showText(path: string, text: string, offset?: number, limit?: number) {
+    const lines = text.replace(/^﻿/, '').split(/\r?\n/)
+    const start = (offset ?? 1) - 1
+    if (start >= lines.length && lines.length > 0) return errorResult(`${path} has only ${lines.length} lines.`)
+    const slice = lines.slice(start, start + (limit ?? DEFAULT_LINE_LIMIT))
+      .map((line) => (line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}… (line cut)` : line))
+    const end = start + slice.length
+    const header = end < lines.length || start > 0
+      ? `${path} (lines ${start + 1}-${end} of ${lines.length})`
+      : `${path} (${lines.length} lines)`
+    return textResult(`${header}\n${slice.join('\n')}`)
+  }
 
   const listDir = defineTool({
     name: 'list_dir',

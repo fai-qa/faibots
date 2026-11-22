@@ -199,6 +199,8 @@ function gate(turn: EngineTurn, deps: ClaudeCodeEngineDeps, readableFiles: strin
   const deny = (message: string): GateDecision => ({ allow: false, message })
 
   return async (toolName: string, input: Record<string, unknown>, callId: string, signal: AbortSignal, title?: string): Promise<GateDecision> => {
+    const unavailable = () => turn.toolContext.selectedResultAvailable && !turn.toolContext.selectedResultAvailable()
+    if (unavailable()) return deny('The selected project result is unavailable.')
     // An approval card cannot carry answers; in a chat the bot simply asks.
     if (toolName === 'AskUserQuestion') return deny('Ask your question in your reply instead; the user answers in the chat.')
     const permission = PERMISSION_OF[toolName] ?? toolName
@@ -209,6 +211,7 @@ function gate(turn: EngineTurn, deps: ClaudeCodeEngineDeps, readableFiles: strin
     if (toolName === 'WebFetch') {
       const blocked = await privateTargetReason(str(input['url']))
       if (blocked) return deny(`WebFetch cannot open local or private network addresses (${blocked}).`)
+      if (unavailable()) return deny('The selected project result is unavailable.')
     }
     if (mode === 'always') return { allow: true }
     if (FILE_PERMISSIONS.has(permission)) {
@@ -224,6 +227,7 @@ function gate(turn: EngineTurn, deps: ClaudeCodeEngineDeps, readableFiles: strin
       summary: deps.secrets.redact(permissionSummary(toolName, input, title)),
       toolInput: JSON.parse(deps.secrets.redact(JSON.stringify(input)))
     })
+    if (unavailable()) return deny('The selected project result is unavailable.')
     if (decision === 'always' || decision === 'never') {
       try {
         deps.tools.setPermission(permission, decision, bot.id)
@@ -294,7 +298,7 @@ export function createClaudeCodeEngine(deps: ClaudeCodeEngineDeps): TurnEngine {
     const query = deps.query ?? (await loadQuery())
     const { recorder } = turn
     const workspace = turn.toolContext.workspaceDir
-    const { text: prompt, newEntries } = turnPrompt(turn, deps.store, !resume)
+    const { text: prompt, newEntries, replayedEntries } = turnPrompt(turn, deps.store, !resume)
     const connectors = connectorToolNames(turn.tools)
     const bridge = await deps.bridge.open(turn.toolContext)
     const abortController = new AbortController()
@@ -311,6 +315,7 @@ export function createClaudeCodeEngine(deps: ClaudeCodeEngineDeps): TurnEngine {
     // files are free to read; anything else there asks.
     const readableFiles = newEntries.flatMap((e) => e.attachments.map((a) => a.path))
     const options: Options = {
+      ...(turn.selectedResultTrigger && { persistSession: false }),
       cwd: workspace,
       additionalDirectories: attachmentDirs(newEntries),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: promptText(turn.system) },
@@ -417,6 +422,10 @@ export function createClaudeCodeEngine(deps: ClaudeCodeEngineDeps): TurnEngine {
 
     try {
       mkdirSync(workspace, { recursive: true })
+      turn.disclose?.([
+        ...turn.tools.filter((t) => !t.name.startsWith('mcp__')).map(({ name }) => ({ name, exposedAs: `mcp__${BRIDGE_SERVER}__${name}` })),
+        ...[...connectors].map(([exposed, tool]) => ({ name: tool.name, exposedAs: `mcp__${CONNECTORS_SERVER}__${exposed}` }))
+      ], [...replayedEntries, ...newEntries], ['Claude Code manages its built-in tools. Mapped file, shell and web actions use the faibots permission gate. The full host catalog is unavailable.'])
       const q = query({ prompt, options })
       try {
         for await (const msg of q) {

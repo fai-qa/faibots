@@ -2,6 +2,7 @@
 // "start at sign-in". Routines only run while the app is running.
 
 import { app, Menu, nativeImage, Tray } from 'electron'
+import { createHash } from 'node:crypto'
 
 /** 32x32 FaiBots mark (a small bot face), drawn for FaiBots (generated pixel by pixel, no third-party art). */
 const ICON_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAuklEQVR4nO2XwQ2AIAxFGeMfemAqz2zEAu7EKI6g0WhCGtSiYCGxyT/R9D8rJK0xrQVAFiAPUABoLqSw17R35g6gqaAx11rbXZnXMuZy3NxW/vJUJ2wM4D80P+RjgJIXTqoQA3xtvukHyAZYo0RONkAqnuT0CXAVOTn9dqAJAPVXUEt9AQyjvLXS3P4AJIWleY8Bzgzuzl8DpEzOVOUSSkBy6zQ1kqkPpbpjudFeTBiEzmrGfofOcqoRCx8uLDqWFMWnAAAAAElFTkSuQmCC'
@@ -64,7 +65,16 @@ export function createTrayController(deps: {
 }
 
 /** Start with Windows / macOS sign-in, opening to the tray. Not available in a dev build. */
-export function setOpenAtLogin(open: boolean): void {
+export function setOpenAtLogin(open: boolean, profile?: string): void {
   if (!app.isPackaged) return
+  if (profile && process.platform === 'win32') {
+    const id = createHash('sha256').update(profile.toLowerCase()).digest('hex').slice(0, 24)
+    app.setLoginItemSettings({
+      openAtLogin: open,
+      name: `faibots-profile-${id}`,
+      args: [`--user-data-dir=${profile}`, HIDDEN_ARG]
+    })
+    return
+  }
   app.setLoginItemSettings({ openAtLogin: open, args: [HIDDEN_ARG] })
 }

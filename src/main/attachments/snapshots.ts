@@ -24,7 +24,7 @@ export interface SnapshotService {
    * a later failure leaves the rows already attached (rows stay resolvable; orphaned
    * attachment files are reconciled, never silently deleted — DATABASE.md:32).
    */
-  attach(projectId: Id, paths: string[]): ProjectSource[]
+  attach(projectId: Id, paths: string[], libraryItemId?: Id): ProjectSource[]
 }
 
 export function createSnapshotService(deps: {
@@ -33,7 +33,7 @@ export function createSnapshotService(deps: {
   projectSources: ProjectSourceRepo
 }): SnapshotService {
   return {
-    attach(projectId, paths) {
+    attach(projectId, paths, libraryItemId) {
       if (!deps.projects.get(projectId)) throw new Error('Project not found')
       return paths.map((sourcePath): ProjectSource => {
         const name = basename(sourcePath)
@@ -51,8 +51,12 @@ export function createSnapshotService(deps: {
         if (!kind) throw new Error(`Notes must be Markdown (.md), plain text (.txt) or PDF (.pdf); ${name} is not supported.`)
         const sha256 = createHash('sha256').update(readFileSync(sourcePath)).digest('hex')
         const attachment = deps.attachments.ingest([sourcePath])[0]!
+        const snapshot = deps.attachments.read(attachment)
+        if (snapshot.length !== stat.size || createHash('sha256').update(snapshot).digest('hex') !== sha256) {
+          throw new Error(`${name} changed while it was being attached. Choose it again.`)
+        }
         return deps.projectSources.insert({
-          projectId, attachmentId: attachment.id, name: attachment.name, sha256, sizeBytes: stat.size, kind
+          projectId, libraryItemId, attachmentId: attachment.id, name: attachment.name, sha256, sizeBytes: stat.size, kind
         })
       })
     }

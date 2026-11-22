@@ -1,12 +1,11 @@
 // A bot's tool call as a compact row that expands to show input and result.
-// send_to_agent calls render as a "Messaged X" card that opens the exchange.
+// Calls with no attributed messages still show their original input, result and status.
 
 import clsx from 'clsx'
 import { Ban, Check, ChevronDown, ChevronRight, CircleX, MessagesSquare } from 'lucide-react'
 import { useState } from 'react'
 import type { Entry, ToolCallInfo } from '@shared/domain'
 import { useData } from '../../store/data'
-import { navigate } from '../../store/ui'
 import { findBotByRef } from '../../lib/bots'
 import { commandOf, parseMcpName, prettyJson, toolIcon, toolTitle } from '../../lib/tools'
 import { BotAvatar } from '../avatar/BotAvatar'
@@ -121,17 +120,10 @@ function ExchangeCard({ entry, call }: { entry: Entry; call: ToolCallInfo }) {
   const running = call.status === 'running'
   const name = peer?.name ?? (typeof input.to === 'string' ? input.to.replace(/^@/, '') : 'a bot')
   const title = running ? `Messaging ${name}` : `Messaged ${name}`
-  const canOpen = !!call.exchangeConversationId
-
   return (
-    <button
-      type="button"
-      disabled={!canOpen}
-      onClick={() => call.exchangeConversationId && navigate({ kind: 'conversation', id: call.exchangeConversationId })}
-      aria-label={canOpen ? `Open exchange with ${name}` : title}
+    <div
       className={clsx(
-        'group block w-full max-w-[min(100%,520px)] rounded-xl border border-line bg-pane px-3 py-2.5 text-left transition-colors',
-        canOpen && 'hover:border-line-strong hover:bg-hover',
+        'block w-full max-w-[min(100%,520px)] rounded-xl border border-line bg-pane px-3 py-2.5 text-left',
         peer && `bot-${peer.avatar.color}`
       )}
     >
@@ -152,12 +144,6 @@ function ExchangeCard({ entry, call }: { entry: Entry; call: ToolCallInfo }) {
         ) : call.status === 'cancelled' || call.status === 'denied' ? (
           <span className="text-2xs text-fg-4">{call.status === 'denied' ? 'Denied' : 'Stopped'}</span>
         ) : null}
-        {canOpen && (
-          <span className="flex items-center gap-0.5 text-2xs font-medium text-fg-3 group-hover:text-fg-2">
-            Open exchange
-            <ChevronRight size={13} />
-          </span>
-        )}
       </div>
       {typeof input.message === 'string' && <p className="mt-1.5 line-clamp-2 text-[12.5px] text-fg-2">{input.message}</p>}
       {call.resultText && (
@@ -166,6 +152,6 @@ function ExchangeCard({ entry, call }: { entry: Entry; call: ToolCallInfo }) {
           {call.resultText}
         </p>
       )}
-    </button>
+    </div>
   )
 }

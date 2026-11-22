@@ -113,9 +113,16 @@ export function createToolRegistry(deps: {
       registered.set(def.name, def)
     },
 
-    async forTurn(ctx) {
+    async forTurn(ctx, omitted) {
       const defs = [...registered.values(), ...(await mcpTools(ctx.bot))]
-      return defs.filter((def) => (def.isAvailable?.(ctx) ?? true) && resolve(def, ctx.bot) !== 'never')
+      const admitted: ToolDefinition[] = []
+      for (const def of defs) {
+        const effectivePermission = resolve(def, ctx.bot)
+        if (def.isAvailable?.(ctx) === false) omitted?.(def.name, 'scope')
+        else if (effectivePermission === 'never') omitted?.(def.name, 'permission')
+        else admitted.push({ ...def, effectivePermission })
+      }
+      return admitted
     },
 
     async info(botId) {
@@ -136,6 +143,8 @@ export function createToolRegistry(deps: {
 
     async execute(name, input, ctx) {
       if (ctx.signal.aborted) return cancelled()
+      if (ctx.selectedResultAvailable && !ctx.selectedResultAvailable())
+        return errorResult('The selected project result is unavailable.')
       if (ctx.actionId) {
         try { input = snapshotInput(input) } catch { return errorResult('Action input must be serializable JSON.') }
       }
@@ -223,9 +232,11 @@ export function createToolRegistry(deps: {
         if (ctx.signal.aborted) return cancelled()
         // The approval card may have been open a while: check the grant again right before dispatch.
         if (isConnector && !(await granted())) return revoked()
+        if (ctx.selectedResultAvailable && !ctx.selectedResultAvailable())
+          return errorResult('The selected project result is unavailable.')
         return dispatch()
       }
-      if (ctx.actionId) return executeAction({ actions: deps.store.actions, ctx, def, input, finalize, authorize })
+      if (ctx.actionId && !def.requiresLiveRead) return executeAction({ actions: deps.store.actions, ctx, def, input, finalize, authorize })
       try { return finalize(await authorize(() => def.execute(input, ctx))) }
       catch (err) { return finalize(errorResult(`${name} failed: ${err instanceof Error ? err.message : String(err)}`)) }
     }

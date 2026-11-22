@@ -6,14 +6,64 @@ import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { migrate, openDatabase, schemaVersion } from '../src/main/store/db'
+import { migrate, openDatabase, schemaVersion, transaction } from '../src/main/store/db'
 import { MIGRATIONS } from '../src/main/store/schema'
 
+import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
+import { SESSION_SCHEMA } from '../src/main/store/session-schema'
+import { PROJECT_IMPROVEMENTS_SCHEMA } from '../src/main/store/project-improvements-schema'
+import { ESCALATION_SCHEMA } from '../src/main/store/escalation-schema'
+
+import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
+
+import { workBriefSchema } from '../src/main/store/work-brief-schema'
+
+import { TURN_CONTEXT_SCHEMA } from '../src/main/store/turn-context-schema'
+import { DELEGATION_ATTEMPT_SCHEMA } from '../src/main/store/delegation-attempt-schema'
+import { ARTIFACT_SAVE_SCHEMA } from '../src/main/store/artifact-save-schema'
+
+const CONTEXT_VERSION = MIGRATIONS.indexOf(TURN_CONTEXT_SCHEMA) + 1
+const ATTEMPT_VERSION = MIGRATIONS.indexOf(DELEGATION_ATTEMPT_SCHEMA) + 1
+const SAVE_VERSION = MIGRATIONS.indexOf(ARTIFACT_SAVE_SCHEMA) + 1
+const BRIEF_VERSION = MIGRATIONS.indexOf(workBriefSchema) + 1
+const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
+const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
+const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
+const IMPROVEMENTS_VERSION = MIGRATIONS.indexOf(PROJECT_IMPROVEMENTS_SCHEMA) + 1
+const ESCALATION_VERSION = MIGRATIONS.indexOf(ESCALATION_SCHEMA) + 1
+const RESULT_REQUEST_VERSION = 19
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name: 'project_result_requests', since: RESULT_REQUEST_VERSION,
+    cols: ['id','session_id','answer_id','owner_id','conversation_id','entry_id','instruction','state','turn_id'], order: 'id' },
+  { name: 'turn_context_receipts', since: CONTEXT_VERSION, cols: ['turn_id','conversation_id','session_id','project_id','payload'], order: 'turn_id' },
+  { name: 'delegation_attempts', since: ATTEMPT_VERSION, cols: ['assignment_id','original_lease','late_text','observed_at'], order: 'assignment_id' },
+  { name: 'artifact_saves', since: SAVE_VERSION, cols: ['run_id','project_id','artifact_id','pinned_root','provenance','state','sha256','revision_id'], order: 'run_id' },
+  { name: 'chief_work', since: BRIEF_VERSION, cols: ['id','conversation_id','user_entry_id','objective','revision','state'], order: 'id' },
+  { name: 'chief_decisions', since: BRIEF_VERSION, cols: ['work_id','revision','decision','note','pending_reply'], order: 'work_id,revision' },
+  { name: 'chief_wakes', since: BRIEF_VERSION, cols: ['work_id','revision','state','entry_id'], order: 'work_id,revision' },
+  { name: 'chief_work_turns', since: BRIEF_VERSION, cols: ['turn_id','work_id','work_revision'], order: 'turn_id' },
+  { name: 'specialist_escalations', since: ESCALATION_VERSION, cols: ['id','signature','source_chat','specialist_id','chief_chat','chief_id','work_id','scope','pins','question','excerpts','destination_entry','created_at','work_revision'], order: 'id' },
+  { name: 'session_hosts', since: SESSION_VERSION, cols: ['host_key','host_id'], order: 'host_id' },
+  { name: 'session_environments', since: SESSION_VERSION, cols: ['host_id','root_key','environment_id'], order: 'environment_id' },
+  { name: 'project_sessions', since: SESSION_VERSION, cols: ['id','project_id','host_id','environment_id','owner_id','label','mode','parent_id','engine','sources','created_at'], order: 'id' },
+  { name: 'project_answers', since: SESSION_VERSION, cols: ['id','session_id','query','payload','created_at'], order: 'id' },
+  { name: 'project_history_selection', since: SESSION_VERSION, cols: ['session_id','answer_id'], order: 'session_id,answer_id' },
+  { name: 'improvement_candidates', since: IMPROVEMENTS_VERSION, cols: ['id','project_id','version','instruction','required_text','matched','heldout','base','decision','created_at','reviewed_at'], order: 'id' },
+  { name: 'improvement_runs', since: IMPROVEMENTS_VERSION, cols: ['run_id','candidate_id','lane','baseline_id','observed','reason','sha256','created_at'], order: 'run_id' },
+  { name: 'improvement_history', since: IMPROVEMENTS_VERSION, cols: ['seq','project_id','before_id','after_id','action','created_at'], order: 'seq' },
+  { name: 'project_spaces', since: CONTENT_VERSION, cols: ['id', 'project_id', 'name'], order: 'id' },
+  { name: 'library_items', since: CONTENT_VERSION, cols: ['id', 'owner_id'], order: 'id' },
+  { name: 'library_revisions', since: CONTENT_VERSION, cols: ['item_id', 'revision', 'source_id'], order: 'item_id,revision' },
+  { name: 'library_access', since: CONTENT_VERSION, cols: ['project_id', 'item_id', 'selected', 'revoked'], order: 'project_id,item_id' },
+  { name: 'project_context', since: CONTENT_VERSION, cols: ['run_id', 'space_id', 'rubric', 'sources', 'baseline_run_id'], order: 'run_id' },
+  { name: 'space_pages', since: CONTENT_VERSION, cols: ['id', 'run_id', 'revision_id', 'review_id', 'created_at'], order: 'id' },
+  { name: 'project_run_turns', since: CONTENT_VERSION, cols: ['run_id', 'turn_id', 'phase'], order: 'run_id,turn_id' },
+  { name: 'project_evaluations', since: CONTENT_VERSION, cols: ['run_id', 'observed', 'reason', 'revision_id', 'reviewer', 'turns', 'created_at'], order: 'run_id' },
+  { name: 'evaluation_trials', since: CONTENT_VERSION, cols: ['id', 'run_id', 'candidate_id', 'outcome', 'reason', 'created_at', 'integrity', 'contract'], order: 'id' },
   { name: 'settings', since: 1, cols: ['id', 'data'], order: 'id' },
   { name: 'bots', since: 1, cols: ['id', 'name', 'handle', 'avatar', 'model', 'tool_permissions', 'created_at', 'updated_at'], order: 'id' },
   { name: 'conversations', since: 1, cols: ['id', 'kind', 'title', 'bot_ids', 'last_entry_at', 'created_at', 'updated_at'], order: 'id' },
@@ -34,7 +84,9 @@ const TABLES: { name: string; since: number; cols: string[]; order: string }[] =
   { name: 'artifacts', since: 6, cols: ['id', 'project_id', 'name', 'created_at', 'updated_at'], order: 'id' },
   { name: 'artifact_revisions', since: 6, cols: ['id', 'artifact_id', 'revision_no', 'sha256', 'provenance', 'created_at'], order: 'id' },
   { name: 'review_decisions', since: 6, cols: ['id', 'artifact_revision_id', 'rubric', 'reviewer', 'decision', 'explanation', 'created_at'], order: 'id' },
-  { name: 'journey_runs', since: 7, cols: ['id', 'project_id', 'artifact_id', 'status', 'budgets', 'started_at', 'ended_at'], order: 'id' }
+  { name: 'journey_runs', since: 7, cols: ['id', 'project_id', 'artifact_id', 'status', 'budgets', 'started_at', 'ended_at'], order: 'id' },
+  { name: 'delegations', since: 8, cols: ['id', 'caller_id', 'child_id', 'input_hash', 'parent_entry_id', 'question_id', 'state', 'lease', 'engine', 'system_hash', 'receipt', 'delivered_at', 'created_at', 'updated_at'], order: 'id' },
+  { name: 'assignment_admissions', since: BUDGET_VERSION, cols: ['assignment_id', 'root_turn_id', 'root_conversation_id', 'parent_assignment_id', 'created_at'], order: 'assignment_id' }
 ]
 
 /** Insert synthetic rows into every table that exists at schema version v (ids are tagged by v). */
@@ -83,6 +135,53 @@ function seed(db: DatabaseSync, v: number): void {
     run(`insert into journey_runs (id, project_id, artifact_id, status, budgets, started_at, ended_at) values (?, ?, ?, 'complete', '{}', 1, 2)`,
       `jr-${t}`, `proj-${t}`, `art-${t}`)
   }
+  if (v >= 8) {
+    run(`insert into delegations (id, caller_id, child_id, input_hash, parent_entry_id, question_id,
+      state, engine, system_hash, receipt, delivered_at, created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, 'answered', 'native', ?, '{"text":"synthetic reply"}', 3, 1, 2)`,
+      `work-${t}`, `bot-${t}`, 'bot-v1', 'c'.repeat(64), `entry-${t}`, 'entry-v1', 'd'.repeat(64))
+  }
+  if (v >= ESCALATION_VERSION) {
+    run("insert into specialist_escalations values (?,'signature',?,?,?, ?,null,null,'[]','question','[]',?,1,null)", `handoff-${t}`, `conv-${t}`, `bot-${t}`, `conv-${t}`, `bot-${t}`, `entry-${t}`)
+  }
+  if (v >= SESSION_VERSION) {
+    run('insert into session_hosts values (?,?)', `key-${t}`, `host-${t}`)
+    run('insert into session_environments values (?,?,?)', `host-${t}`, `root-${t}`, `env-${t}`)
+    run("insert into project_sessions values (?,?,?,?,?,'Example','fresh',null,'local','[]',1)", `sess-${t}`, `proj-${t}`, `host-${t}`, `env-${t}`, `bot-${t}`)
+    run("insert into project_answers values (?,?,'question','{}',2)", `answer-${t}`, `sess-${t}`)
+    run('insert into project_history_selection values (?,?)', `sess-${t}`, `answer-${t}`)
+  }
+  if (v >= RESULT_REQUEST_VERSION) {
+    run("insert into project_result_requests(id,session_id,answer_id,owner_id,conversation_id,entry_id,instruction,state) values (?,?,?,?,?,?,?,'queued')",
+      `result-${t}`, `sess-${t}`, `answer-${t}`, `bot-${t}`, `conv-${t}`, `entry-${t}`, 'Summarize the selected evidence')
+  }
+  if (v >= CONTENT_VERSION) {
+    // The project insert already created its Space. Seed every other content row explicitly.
+    run('insert into library_items values (?,?)', `src-${t}`, `proj-${t}`)
+    run('insert into library_revisions values (?,1,?)', `src-${t}`, `src-${t}`)
+    run('insert into library_access values (?,?,1,0)', `proj-${t}`, `src-${t}`)
+    run("insert into project_context values (?,?,?,'[]',null)", `jr-${t}`, `proj-${t}`, `rubric ${t}`)
+    run("insert into project_run_turns values (?,?,'draft')", `jr-${t}`, `turn-${t}`)
+    run('insert into space_pages values (?,?,?,?,1)', `page-${t}`, `jr-${t}`, `rev-${t}`, `dec-${t}`)
+    run("insert into project_evaluations values (?,'complete','accepted',?,'user',1,2)", `jr-${t}`, `rev-${t}`)
+    run("insert into evaluation_trials values (?,?,?,'passed','accepted',3,'verified','accepted')", v, `jr-${t}`, `jr-${t}`)
+  }
+  if (v >= CONTEXT_VERSION) run("insert into turn_context_receipts values (?,?,null,null,?)",`turn-${t}`,`conv-${t}`,JSON.stringify({engine:'local-search'}))
+  if (v >= ATTEMPT_VERSION) run("insert into delegation_attempts values(?,?,'fixture observation',4)",`work-${t}`,'synthetic-closed-lease')
+  if (v >= SAVE_VERSION) run("insert into artifact_saves values (?,?,?,'synthetic','{}','linked',?,null,?)",`jr-${t}`,`proj-${t}`,`art-${t}`,'b'.repeat(64),`rev-${t}`)
+  if (v >= BRIEF_VERSION) {
+    run("insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at) values (?,?,?,'brief','draft','review','active',3,1)", `brief-${t}`,`conv-${t}`,`entry-${t}`)
+    run("insert into chief_decisions values (?,2,'answer','two copies',1,1)", `brief-${t}`)
+    run("insert into chief_wakes values (?,2,'finished',?)",`brief-${t}`,`entry-${t}`)
+    run("insert into chief_work_turns values (?,?,1)",`turn-${t}`,`brief-${t}`)
+  }
+  if (v >= BUDGET_VERSION) run(`insert into assignment_admissions values (?, ?, ?, ?, 1)`, `work-${t}`, `root-${t}`, `conv-${t}`, 'work-v8')
+  if (v >= IMPROVEMENTS_VERSION) {
+    run("insert into journey_runs(id,project_id,status,started_at) values(?,?,'complete',1)", `held-${t}`,`proj-${t}`)
+    run("insert into improvement_candidates values(?,?,1,'Use this heading','Next step',?,?,null,'approved',1,2)",`candidate-${t}`,`proj-${t}`,`jr-${t}`,`held-${t}`)
+    run("insert into improvement_runs values(?,?,'matched',?,'passed','Checked','sha',3)",`jr-${t}`,`candidate-${t}`,`held-${t}`)
+    run("insert into improvement_history values(?,?,null,?,'publish',4)",v,`proj-${t}`,`candidate-${t}`)
+  }
 }
 
 interface Snapshot { counts: Record<string, number>; hash: string }
@@ -115,7 +214,7 @@ function build(path: string, version: number): DatabaseSync {
   db.exec('pragma foreign_keys = on')
   for (let v = 1; v <= version; v++) {
     migrate(db, MIGRATIONS.slice(0, v))
-    seed(db, v)
+    transaction(db, () => seed(db, v))
   }
   return db
 }

@@ -3,8 +3,9 @@
 // work as for any tool (create_bot asks first by default).
 
 import { z } from 'zod'
-import type { Bot, Conversation, Id } from '@shared/domain'
-import type { EventBus, Store, ToolContext } from '../contracts'
+import type { Bot, Conversation, Id, ModelRoute } from '@shared/domain'
+import { billingRoute, kindInfo, resolveModelId } from '@shared/provider-catalog'
+import type { EventBus, SkillService, Store, ToolContext, ToolRegistry } from '../contracts'
 import { defineTool, errorResult, textResult, type PlatformToolDefinition } from '../tools/define'
 import { buildHandleIndex } from './mentions'
 
@@ -13,6 +14,7 @@ export interface CollabRuntime {
   /** Post `message` from ctx.bot to `target` in their exchange and wait for the reply. Throws CollabError. */
   askBot(ctx: ToolContext, target: Bot, message: string): Promise<{ reply: string; exchange: Conversation }>
   /** Mark the turn as passed. A bot that was addressed may not pass. */
+  jobHistory(bot: Bot, conversationId: Id): { running: number; remaining: number | null; medianMs: number | null; accepted: number }
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer'
 }
 
@@ -50,8 +52,45 @@ export function findBot(bots: Bot[], query: string): Bot | undefined {
 const directoryLine = (b: Bot) =>
   `- @${b.handle}: ${b.name}${b.label ? `, ${b.label}` : ''}${b.isPrimary ? ' (primary bot)' : ''}${b.description ? `. ${b.description}` : ''}`
 
-export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; runtime: CollabRuntime }): PlatformToolDefinition[] {
+const jobRequirements = {
+  requiredSkills: z.array(z.string().trim().min(1).max(120)).max(16).optional().describe('Exact skill names this assignment requires'),
+  requiredTools: z.array(z.string().trim().min(1).max(128)).max(16).optional().describe('Tool names the specialist must be allowed to use')
+}
+
+export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 'settings' | 'conversations'>; skills: SkillService; tools: Pick<ToolRegistry, 'forTurn'>; bus: EventBus; runtime: CollabRuntime }): PlatformToolDefinition[] {
   const others = (self: Id) => deps.store.bots.list().filter((b) => b.id !== self && !b.hidden)
+  const configuredModel = (route: ModelRoute | null) => {
+    if (!route) return undefined
+    const provider = deps.store.providers.get(route.providerId)
+    if (!provider?.enabled || (kindInfo(provider.kind).needsApiKey && !provider.hasApiKey)) return undefined
+    const modelId = resolveModelId(provider, route.modelId)
+    return modelId ? { route, billing: provider.kind === 'claude-code' ? 'check sign-in' : billingRoute(provider), label: `${modelId} via ${provider.label}` } : undefined
+  }
+  const newBotModel = (creator: Bot) =>
+    configuredModel(deps.store.settings.get().defaultModel) ?? configuredModel(creator.model)
+
+  async function missingCapabilities(caller: Bot, bot: Bot, requirements: { requiredTools?: string[] | undefined; requiredSkills?: string[] | undefined }): Promise<string[]> {
+    const missing: string[] = []
+    if (!configuredModel(bot.model)) missing.push('model needs setup')
+    if (requirements.requiredSkills?.length) {
+      const available = new Set(deps.skills.list(bot.id).map((skill) => skill.name))
+      for (const skill of requirements.requiredSkills) if (!available.has(skill)) missing.push(`skill ${skill} unavailable`)
+    }
+    if (requirements.requiredTools?.length) {
+      // Check the tool set that the specialist would actually see in the exchange.
+      // Previewing a role for the directory must not open a new conversation.
+      const exchange = deps.store.conversations.findExchange(caller.id, bot.id) ?? {
+        id: '', kind: 'exchange', title: '', botIds: [caller.id, bot.id], notes: '',
+        lastEntryAt: 0, unreadCount: 0, createdAt: 0, updatedAt: 0
+      } satisfies Conversation
+      const available = await deps.tools.forTurn({ bot, conversation: exchange, inGroup: false })
+      for (const name of requirements.requiredTools) {
+        const allowed = available.some((tool) => tool.name === name)
+        if (!allowed) missing.push(`tool ${name} unavailable`)
+      }
+    }
+    return missing
+  }
 
   const sendToAgent = defineTool({
     name: 'send_to_agent',
@@ -61,7 +100,10 @@ export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; r
       'the other bot does not see this conversation. It answers with its own memory, skills and tools.',
     schema: z.object({
       to: z.string().min(1).describe('The bot to ask: its @handle or name'),
-      message: z.string().min(1).describe('What you need from it, with all the context it needs')
+      message: z.string().min(1).describe('The job and the context needed to perform it'),
+      reason: z.string().trim().min(1).max(500).optional().describe('Brief reason this bot fits this job'),
+      deliverable: z.string().trim().min(1).max(1000).optional().describe('Expected output and how it will be checked'),
+      ...jobRequirements
     }),
     source: 'faibots',
     defaultPermission: 'always',
@@ -78,7 +120,11 @@ export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; r
         }
       }
       try {
-        const { reply, exchange } = await deps.runtime.askBot(ctx, target, input.message)
+        if (deps.runtime.jobHistory(target, ctx.conversation.id).remaining === 0) throw new CollabRefusal(`@${target.handle} reached its daily limit for automatic runs.`)
+        const missing = await missingCapabilities(ctx.bot, target, input)
+        if (missing.length) throw new CollabRefusal(`Cannot assign this job to @${target.handle}: ${missing.join(', ')}.`)
+        const brief = input.deliverable ? `${input.message}\n\nExpected result: ${input.deliverable}` : input.message
+        const { reply, exchange } = await deps.runtime.askBot(ctx, target, brief)
         return textResult(`${target.name} (@${target.handle}) replied:\n\n${reply}`, {
           title: `Messaged ${target.name}`,
           exchangeConversationId: exchange.id
@@ -104,15 +150,29 @@ export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; r
   const listBots = defineTool({
     name: 'list_bots',
     description: "List the user's other bots (handle, name, role, what each is for), to decide who to ask with send_to_agent.",
-    schema: z.object({}),
+    schema: z.object(jobRequirements),
     source: 'faibots',
     defaultPermission: 'always',
     activityLabel: 'Looking up the other bots',
     summarize: () => 'List the other bots',
-    async execute(_input, ctx) {
+    async execute(input, ctx) {
       const bots = others(ctx.bot.id)
       if (bots.length === 0) return textResult('There are no other bots yet. You can propose one with create_bot.')
-      return textResult(bots.map(directoryLine).join('\n'))
+      const rows = await Promise.all(bots.map(async (bot) => {
+        const model = configuredModel(bot.model)
+        const history = deps.runtime.jobHistory(bot,ctx.conversation.id)
+        const skills = deps.skills.list(bot.id).map((skill) => skill.name)
+        const missing = input.requiredSkills?.length || input.requiredTools?.length ? await missingCapabilities(ctx.bot, bot, input) : []
+        return [directoryLine(bot), model ? `Model configured: ${model.label}` : 'Model needs setup',
+          `Running assignments: ${history.running}`,
+          ...(model ? [`Billing configuration: ${model.billing}`] : []),
+          ...(history.remaining !== null ? [`Automatic runs left today: ${history.remaining}`] : []),
+          ...(history.medianMs !== null ? [`Recent median reply in this chat: ${Math.ceil(history.medianMs/1000)}s`] : []),
+          ...(history.accepted ? [`Owner-accepted jobs involving this bot in this chat: ${history.accepted}`] : []),
+          ...(skills.length ? [`Skills: ${skills.join(', ')}`] : []),
+          ...(missing.length ? [`Cannot take this job: ${missing.join(', ')}`] : [])].join(' | ')
+      }))
+      return textResult(rows.join('\n'))
     }
   })
 
@@ -131,18 +191,26 @@ export function collabTools(deps: { store: Pick<Store, 'bots'>; bus: EventBus; r
     source: 'faibots',
     defaultPermission: 'ask',
     activityLabel: 'Creating a new bot',
-    summarize: (input) =>
-      `Create a new bot "${input.name}"${input.label ? ` (${input.label})` : ''}${input.description ? `: ${input.description}` : ''}`,
-    async execute(input) {
+    summarize: (input, ctx) => {
+      const model = newBotModel(ctx.bot)
+      return `Create a new bot "${input.name}"${input.label ? ` (${input.label})` : ''}${input.description ? `: ${input.description}` : ''}. ` +
+        (model ? `Model: ${model.label}.` : 'Model setup required.')
+    },
+    async execute(input, ctx) {
+      const existing = deps.store.bots.list().find((bot) => bot.name.trim().toLowerCase() === input.name.trim().toLowerCase())
+      if (existing) return textResult(`A bot named ${existing.name} already exists (@${existing.handle}). Check its role before assigning. No bot was created.`)
+      const configured = newBotModel(ctx.bot)
       const bot = deps.store.bots.create({
         name: input.name,
         ...(input.label !== undefined && { label: input.label }),
         ...(input.description !== undefined && { description: input.description }),
         ...(input.soul !== undefined && { soul: input.soul }),
+        model: configured?.route ?? { providerId: '', modelId: '' },
+        mcpServerIds: [],
         isPrimary: false
       })
       deps.bus.emit('bots:changed', { bots: deps.store.bots.list() })
-      const model = bot.model.providerId ? '' : ' It has no model yet: the user needs to pick one in its Profile before it can answer.'
+      const model = configured ? ` Model configured: ${configured.label}.` : ' Its model needs setup in its profile before it can answer.'
       return textResult(`Created ${bot.name} (@${bot.handle}).${model}`)
     }
   })

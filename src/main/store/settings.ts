@@ -3,13 +3,13 @@ import type { AppSettings } from '@shared/domain'
 import type { SettingsRepo } from '../contracts'
 import { parseJson, type Db } from './db'
 
-export function defaultSettings(homeDir: string, userName = ''): AppSettings {
+export function defaultSettings(homeDir: string, userName = '', workspaceRoot = join(homeDir, 'FaiBots', 'workspaces')): AppSettings {
   return {
     theme: 'system',
     botColorInChat: false,
     defaultModel: null,
     toolPermissions: {},
-    workspaceRoot: join(homeDir, 'FaiBots', 'workspaces'),
+    workspaceRoot,
     notifications: { enabled: true, sound: true },
     compactAt: 0.7,
     userName,

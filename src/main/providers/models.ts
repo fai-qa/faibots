@@ -134,7 +134,7 @@ export function claudeCodeModelList(models: Array<{ value: string; displayName: 
   return out
 }
 
-/** Codex has no model list API: "default" uses the model in the user's Codex config. */
+/** The CLI default remains available even when its signed-in catalog cannot be listed. */
 export const CODEX_MODELS: ModelInfo[] = [
   { id: DEFAULT_MODEL_ALIAS, label: 'Default (from your Codex settings)', supportsTools: true }
 ]

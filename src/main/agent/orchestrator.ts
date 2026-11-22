@@ -18,7 +18,7 @@
 // agent, routine) and its tokens. Automatic turns (agent, routine) first check the bot's daily run
 // limit, so a routine or a chatty bot cannot spend a whole allowance unattended.
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
   DEFAULT_GROUP_SETTINGS,
@@ -34,32 +34,43 @@ import {
   type ManifestLiteSource,
   type TurnTrigger
 } from '@shared/domain'
+import { MAX_ASKS_PER_CHAIN } from '@shared/work-brief'
 import type { SendMessageRequest } from '@shared/ipc'
 import type { AutomatedRunResult, Runtime, Services, ToolContext, ToolDefinition, ToolResult } from '../contracts'
 import type { EngineKind } from '../providers/catalog'
 import type { RuntimeProviders } from '../providers/provider-service'
 import type { ToolCallRequest } from '../providers/types'
+import type { PlatformStore } from '../store'
+import { backgroundAnchor, createDelegationRepo, type AssignmentRoot, type DelegationLease } from '../store/delegations'
 import { errorResult } from '../tools/define'
+import { MAX_RESULT_CHARS, truncateText } from '../tools/registry'
 import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
+import { attachmentContext, projectSelections, safeModelId, saveTurnContext } from '../store/turn-context'
+import { startOfLocalDay } from '../store/turns'
+import { MAIN_BOT_NAME } from '../store/bots'
+import { workBriefs } from '../store/work-briefs'
+import { BackgroundAssignments } from './delegation-tools'
+import { projectReplyOrigin, projectResultForEntry, projectResultOrigin, queueProjectReply } from '../store/project-result-requests'
 import { IncompleteTurnError, type TurnEngine } from './engine'
 import { speakerName } from './history'
 import { LiveStates } from './live-state'
-import { parseMentions } from './mentions'
+import { resolveMentionHints } from './mentions'
 import { buildSystemPrompt, turnNote } from './prompt'
 import { SerialQueues } from './queue'
 import { routeMessage } from './router'
-import { TurnRecorder, toolStatus, resultPreview } from './turn-recorder'
+import { TurnRecorder, toolStatus, resultPreview, SELECTED_RESULT_ERROR, SELECTED_RESULT_WITHHELD } from './turn-recorder'
 
 export const MAX_CHAIN_DEPTH = 3
 /** send_to_agent calls one turn may make. */
 export const MAX_ASKS_PER_TURN = 5
 /** send_to_agent calls one chain may make in total, across every level of asking. */
-export const MAX_ASKS_PER_CHAIN = 12
+export { MAX_ASKS_PER_CHAIN }
 export const EXCHANGE_TIMEOUT_MS = 10 * 60_000
 const SHUTDOWN_WAIT_MS = 4_000
 
-export type RuntimeDeps = Omit<Services, 'providers' | 'runtime' | 'routines' | 'webhooks' | 'missions'> & { providers: RuntimeProviders }
+export type RuntimeDeps = Omit<Services, 'providers' | 'runtime' | 'routines' | 'webhooks' | 'missions' | 'store'> &
+  { providers: RuntimeProviders; store: PlatformStore }
 
 export interface RuntimeOptions {
   engines: Record<EngineKind, TurnEngine>
@@ -68,10 +79,13 @@ export interface RuntimeOptions {
 }
 
 export interface TurnOutcome {
+  turnId?: Id
   /** 'limited': an automatic turn was refused by the bot's daily run limit. */
   status: 'sent' | 'pass' | 'error' | 'cancelled' | 'skipped' | 'limited'
   posts: Entry[]
   error?: string
+  needsReconciliation?: boolean
+  lateReply?: string
 }
 
 interface TurnRequest {
@@ -82,12 +96,16 @@ interface TurnRequest {
   inGroup: boolean
   chain: Id[]
   /** Selected sources for this turn (manifest-lite, FJ-09); only mission runs set it. */
+  projectRun?: { projectId: Id; runId: Id }
   manifestLite?: { sources: ManifestLiteSource[] }
+  readProjectNote?: ToolContext['readProjectNote']
   /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
   parentSignal?: AbortSignal
   cascade?: Cascade
-  /** Shared by a turn and every exchange it starts, however deep (bounds bot-to-bot fan-out). */
-  askBudget?: { left: number }
+  root?: AssignmentRoot
+  userRequest?: { id: Id; seq: number }
+  wake?: { id: string; revision: number; entryId: string }
+  assignment?: { lease: DelegationLease; questionId: Id; questionSeq: number; origin: NonNullable<Conversation['origin']> }
 }
 
 interface ActiveTurn {
@@ -97,10 +115,12 @@ interface ActiveTurn {
   recorder: TurnRecorder
   mustAnswer: boolean
   passed: boolean
+  abort: AbortController
   waiting: number
   beforeWaiting?: { phase: BotPhase; activity?: string }
   asks: number
-  askBudget: { left: number }
+  projectRun?: TurnRequest['projectRun']
+  root: AssignmentRoot
   unresolvedActions: Set<string>
 }
 
@@ -163,8 +183,11 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly runs = new Map<Id, ConversationRun>()
   private readonly active = new Map<Id, ActiveTurn>()
   private readonly background = new Set<Promise<unknown>>()
-  /** Outcome of the latest turn that really ran, per conversation and bot (in memory only). */
-  private readonly lastRealOutcome = new Map<string, { status: TurnOutcome['status']; error?: string }>()
+  private readonly delegations: ReturnType<typeof createDelegationRepo>
+  private readonly briefs: ReturnType<typeof workBriefs>
+  private readonly scheduledWakes = new Set<string>()
+  private readonly scheduledResults = new Set<string>()
+  readonly assignments: BackgroundAssignments
   private readonly unsubscribe: () => void
   private readonly exchangeTimeoutMs: number
   private readonly now: () => Date
@@ -177,7 +200,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.live = new LiveStates(deps.bus)
     this.exchangeTimeoutMs = options.exchangeTimeoutMs ?? EXCHANGE_TIMEOUT_MS
     this.now = options.now ?? (() => new Date())
+    this.briefs = workBriefs(deps.store.db)
+    this.delegations = createDelegationRepo(deps.store.db, deps.store.entries)
+    this.assignments = new BackgroundAssignments(this.delegations, deps.tools, deps.store, (entry) => this.emitEntry(entry))
+    this.delegations.recover()
     this.recoverInterruptedTurns()
+    for (const item of this.briefs.interrupted()) this.systemEvent(item.chat, `The app closed while fai was reviewing brief ${item.id}. Its returns are saved. Ask fai to continue reviewing them.`)
+    queueMicrotask(() => this.wakeBriefs())
+    queueMicrotask(() => this.recoverProjectResults())
     this.unsubscribe = deps.approvals.subscribe((event) => {
       const turn = this.active.get(event.ctx.turnId)
       if (event.state === 'pending') this.emitConversationAndRoot(event.ctx.conversation.id)
@@ -204,38 +234,67 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (conversation.kind === 'exchange') throw new Error('Conversations between bots are read-only.')
     if (req.clientNonce) {
       const existing = store.entries.findByNonce(conversation.id, req.clientNonce)
-      if (existing) return existing
+      if (existing) {
+        if (existing.meta?.selectedResultEntryId && (existing.replyToId !== req.replyToId || existing.text !== req.text.trim()))
+          throw new Error('This message ID already belongs to a different selected-result reply.')
+        if (req.clientNonce.startsWith('project-result-') || existing.replyToId) this.dispatchProjectResult(existing)
+        return existing
+      }
     }
     const text = req.text.trim()
-    const attachments = req.attachmentPaths.length > 0 ? this.deps.attachments.ingest(req.attachmentPaths) : []
-    if (!text && attachments.length === 0) throw new Error('Type a message or attach a file.')
+    if (!text && req.attachmentPaths.length === 0) throw new Error('Type a message or attach a file.')
 
-    const parsed = parseMentions(text, this.membersOf(conversation))
-    const mentions = unique([...req.mentions.filter((id) => conversation.botIds.includes(id)), ...parsed.ids])
-    const entry = store.entries.append({
-      conversationId: conversation.id,
-      kind: 'message',
-      author: { kind: 'user' },
-      text,
-      mentions,
-      mentionsEveryone: req.mentionsEveryone || parsed.everyone,
-      ...(req.replyToId && { replyToId: req.replyToId }),
-      attachments,
-      isStreaming: false,
-      ...(req.clientNonce && { clientNonce: req.clientNonce })
-    })
+    const mentions = resolveMentionHints(text, this.membersOf(conversation), req.mentions, req.mentionsEveryone)
+    const replyOrigin = conversation.kind === 'dm' && req.replyToId && projectReplyOrigin(store, conversation.id, req.replyToId)
+    const append = () => {
+      const attachments = req.attachmentPaths.length ? this.deps.attachments.ingest(req.attachmentPaths) : []
+      if (!text && !attachments.length) throw new Error('Type a message or attach a file.')
+      return store.entries.append({
+        conversationId: conversation.id,
+        kind: 'message',
+        author: { kind: 'user' },
+        text,
+        mentions: mentions.ids,
+        mentionsEveryone: mentions.everyone,
+        ...(req.replyToId && { replyToId: req.replyToId }),
+        ...(replyOrigin && { meta: { selectedResultEntryId: replyOrigin } }),
+        attachments,
+        isStreaming: false,
+        ...(req.clientNonce && { clientNonce: req.clientNonce })
+      })
+    }
+    if (replyOrigin) {
+      const reply = queueProjectReply(store, this.deps, conversation.id, replyOrigin, append)
+      this.dispatchProjectResult(reply)
+      return reply
+    }
+    const entry = append()
     this.emitEntry(entry)
 
     if (conversation.kind === 'dm') {
       const botId = conversation.botIds[0]
-      if (botId) this.track(this.scheduleTurn(conversation.id, botId, { trigger: 'user', mustAnswer: true, inGroup: false, chain: [] }))
+      if (botId) {
+        const recipient = store.bots.get(botId)
+        const personalWork = recipient?.isPrimary && recipient.name === MAIN_BOT_NAME
+        this.track(this.scheduleTurn(conversation.id, botId, { trigger: 'user', mustAnswer: true, inGroup: false,
+          chain: [], ...(personalWork && { userRequest: { id: entry.id, seq: entry.seq } }) }))
+      }
     } else {
       this.track(this.runCascade(conversation.id, entry))
     }
     return entry
   }
 
+  cancelBrief(workId: Id): void {
+    for (const task of this.briefs.assignments(workId)) this.assignments.abort(task.id)
+    for (const turn of this.active.values()) {
+      const work = this.briefs.rootForTurn(turn.root.turnId) ?? this.briefs.rootForTurn(turn.turnId)
+      if (work?.id === workId) turn.abort.abort()
+    }
+  }
+
   stop(conversationId: Id): void {
+    this.assignments.stopChat(conversationId)
     const run = this.runs.get(conversationId)
     if (!run) return
     for (const cascade of run.cascades) cascade.stopped = true
@@ -247,10 +306,19 @@ export class Orchestrator implements Runtime, CollabRuntime {
   reset(conversationId: Id): void {
     const { store, bus } = this.deps
     this.stop(conversationId)
+    store.db.prepare('delete from turn_context_receipts where conversation_id=?').run(conversationId)
     store.entries.clear(conversationId)
     store.botContext.clearConversation(conversationId)
     const conversation = store.conversations.get(conversationId)
     if (conversation) bus.emit('conv:changed', { conversation })
+  }
+
+  streamingText(conversationId: Id, entryId: Id): string | undefined {
+    for (const turn of this.active.values()) {
+      if (turn.conversationId !== conversationId) continue
+      const text = turn.recorder.streamingText(entryId)
+      if (text !== undefined) return text
+    }
   }
 
   liveStates() {
@@ -289,7 +357,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     return conversation
   }
 
-  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
+  async runAutomated(input: { botId: Id; text: string; trigger: EntryTrigger; signal?: AbortSignal; readProjectNote?: ToolContext['readProjectNote']; projectRun?: { projectId: Id; runId: Id }; manifestLite?: { sources: ManifestLiteSource[] } }): Promise<AutomatedRunResult> {
     if (this.closed) throw new Error('faibots is shutting down.')
     const { store } = this.deps
     const text = input.text.trim()
@@ -314,7 +382,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
       mustAnswer: true,
       inGroup: false,
       chain: [],
+      ...(input.projectRun && { projectRun: input.projectRun }),
       ...(input.manifestLite && { manifestLite: input.manifestLite }),
+      readProjectNote: input.readProjectNote,
       ...(input.signal && { parentSignal: input.signal })
     })
     // Include coalesced text as context only. A skipped turn has no verified execution outcome;
@@ -331,7 +401,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       conversationId: conversation.id,
       entryId: entry.id,
       reply,
-      ...(outcome.error && { error: outcome.error })
+      ...(outcome.error && { error: outcome.error }),
+      ...(outcome.turnId && { turnId: outcome.turnId })
     }
   }
 
@@ -353,6 +424,22 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // -------------------------------------------------------------------------------------------
   // Collab tools
   // -------------------------------------------------------------------------------------------
+
+  jobHistory(bot: Bot, conversationId: Id) {
+    const { db, turns } = this.deps.store
+    const running = db.prepare("select count(*) as n from delegations where child_id=? and state='assigned'").get(bot.id)
+    const recent = db.prepare(`select d.updated_at-d.created_at as elapsed from delegations d join entries p on p.id=d.parent_entry_id
+      where d.child_id=? and p.conversation_id=? and d.state='answered' order by d.updated_at desc limit 20`).all(bot.id,conversationId)
+    const times = recent.map(row => Number(row.elapsed)).sort((a,b)=>a-b)
+    const middle = Math.floor(times.length/2)
+    const medianMs = times.length ? (times.length % 2 ? times[middle]! : (times[middle-1]!+times[middle]!)/2) : null
+    const used = bot.dailyRunLimit > 0 ? turns.automaticRunsSince(bot.id,startOfLocalDay(this.now().getTime())) : 0
+    const accepted = db.prepare(`select count(distinct w.id) as n from chief_work w join chief_work_turns t on t.work_id=w.id
+      join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
+      where w.conversation_id=? and w.state='accepted' and w.partial=0 and d.child_id=? and d.state='answered'`).get(conversationId,bot.id)
+    return { running: Number(running?.n ?? 0), remaining: bot.dailyRunLimit > 0 ? Math.max(0,bot.dailyRunLimit-used) : null,
+      medianMs, accepted: Number(accepted?.n ?? 0) }
+  }
 
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer' {
     const turn = this.active.get(turnId)
@@ -384,52 +471,80 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (asking.asks >= MAX_ASKS_PER_TURN) {
         throw new CollabRefusal(`You already asked other bots ${MAX_ASKS_PER_TURN} times in this turn. Answer with what you have.`)
       }
-      if (asking.askBudget.left <= 0) {
-        throw new CollabRefusal(`Bots already asked each other ${MAX_ASKS_PER_CHAIN} times for this request. Answer with what you have.`)
-      }
-      asking.asks++
-      asking.askBudget.left--
     }
-    const card = asking?.recorder.findToolEntry(ctx.callId, ['send_to_agent'])
-    const origin = { conversationId: ctx.conversation.id, entryId: card?.id ?? '', fromBotId: from.id }
-    const found = store.conversations.findExchange(from.id, target.id)
-    // The latest request decides where the exchange's approval cards surface.
-    const exchange = found
-      ? store.conversations.update(found.id, { origin })
-      : store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
+    // Bridge call IDs are independent of the engine's card IDs. Never bind a durable return
+    // to an unrelated running card merely because it was the last one shown for this tool.
+    const candidate = asking?.recorder.findToolEntry(ctx.callId, ['send_to_agent'])
+    const card = candidate?.toolCall?.callId === ctx.callId ? candidate : undefined
+    const id = ctx.actionId ?? nativeActionId(ctx)
+    const detached = this.assignments.isDetached(id)
+    const inherited = asking?.root ?? { turnId: ctx.turnId, conversationId: ctx.conversation.id }
+    const work = this.briefs.rootForTurn(inherited.turnId) ?? this.briefs.rootForTurn(ctx.turnId)
+    if (this.briefs.superseded(ctx.turnId)) throw new CollabRefusal('The owner updated this job. Wait for its new instruction before assigning further work.')
+    if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
+    const assignmentLimit = work?.assignmentLimit ?? MAX_ASKS_PER_CHAIN
+    const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
+    const inputHash = createHash('sha256').update(message.trim()).digest('hex')
+    const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
+      if (!this.delegations.reserve(id, root, assignmentLimit)) {
+        const reason = work
+          ? `The specialist assignment limit for this job is ${assignmentLimit}. The budget is used or this assignment was already admitted.`
+          : `Bots already asked each other ${assignmentLimit} times for this request, or this assignment was already admitted.`
+        throw new CollabRefusal(reason + ' Answer with what you have.')
+      }
+      if (detached && this.delegations.list(from.id, ctx.conversation.id, true).length >= MAX_ASKS_PER_TURN) {
+        throw new CollabRefusal(`This chat already has ${MAX_ASKS_PER_TURN} background assignments running.`)
+      }
+      const parent = card ?? store.entries.append({
+        conversationId: ctx.conversation.id, kind: 'event', author: { kind: 'system' },
+        text: detached ? `Assigned ${target.name} background work (${id}).` : `Messaging ${target.name}`,
+        ...(detached && { clientNonce: backgroundAnchor(id) }), mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
+      })
+      if (detached && (parent.kind !== 'event' || parent.author.kind !== 'system')) throw new CollabRefusal('The assignment anchor is already in use.')
+      const origin = { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id }
+      const found = store.conversations.findExchange(from.id, target.id)
+      const exchange = found ??
+        store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
+      const question = store.entries.append({
+        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id }, meta: { turnId: ctx.turnId },
+        text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
+      })
+      return { parent, question }
+    })
+    if (assignment.existing) {
+      const work = assignment.existing
+      if (work.state === 'answered' && work.receipt) {
+        return { reply: work.receipt.text, exchange: store.conversations.get(work.exchangeId)! }
+      }
+      throw new CollabError(work.receipt?.text ?? 'The delegated task is already running.', work.receipt?.partial, work.exchangeId)
+    }
+    const { lease, parent, question } = assignment
+    if (asking) asking.asks++
+    const exchange = store.conversations.get(question.conversationId)!
     bus.emit('conv:changed', { conversation: exchange })
     if (card) asking?.recorder.annotateTool(card.id, { title: `Messaging ${target.name}`, exchangeConversationId: exchange.id })
-
-    const entry = store.entries.append({
-      conversationId: exchange.id,
-      kind: 'message',
-      author: { kind: 'bot', botId: from.id },
-      text: message.trim(),
-      mentions: [target.id],
-      mentionsEveryone: false,
-      attachments: [],
-      isStreaming: false
-    })
-    this.emitEntry(entry)
+    else this.emitEntry(parent)
+    this.emitEntry(question)
+    this.assignments.admitted(lease, exchange.id)
 
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), this.exchangeTimeoutMs)
+    let failure: 'failed' | 'reconciliation_required' = 'reconciliation_required'
+    let reply: string
+    let lateReply: string | undefined
     try {
       const outcome = await this.scheduleTurn(exchange.id, target.id, {
         trigger: 'agent',
         mustAnswer: true,
         inGroup: false,
+        ...(asking?.projectRun && { projectRun: asking.projectRun }),
+        assignment: { lease, questionId: question.id, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
-        ...(asking && { askBudget: asking.askBudget })
+        root: { ...root, parentAssignmentId: id }
       })
-      // Normally the turn's own posts. If an earlier queued turn of the same bot already
-      // answered this message (two bots asked it at once), use what it wrote after the question.
-      const posts =
-        outcome.posts.length > 0
-          ? outcome.posts
-          : store.entries.since(exchange.id, entry.seq).filter((e) => e.kind === 'message' && isOwn(e, target.id))
-      const reply = posts.map((p) => p.text).join('\n\n').trim()
+      lateReply = outcome.lateReply
+      reply = truncateText(this.deps.secrets.redact(outcome.posts.map((p) => p.text).join('\n\n').trim()), MAX_RESULT_CHARS)
       const partial = reply || undefined
       if (ctx.signal.aborted) throw new CollabError('Cancelled.', partial, exchange.id)
       if (timeout.signal.aborted) {
@@ -437,22 +552,39 @@ export class Orchestrator implements Runtime, CollabRuntime {
         const limit = ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.max(1, Math.round(ms / 1000))} seconds`
         throw new CollabError(`${target.name} did not answer within ${limit}.`, partial, exchange.id)
       }
-      // Text never decides success: an errored, cancelled or limited turn is unfinished even if it wrote.
-      // A skipped turn borrowed another turn's posts, so it is only as successful as that turn was.
-      const judged =
-        outcome.status === 'skipped' && outcome.posts.length === 0
-          ? this.lastRealOutcome.get(`${exchange.id}\u0000${target.id}`) ?? outcome
-          : outcome
-      const failed = Boolean(judged.error) || judged.status === 'error' || judged.status === 'cancelled' || judged.status === 'limited'
+      if (outcome.status !== 'cancelled' && !outcome.needsReconciliation) failure = 'failed'
+      const failed = Boolean(outcome.error) || outcome.status === 'error' || outcome.status === 'cancelled' || outcome.status === 'limited'
       if (failed) {
-        const reason = judged.error ?? `its turn ended as ${judged.status}`
+        const reason = outcome.error ?? `its turn ended as ${outcome.status}`
         throw new CollabError(`${target.name} could not answer: ${reason}`, partial, exchange.id)
       }
       if (!reply) throw new CollabError(`${target.name} did not reply.`, undefined, exchange.id)
-      return { reply, exchange }
+    } catch (error) {
+      const text = this.deps.secrets.redact(error instanceof Error ? error.message : String(error))
+      const partial = error instanceof CollabError && error.partial ? this.deps.secrets.redact(error.partial) : undefined
+      const work = this.delegations.get(id)
+      if (work?.state === 'reconciliation_required') {
+        if (lateReply) this.delegations.retainLate(lease, lateReply)
+        throw new CollabError(work.receipt?.text ?? text, partial, exchange.id)
+      }
+      const resultEntry = this.delegations.finish(lease, failure, { text, ...(partial && { partial }) })
+      if (lateReply) this.delegations.retainLate(lease, lateReply)
+      if (resultEntry) this.emitEntry(resultEntry)
+      this.wakeBriefs()
+      if (!card) this.emitEntry(store.entries.get(parent.id)!)
+      throw error
     } finally {
       clearTimeout(timer)
     }
+    if (this.delegations.get(id)?.state === 'reconciliation_required') {
+      this.delegations.retainLate(lease, reply)
+      throw new CollabError('The delegation was already closed. Its late reply remains a separate observation.', undefined, exchange.id)
+    }
+    const resultEntry = this.delegations.finish(lease, 'answered', { text: reply, responder: this.deps.secrets.redact(`${target.name} (@${target.handle})`) })
+    if (resultEntry) this.emitEntry(resultEntry)
+    this.wakeBriefs()
+    if (!card) this.emitEntry(store.entries.get(parent.id)!)
+    return { reply, exchange }
   }
 
   // -------------------------------------------------------------------------------------------
@@ -575,6 +707,51 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // Turns
   // -------------------------------------------------------------------------------------------
 
+  private wakeBriefs(): void {
+    if (this.closed) return
+    for (const wake of this.briefs.ready(this.deps.store.entries)) {
+      if (this.scheduledWakes.has(wake.entryId)) continue
+      const chat = this.deps.store.conversations.get(wake.chat)
+      const bot = chat?.kind === 'dm' && this.deps.store.bots.get(chat.botIds[0]!)
+      if (!bot || !bot.isPrimary) continue
+      const entry = this.deps.store.entries.get(wake.entryId)
+      if (!entry) continue
+      this.scheduledWakes.add(wake.entryId)
+      this.emitEntry(entry)
+      this.deps.bus.emit('work:changed', { conversationId: wake.chat })
+      this.track(this.scheduleTurn(wake.chat,bot.id,{trigger:'agent',mustAnswer:true,inGroup:false,chain:[],wake}).then(outcome => {
+        this.briefs.finishWake(wake.id,wake.revision,outcome.status === 'sent' || outcome.status === 'pass')
+      }).finally(() => this.scheduledWakes.delete(wake.entryId)))
+    }
+  }
+
+  private recoverProjectResults(): void {
+    if (this.closed) return
+    const { store } = this.deps
+    for (const row of store.db.prepare("select * from project_result_requests where state='started'").all()) {
+      const finished = store.db.prepare('select 1 from turns where id=?').get(row.turn_id!)
+      store.db.prepare('update project_result_requests set state=? where id=?').run(finished ? 'finished':'interrupted',row.id!)
+      if (!finished) this.systemEvent(String(row.conversation_id), 'The app closed while fai was answering a selected project result. Review any existing reply. You can ask again from the project.')
+    }
+    for (const row of store.db.prepare("select entry_id from project_result_requests where state='queued' order by rowid").all()) {
+      const entry = store.entries.get(String(row.entry_id))
+      if (entry) this.dispatchProjectResult(entry)
+    }
+  }
+
+  private dispatchProjectResult(entry: Entry): void {
+    const { store } = this.deps
+    if (this.closed || this.scheduledResults.has(entry.id)) return
+    const row = store.db.prepare("select owner_id from project_result_requests where entry_id=? and conversation_id=? and state='queued'").get(entry.id,entry.conversationId)
+    if (!row) return
+    this.scheduledResults.add(entry.id)
+    this.emitEntry(entry)
+    this.track(this.scheduleTurn(entry.conversationId, String(row.owner_id), {trigger:'user',mustAnswer:true,inGroup:false,chain:[],
+      userRequest:{id:entry.id,seq:entry.seq}}).then(() => {
+      if (!this.closed) store.db.prepare("update project_result_requests set state='finished' where entry_id=? and state in ('queued','started')").run(entry.id)
+    }).finally(() => this.scheduledResults.delete(entry.id)))
+  }
+
   private scheduleTurn(conversationId: Id, botId: Id, req: TurnRequest): Promise<TurnOutcome> {
     // Captured now, so a Stop also cancels turns still waiting in the queue.
     const stopSignal = this.runFor(conversationId).stop.signal
@@ -586,15 +763,22 @@ export class Orchestrator implements Runtime, CollabRuntime {
 
   private async runTurn(conversationId: Id, botId: Id, req: TurnRequest, stopSignal: AbortSignal): Promise<TurnOutcome> {
     const { store, bus, providers, tools, secrets } = this.deps
-    const conversation = store.conversations.get(conversationId)
+    const conversation = req.assignment ? store.conversations.update(conversationId, { origin: req.assignment.origin }) : store.conversations.get(conversationId)
     const bot = store.bots.get(botId)
     if (!conversation || !bot || !conversation.botIds.includes(botId)) return { status: 'skipped', posts: [] }
 
     const context = store.botContext.get(conversationId, botId)
-    const unseen = store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.kind === 'message' && !isOwn(e, botId))
+    // An assignment can only consume its own question. A second one may already be queued in this exchange.
+    const wakeEntry = req.wake ? store.entries.get(req.wake.entryId) : undefined
+    const triggerEntry = wakeEntry ?? (req.userRequest && store.entries.get(req.userRequest.id))
+    const resultOrigin = triggerEntry && projectResultOrigin(store,conversationId,triggerEntry,req.wake)
+    const selectedResultTrigger = resultOrigin ? triggerEntry : undefined
+    if (selectedResultTrigger && selectedResultTrigger.id !== resultOrigin)
+      store.entries.update(selectedResultTrigger.id,{meta:{...selectedResultTrigger.meta,selectedResultEntryId:resultOrigin}})
+    const upToSeq = req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+    const unseen = selectedResultTrigger ? [selectedResultTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
-    const upToSeq = store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
 
     let route: ReturnType<RuntimeProviders['resolve']> | undefined
     let routeError: string | undefined
@@ -608,38 +792,64 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const signal = AbortSignal.any([stopSignal, abort.signal, ...(req.parentSignal ? [req.parentSignal] : [])])
     const members = this.membersOf(conversation)
     const turnId = randomUUID()
-    const recorder = new TurnRecorder(
+    if (selectedResultTrigger?.id === resultOrigin && resultOrigin) {
+      const claimed = store.db.prepare("update project_result_requests set state='started',turn_id=? where entry_id=? and state='queued'").run(turnId,resultOrigin)
+      if (!claimed.changes) return {status:'skipped',posts:[]}
+    }
+    if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
+    let resultWithdrawn = false
+    const selectedResultAvailable: (() => boolean) | undefined = resultOrigin ? () => {
+      if (resultWithdrawn) return false
+      if (projectResultForEntry(store, this.deps.dataDir, this.deps.attachments, conversationId, resultOrigin)?.status === 'available') return true
+      resultWithdrawn = true
+      recorder.withdrawSelectedResult()
+      return false
+    } : undefined
+    let lateBuffer = ''
+    const recorder: TurnRecorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
+        turnId,
         bot,
         conversation,
         members,
+        ...(req.userRequest && { replyToId: req.userRequest.id }),
+        ...(req.assignment && { replyToId: req.assignment.questionId }),
+        ...(wakeEntry && { replyToId: wakeEntry.id }),
         signal,
-        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId } }),
+        selectedResultAvailable,
+        ...(req.assignment && { onLateText: (delta: string) => {
+          if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
+        } }),
+        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId, ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) } }),
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
       }
     )
     const active: ActiveTurn = {
-      turnId, bot, conversationId, recorder, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
-      asks: 0, askBudget: req.askBudget ?? { left: MAX_ASKS_PER_CHAIN }, unresolvedActions: new Set()
+      turnId, bot, conversationId, recorder, abort, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
+      ...(req.projectRun && { projectRun: req.projectRun }),
+      asks: 0, root: req.root ?? { turnId, conversationId }, unresolvedActions: new Set()
     }
 
     if (!route) {
       // In an open group round a bot without a model just sits out; asked directly, it says why.
       // Its messages stay unseen, so it catches up once it has a model.
-      if (req.mustAnswer) recorder.event(`${bot.name} could not answer: ${routeError}`)
+      if (req.mustAnswer) {
+        recorder.event(`${bot.name} could not answer: ${routeError}`)
+        if (selectedResultAvailable) recorder.finish(false, true)
+      }
       return { status: req.mustAnswer ? 'error' : 'skipped', posts: [], ...(routeError && { error: routeError }) }
     }
     if (signal.aborted) return { status: 'cancelled', posts: [] }
     const startedAt = this.now().getTime()
     if ((req.trigger === 'agent' || req.trigger === 'routine') &&
-      !store.turns.reserveAutomatic({ id: turnId, botId, startedAt })) {
+      !store.turns.reserveAutomatic({ id: turnId, botId, startedAt, rootTurnId: req.root?.turnId ?? turnId })) {
       const limit = store.bots.get(botId)?.dailyRunLimit ?? bot.dailyRunLimit
       const limited = `${bot.name} reached its daily limit of ${limit} automatic run${limit === 1 ? '' : 's'}. Raise it in ${bot.name}'s Profile, or wait until tomorrow.`
       if (req.trigger === 'routine') this.systemEvent(conversationId, limited)
       return { status: 'limited', posts: [], error: limited }
     }
-    store.botContext.set({ ...context, lastSeenSeq: upToSeq })
+    store.botContext.set({ ...context, lastSeenSeq: Math.max(context.lastSeenSeq,upToSeq) })
 
     this.active.set(turnId, active)
     recorder.phase('reading')
@@ -648,10 +858,16 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const engine = this.options.engines[route.engine]
       const settings = store.settings.get()
       const workspaceDir = join(settings.workspaceRoot, bot.handle)
-      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup })
+      const excluded: Record<'scope' | 'permission', string[]> = { scope: [], permission: [] }
+      const projectResultTrigger = selectedResultTrigger && {entryId:selectedResultTrigger.id, ...(req.wake && {wake:req.wake})}
+      const turnTools = await tools.forTurn({ bot, conversation, inGroup: req.inGroup, projectResultTrigger }, (name, reason) => excluded[reason].push(name))
       const mcpTools = new Map<string, { serverId: Id; remoteName: string }>()
       for (const t of turnTools) if (t.serverId && t.remoteName) mcpTools.set(t.name, { serverId: t.serverId, remoteName: t.remoteName })
+      const userEntry = [...unseen].reverse().find((entry) => entry.author.kind === 'user')
       const toolContext: Omit<ToolContext, 'callId'> = {
+        ...(userEntry && { userEntryId: userEntry.id }),
+        projectResultTrigger,
+        selectedResultAvailable,
         bot,
         conversation,
         turnId,
@@ -659,7 +875,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
         chain: req.chain,
         inGroup: req.inGroup,
         workspaceDir,
-        mcpTools
+        readProjectNote: req.readProjectNote,
+        mcpTools,
+        admittedTools: new Set(turnTools.map((tool) => tool.name))
       }
       const others = members.filter((b) => b.id !== bot.id)
       const lastAsker = [...unseen].reverse().find((e) => e.author.kind === 'bot')
@@ -680,7 +898,19 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.manifestLite && { manifestLite: req.manifestLite })
       })
       const userName = settings.userName
+      if (req.assignment) {
+        const systemHash = createHash('sha256').update(JSON.stringify([system.stable, system.volatile])).digest('hex')
+        this.delegations.pin(req.assignment.lease, route.engine, systemHash)
+      }
       const labels = new Map(turnTools.map((t) => [t.name, t.activityLabel]))
+      // The app may have closed or waited in the queue after the owner clicked. Recheck before
+      // the configured provider sees even the new instruction, which can itself quote the source.
+      if (selectedResultTrigger && resultOrigin &&
+        (projectResultOrigin(store, conversationId, selectedResultTrigger, req.wake) !== resultOrigin ||
+          !selectedResultAvailable?.())) {
+        recorder.event(SELECTED_RESULT_WITHHELD)
+        return { status: 'skipped', posts: [] }
+      }
       await engine.run({
         turnId,
         bot,
@@ -688,10 +918,35 @@ export class Orchestrator implements Runtime, CollabRuntime {
         route,
         system,
         tools: turnTools,
+        disclose: (admitted, entries, omissions) => {
+          if (signal.aborted) return
+          const catalog = new Map(turnTools.map((tool) => [tool.name, tool]))
+          const sources = attachmentContext(entries, this.deps)
+          if (req.projectRun && req.manifestLite) sources.push(...projectSelections(store, req.projectRun.projectId, req.projectRun.runId))
+          saveTurnContext(store, {
+            id: turnId, botId, createdAt: startedAt, scopeId: conversationId, route: conversation.kind,
+            engine: route.engine, providerId: route.provider.id, modelId: safeModelId(route.modelId, (v) => secrets.redact(v)),
+            ...(req.projectRun && { projectId: req.projectRun.projectId }),
+            sources, omissions: [...omissions,
+              ...(selectedResultTrigger ? ['Only the selected project result is available through read_project_result. It is checked at each tool call. Earlier chat messages and prior project summaries are excluded.'] : []),
+              ...(req.projectRun && !req.manifestLite ? ['No project file access was passed to this turn.'] : []),
+              ...(excluded.permission.length ? [`Turned off by permission: ${excluded.permission.join(', ')}.`] : []),
+              ...(excluded.scope.length ? [`Outside this bot or chat scope: ${excluded.scope.join(', ')}.`] : [])],
+            tools: admitted.map((tool) => {
+              const def = catalog.get(tool.name)!
+              return { ...tool, permission: def.effectivePermission ?? def.defaultPermission,
+                ...(def.autoAllowedInWorkspace && { workspaceException: true }) }
+            })
+          })
+        },
         toolContext,
-        context,
+        context: selectedResultTrigger ? {botId,conversationId,lastSeenSeq:0,summarizedUpToSeq:0,summary:''} : context,
+        selectedResultTrigger,
         upToSeq,
-        turnNote: turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
+        turnNote: [turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
+          ...(req.wake ? [`Resume the specialist returns for work ${req.wake.id}. Check this work and its assignment receipts before submitting a result.`] : []),
+          ...(selectedResultTrigger ? ['Use read_project_result for the owner’s selected evidence and instruction. If access is withheld, explain that. Cite the actual source revision and line.'] : [])
+        ].filter(Boolean).join('\n'),
         recorder,
         signal,
         nameOf: (author) => speakerName(author, (id) => store.bots.get(id), userName),
@@ -700,29 +955,32 @@ export class Orchestrator implements Runtime, CollabRuntime {
         runTool: (call) => this.runTool(recorder, toolContext, turnTools, call),
         // After a stop or reset, an engine's late state (an old session id) must not come back.
         saveContext: (patch) => {
-          if (!signal.aborted) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
+          if (!signal.aborted && !selectedResultTrigger) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
         }
       })
       if (active.unresolvedActions.size > 0 && !signal.aborted) throw new Error('A tool action remains unresolved or its outcome is unknown. Reconcile it before accepting this run.')
     } catch (err) {
       if (!signal.aborted) {
-        error = secrets.redact(err instanceof Error ? err.message : String(err))
+        error = selectedResultAvailable ? SELECTED_RESULT_ERROR : secrets.redact(err instanceof Error ? err.message : String(err))
         if (!(err instanceof IncompleteTurnError)) recorder.event(`${bot.name} could not answer: ${error}`)
       }
     } finally {
       this.active.delete(turnId)
-      recorder.finish(signal.aborted)
+      error = recorder.finish(signal.aborted, !!error) ?? error
       this.live.idle(bot.id, conversationId)
     }
 
+    this.wakeBriefs()
     const posts = recorder.posts
     const outcome: TurnOutcome = error
       ? { status: 'error', posts, error }
       : signal.aborted
         ? { status: 'cancelled', posts }
         : { status: posts.length > 0 ? 'sent' : 'pass', posts }
+    if (active.unresolvedActions.size) outcome.needsReconciliation = true
     store.turns.record({
       id: turnId,
+      rootTurnId: req.root?.turnId ?? turnId,
       botId,
       conversationId,
       conversationKind: conversation.kind,
@@ -730,13 +988,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
       status: outcome.status === 'error' || outcome.status === 'cancelled' || outcome.status === 'sent' ? outcome.status : 'pass',
       providerId: route.provider.id,
       modelId: route.modelId,
+      ...(route.engine === 'codex' && { codexUsageState: 'unknown' as const }),
       ...recorder.usageTotals,
       startedAt,
       endedAt: Date.now(),
       ...(error && { error })
     })
-    this.lastRealOutcome.set(`${conversationId}\u0000${botId}`, { status: outcome.status, ...(outcome.error && { error: outcome.error }) })
-    return outcome
+    return { ...outcome, turnId, ...(lateBuffer && { lateReply: secrets.redact(lateBuffer).slice(0, 4000) }) }
   }
 
   private async runTool(
@@ -758,6 +1016,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
       result = await this.deps.tools.execute(call.name, call.input, { ...ctx, actionId })
     }
     recorder.toolEnd(call.id, result, toolContext.signal.aborted)
+    if (call.name === 'send_to_agent' && !result.recovery) {
+      const card = recorder.findToolEntry(call.id, ['send_to_agent'])
+      if (card?.toolCall?.actionId === actionId && card.toolCall.status !== 'running') this.delegations.acknowledge(actionId, card.id)
+    }
     const active = this.active.get(toolContext.turnId)
     if (result.recovery) active?.unresolvedActions.add(result.recovery.actionId)
     else if (!result.isError) active?.unresolvedActions.delete(actionId)
