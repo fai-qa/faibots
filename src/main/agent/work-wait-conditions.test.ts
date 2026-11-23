@@ -70,6 +70,8 @@ it('observes only a new webhook on the selected owner-configured routine',()=>{
   for(const id of [own.id,other.id]) store.routines.setWebhookTokenHash(id,'fixture')
   const run=(r:typeof own,trigger:'webhook'|'manual')=>store.routines.startRun({routineId:r.id,botId:r.botId,trigger,status:'running',startedAt:Date.now(),summary:'private payload'})
   run(own,'webhook')
+  expect(()=>wait({kind:'webhook',routineId:own.id})).toThrow(/listener/)
+  store.settings.update({webhooks:{...store.settings.get().webhooks,enabled:true}})
   expect(()=>wait({kind:'webhook',routineId:other.id})).toThrow(/belonging to this bot/)
   wait({kind:'webhook',routineId:own.id})
   run(other,'webhook')

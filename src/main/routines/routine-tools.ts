@@ -40,7 +40,8 @@ export function toSchedule(input: ScheduleInput): RoutineSchedule {
 
 function line(r: Routine): string {
   const next = r.enabled && r.nextRunAt ? `, next ${new Date(r.nextRunAt).toLocaleString()}` : r.enabled ? '' : ', paused'
-  return `- ${r.name} (id ${r.id}): ${describeSchedule(r.schedule)}${next}. Task: ${r.prompt.replace(/\s+/g, ' ').slice(0, 200)}`
+  const webhook = r.enabled && r.webhookEnabled && r.hasWebhookToken ? ', webhook configured' : ''
+  return `- ${r.name} (id ${r.id}): ${describeSchedule(r.schedule)}${next}${webhook}. Task: ${r.prompt.replace(/\s+/g, ' ').slice(0, 200)}`
 }
 
 export function routineTools(routines: Pick<RoutineService, 'list' | 'save' | 'delete'>): PlatformToolDefinition[] {

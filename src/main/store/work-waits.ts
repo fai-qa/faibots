@@ -8,8 +8,9 @@ export function waitDueAt(wait: WorkWait): number | null {
 
 function ownsWebhook(db: Db, chat: string, routineId: string) {
   return db.prepare(`select r.id from routines r join conversations c on c.id=? and c.kind='dm'
-    and json_extract(c.bot_ids,'$[0]')=r.bot_id where r.id=? and r.created_by='user'
-    and r.enabled=1 and r.webhook_enabled=1 and r.webhook_token_hash is not null`).get(chat,routineId)
+    and json_extract(c.bot_ids,'$[0]')=r.bot_id where r.id=?
+    and r.enabled=1 and r.webhook_enabled=1 and r.webhook_token_hash is not null
+    and exists(select 1 from settings where id=1 and json_extract(data,'$.webhooks.enabled')=1)`).get(chat,routineId)
 }
 
 export function invalidWait(db: Db, chat: string, wait: WorkWait, jobs: Row[], now: number) {
@@ -17,7 +18,7 @@ export function invalidWait(db: Db, chat: string, wait: WorkWait, jobs: Row[], n
   if (due !== null && (!Number.isFinite(due) || due <= now)) return 'Choose a future time including the time zone.'
   if (wait.kind === 'time') return
   if (wait.kind === 'webhook') {
-    if (!ownsWebhook(db,chat,wait.routineId)) return 'Choose an enabled owner-configured webhook routine belonging to this bot.'
+    if (!ownsWebhook(db,chat,wait.routineId)) return 'Choose an enabled webhook routine belonging to this bot and enable the webhook listener in Settings.'
     return
   }
   if (!jobs.length) return 'This brief has no admitted specialist assignments.'
