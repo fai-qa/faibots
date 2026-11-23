@@ -7,6 +7,7 @@ import { chiefForHandoff, getHandoffCheckpoint } from './escalations'
 import type { PlatformStore } from './index'
 import { MAX_PROJECT_NAME } from './projects'
 import { readProjectResult } from './project-result-requests'
+import type { PageCheck, PageEvidence } from './page-evidence'
 import { workBriefs } from './work-briefs'
 
 type Authority = Pick<Services, 'dataDir' | 'attachments'>
@@ -41,7 +42,7 @@ function describe(row: Row): AcceptedWorkPage {
   }
 }
 
-export function acceptedWorkPages(store: PlatformStore, authority: Authority) {
+export function acceptedWorkPages(store: PlatformStore, authority: Authority, pageCheck?: PageCheck) {
   function inputRefs(chat: string, workId: string, originalId: string, evidenceIds: string[]): Inputs {
     const results = new Set<string>()
     const handoffs = new Set(getHandoffCheckpoint(store, chat, { workId }, authority).map((h) => h.id))
@@ -71,11 +72,18 @@ export function acceptedWorkPages(store: PlatformStore, authority: Authority) {
   function verify(chat: string, inputs: Inputs) {
     const projects = new Set<string>()
     const sources = new Map<string, Source>()
+    const attachments = new Map<string, PageEvidence['attachments'][number]>()
+    const parentPages = new Map<string, PageEvidence['parentPages'][number]>()
     for (const entryId of inputs.results) {
-      const result = readProjectResult(store, authority, chat, entryId)
+      const result = readProjectResult(store, authority, chat, entryId, pageCheck)
       if (!result) throw unavailable()
       projects.add(result.projectId)
-      for (const { source } of result.citations) {
+      if (result.page) {
+        const { id,name,revisionId,sha256 } = result.page
+        parentPages.set(id,{ id,name,revisionId,sha256 })
+        for (const file of result.page.attachments) attachments.set(JSON.stringify(file),file)
+      }
+      for (const source of [...result.citations.map(c => c.source), ...(result.page?.sources ?? [])]) {
         const stored = store.projectSources.get(source.sourceId)
         if (!stored) throw unavailable()
         sources.set(source.sourceId, { ...source, attachmentId: stored.attachmentId })
@@ -101,10 +109,12 @@ export function acceptedWorkPages(store: PlatformStore, authority: Authority) {
         digest(authority.attachments.read(file, file.sizeBytes)) !== ref.sha256
       )
         throw unavailable()
+      const evidence = { name:file.name, sha256:ref.sha256 }
+      attachments.set(JSON.stringify(evidence),evidence)
     }
     if (projects.size > 1)
       throw new Error('This work contains evidence from different projects and cannot be saved to one Space.')
-    return { projectId: [...projects][0], sources: [...sources.values()] }
+    return { projectId:[...projects][0], sources:[...sources.values()], attachments:[...attachments.values()], parentPages:[...parentPages.values()] }
   }
 
   function authorized(req: WorkPageRequest) {
@@ -131,6 +141,8 @@ export function acceptedWorkPages(store: PlatformStore, authority: Authority) {
     if (digest(body) !== row.sha256) throw new Error('The saved result no longer matches its revision.')
     return {
       body,
+      attachments:scope.attachments,
+      parentPages:scope.parentPages,
       sources: scope.sources.map(({ name, sha256, revision }) => ({
         name: name + ' · revision ' + revision,
         sha256

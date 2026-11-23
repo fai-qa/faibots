@@ -17,6 +17,7 @@ import { createAttachmentStore } from '../attachments/attachments'
 import { pdfFixture } from '../attachments/testing/pdf-fixture'
 import { createSnapshotService } from '../attachments/snapshots'
 import { projectContentHandlers } from '../ipc/project-content'
+import { readPageEvidence } from '../store/page-evidence'
 import { openStore } from '../store'
 import { artifactSaves } from './artifact-saves'
 import { improvementHandlers } from '../ipc/project-improvements'
@@ -657,6 +658,8 @@ describe('mission run (M1c)', () => {
     expect(page).toMatchObject({spaceId:content.space(projectId).id, runId:accepted.id,sha256:sha(DRAFT)})
     const handlers=projectContentHandlers({...h!.services,attachments:createAttachmentStore({dataDir:h!.services.dataDir})} as unknown as Services,store)
     expect(handlers['content:read-page']({projectId,pageId:page!.id}).body).toBe(DRAFT)
+    expect(readPageEvidence(store,{ dataDir:h!.services.dataDir,attachments:createAttachmentStore({dataDir:h!.services.dataDir}) },projectId,page!.id))
+      .toMatchObject({id:page!.id,revisionId:page!.revisionId,body:DRAFT,sha256:sha(DRAFT),sources:[{sha256:sha(NOTE_BODY),revision:1}]})
     expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.report).toMatchObject({status:'passed',candidateId:accepted.id})
     expect(handlers['content:evaluate']({projectId,runId:failed.id}).report).toMatchObject({status:'passed',candidateId:accepted.id})
     expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.status).toBe('failed')

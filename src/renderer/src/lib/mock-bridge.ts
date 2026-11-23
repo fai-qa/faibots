@@ -829,7 +829,7 @@ export function createMockBridge(): FaiBotsBridge {
     'content:work-destinations': desktopContent, 'content:save-work': desktopContent,
     'content:project': desktopContent, 'content:select': desktopContent, 'content:revoke': desktopContent, 'content:restore': desktopContent,
     'context:turns': desktopContent,
-    'session:project': desktopContent, 'session:open': desktopContent, 'session:lookup': desktopContent, 'session:history': desktopContent, 'session:ask-fai': desktopContent, 'session:instruction': desktopContent,
+    'session:project': desktopContent, 'session:open': desktopContent, 'session:lookup': desktopContent, 'session:history': desktopContent, 'session:ask-fai': desktopContent, 'session:ask-page': desktopContent, 'session:instruction': desktopContent,
     'handoff:options': desktopContent, 'handoff:send': desktopContent, 'handoff:resume': desktopContent, 'handoff:read': desktopContent,
     'content:read-source': desktopContent, 'content:share': desktopContent, 'content:revise': desktopContent, 'content:read-page': desktopContent, 'content:rerun': desktopContent, 'content:evaluate': desktopContent,
     'app:info': () => ({ name: 'faibots', version: '0.1.0', dataDir: DATA_DIR, platform: 'browser preview (sample data)' }),

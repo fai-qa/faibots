@@ -15,8 +15,12 @@ export function workScope(store: PlatformStore, authority: Pick<Services, 'dataD
   let withheld = result?.status === 'withheld'
   if (result?.status === 'available') {
     const project = store.projects.get(result.projectId)
-    const session = store.db.prepare('select label from project_sessions where project_id=? and id=?').get(result.projectId, result.sessionId)
+    const session = result.sessionId && store.db.prepare('select label from project_sessions where project_id=? and id=?').get(result.projectId, result.sessionId)
     if (project && session) inputs.add(project.name + ' / ' + String(session.label))
+    if (project && result.page) {
+      inputs.add(project.name + ' / ' + result.page.name + ' · Page revision ' + result.page.revision)
+      for (const source of result.page.sources) inputs.add(source.name + ' · revision ' + source.revision)
+    }
     for (const citation of result.evidence) {
       inputs.add(citation.name + ' · revision ' + citation.revision + ', line ' + citation.line)
     }

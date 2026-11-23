@@ -98,18 +98,20 @@ export function projectSessionHandlers(services: Pick<Services,'runtime'|'dataDi
     sessions().save(answer)
     return answer
   }
+  async function sendSelection(req: SessionInvoke['session:ask-fai']['req'] | SessionInvoke['session:ask-page']['req']) {
+    const chat = services.runtime.openDm(chiefForHandoff(store).id)
+    const entry = queueProjectResult(store,services,chat.id,req)
+    await services.runtime.send({ conversationId:chat.id,clientNonce:'project-result-'+req.requestId,text:entry.text,
+      mentions:[],mentionsEveryone:false,attachmentPaths:[] })
+    return { conversationId:chat.id,entryId:entry.id }
+  }
   return {
     'session:instruction': ({ conversationId, entryId }: SessionInvoke['session:instruction']['req']) => {
       try { return readProjectResult(store, services, conversationId, entryId)?.instruction ?? null }
       catch { return null }
     },
-    'session:ask-fai': async (req: SessionInvoke['session:ask-fai']['req']) => {
-      const chat = services.runtime.openDm(chiefForHandoff(store).id)
-      const entry = queueProjectResult(store, services, chat.id, req)
-      await services.runtime.send({conversationId:chat.id,clientNonce:'project-result-'+req.requestId,text:entry.text,
-        mentions:[],mentionsEveryone:false,attachmentPaths:[]})
-      return {conversationId:chat.id,entryId:entry.id}
-    },
+    'session:ask-fai': (req: SessionInvoke['session:ask-fai']['req']) => sendSelection(req),
+    'session:ask-page': (req: SessionInvoke['session:ask-page']['req']) => sendSelection(req),
     'session:project': ({ projectId }: { projectId: string }) => sessions().list(projectId),
     'session:open': (req: SessionInvoke['session:open']['req']) => sessions().open(req, verify),
     'session:history': (req: SessionInvoke['session:history']['req']) =>

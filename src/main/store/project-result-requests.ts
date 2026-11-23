@@ -1,24 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import type { Entry } from '@shared/domain'
-import type { SessionInvoke } from '@shared/project-sessions'
+import type { EvidenceCitation, ProjectAddress, ProjectAnswer, SessionInvoke } from '@shared/project-sessions'
 import { readSourceSnapshot } from '../attachments/project-reads'
 import type { AttachmentStore, Services } from '../contracts'
 import { str, transaction } from './db'
 import { chiefForHandoff } from './escalations'
 import type { PlatformStore } from './index'
 import { createProjectSessions } from './project-sessions'
+import { readPageEvidence, type PageCheck, type PageEvidence } from './page-evidence'
 
 type Request = SessionInvoke['session:ask-fai']['req']
+type PageRequest = SessionInvoke['session:ask-page']['req']
 type Authority = Pick<Services, 'dataDir' | 'attachments'>
 const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i
 const pointer = 'Use the project result I selected and reply here.'
 
-function checked(
-  store: PlatformStore,
-  authority: Authority,
-  req: Pick<Request, 'sessionId' | 'answerId' | 'projectId' | 'hostId' | 'environmentId'>,
-  chat: string
-) {
+function resultOwner(store: PlatformStore, chat: string) {
   const chief = chiefForHandoff(store)
   if (
     chief.hidden ||
@@ -27,6 +24,16 @@ function checked(
       store.settings.get().toolPermissions.read_project_result) === 'never'
   )
     throw new Error('The selected result is unavailable to fai in this chat.')
+  return chief.id
+}
+
+function checked(
+  store: PlatformStore,
+  authority: Authority,
+  req: Pick<Request, 'sessionId' | 'answerId' | 'projectId' | 'hostId' | 'environmentId'>,
+  chat: string
+) {
+  resultOwner(store, chat)
   const verified = new Set<string>()
   let remaining = 16 * 1024 * 1024
   const result = createProjectSessions(store, authority.dataDir).selectedAnswer(
@@ -53,12 +60,19 @@ function checked(
   return result
 }
 
+function checkedPage(store: PlatformStore, authority: Authority, ref: Pick<PageRequest,'projectId'|'pageId'|'revisionId'|'sha256'>, check?: PageCheck) {
+  const page = readPageEvidence(store,authority,ref.projectId,ref.pageId,check)
+  if (page.revisionId !== ref.revisionId || page.sha256 !== ref.sha256) throw new Error('The selected Page revision has changed.')
+  if (JSON.stringify(page).length > 80_000) throw new Error('The selected Page exceeds the chat context limit.')
+  return page
+}
+
 /** The source reference and owner-visible generic pointer are committed together. */
 export function queueProjectResult(
   store: PlatformStore,
   authority: Authority,
   chat: string,
-  req: Request
+  req: Request | PageRequest
 ): Entry {
   const instruction = typeof req.instruction === 'string' && req.instruction.trim()
   if (
@@ -69,12 +83,20 @@ export function queueProjectResult(
   )
     throw new Error('Enter an instruction up to 2,000 characters and a valid request ID.')
   return transaction(store.db, () => {
-    const answer = checked(store, authority, req, chat)
+    const ownerId = resultOwner(store,chat)
+    const page = 'pageId' in req ? checkedPage(store,authority,req) : undefined
+    const address = page && createProjectSessions(store,authority.dataDir).address(req.projectId)
+    const answer = 'pageId' in req ? undefined : checked(store,authority,req,chat)
+    const sessionId = 'pageId' in req ? null : req.sessionId
+    if (answer && answer.ownerId !== ownerId) throw new Error('The result owner changed.')
     const old = store.db.prepare('select * from project_result_requests where id=?').get(req.requestId)
     if (old) {
       if (
-        old.session_id !== req.sessionId ||
-        old.answer_id !== answer.id ||
+        old.session_id !== sessionId ||
+        old.answer_id !== (answer?.id ?? null) ||
+        old.page_id !== (page?.id ?? null) || old.page_revision_id !== (page?.revisionId ?? null) ||
+        old.page_sha256 !== (page?.sha256 ?? null) || old.project_id !== (page?.projectId ?? null) ||
+        old.host_id !== (address?.hostId ?? null) || old.environment_id !== (address?.environmentId ?? null) ||
         old.instruction !== instruction ||
         old.conversation_id !== chat
       )
@@ -99,10 +121,12 @@ export function queueProjectResult(
     })
     store.db
       .prepare(
-        `insert into project_result_requests(id,session_id,answer_id,owner_id,conversation_id,entry_id,instruction,state)
-      values(?,?,?,?,?,?,?,'queued')`
+        `insert into project_result_requests(id,session_id,answer_id,owner_id,conversation_id,entry_id,instruction,state,
+          page_id,page_revision_id,page_sha256,project_id,host_id,environment_id)
+      values(?,?,?,?,?,?,?,'queued',?,?,?,?,?,?)`
       )
-      .run(req.requestId, req.sessionId, answer.id, answer.ownerId, chat, entry.id, instruction)
+      .run(req.requestId, sessionId, answer?.id ?? null, ownerId, chat, entry.id, instruction,
+        page?.id ?? null,page?.revisionId ?? null,page?.sha256 ?? null,page?.projectId ?? null,address?.hostId ?? null,address?.environmentId ?? null)
     return entry
   })
 }
@@ -141,17 +165,15 @@ export function queueProjectReply(
     const entry = append()
     store.db
       .prepare(
-        `insert into project_result_requests(id,session_id,answer_id,owner_id,conversation_id,entry_id,instruction,state)
-      values(?,?,?,?,?,?,?,'queued')`
+        `insert into project_result_requests(id,session_id,answer_id,owner_id,conversation_id,entry_id,instruction,state,
+          page_id,page_revision_id,page_sha256,project_id,host_id,environment_id)
+        select ?,session_id,answer_id,owner_id,conversation_id,?,?,'queued',page_id,page_revision_id,page_sha256,project_id,host_id,environment_id
+        from project_result_requests where entry_id=? and conversation_id=?`
       )
       .run(
         randomUUID(),
-        row.session_id!,
-        row.answer_id!,
-        row.owner_id!,
-        chat,
         entry.id,
-        entry.text.trim() || 'Use my attached message with the selected project result.'
+        entry.text.trim() || 'Use my attached message with the selected project result.',origin,chat
       )
     return entry
   })
@@ -195,18 +217,31 @@ export function projectResultOrigin(
   }
 }
 
-export function readProjectResult(store: PlatformStore, authority: Authority, chat: string, entryId: string) {
+interface SelectedResult extends ProjectAddress {
+  requestId: string; conversationId: string; entryId: string; instruction: string
+  sessionId?: string; answerId?: string; page?: PageEvidence
+  query: string; status: ProjectAnswer['status']; citations: EvidenceCitation[]; conflicts: string[]; omissions: string[]
+}
+export function readProjectResult(store: PlatformStore, authority: Authority, chat: string, entryId: string, pageCheck?: PageCheck): SelectedResult | undefined {
   const row = store.db
     .prepare(
-      `select r.*,s.project_id,s.host_id,s.environment_id from project_result_requests r
-    join project_sessions s on s.id=r.session_id where r.conversation_id=? and r.entry_id=?`
+      `select r.*,s.project_id session_project,s.host_id session_host,s.environment_id session_environment from project_result_requests r
+    left join project_sessions s on s.id=r.session_id where r.conversation_id=? and r.entry_id=?`
     )
     .get(chat, entryId)
   if (!row) return
+  const common = { requestId:str(row.id), conversationId:chat, entryId, instruction:str(row.instruction) }
+  if (row.page_id) {
+    if (resultOwner(store,chat) !== row.owner_id) throw new Error('The result owner changed.')
+    const address = createProjectSessions(store,authority.dataDir).address(str(row.project_id))
+    if (address.hostId !== row.host_id || address.environmentId !== row.environment_id) throw new Error('The selected Page belongs to another environment.')
+    const page = checkedPage(store,authority,{projectId:address.projectId,pageId:str(row.page_id),revisionId:str(row.page_revision_id),sha256:str(row.page_sha256)},pageCheck)
+    return { ...common,...address,page,query:page.name,status:'found',citations:[],conflicts:[],omissions:[] }
+  }
   const scope = {
-    projectId: str(row.project_id),
-    hostId: str(row.host_id),
-    environmentId: str(row.environment_id),
+    projectId: str(row.session_project),
+    hostId: str(row.session_host),
+    environmentId: str(row.session_environment),
     sessionId: str(row.session_id),
     answerId: str(row.answer_id)
   }
@@ -215,10 +250,7 @@ export function readProjectResult(store: PlatformStore, authority: Authority, ch
   // A prior optional summary may contain other results; this read carries only this result's own citations.
   return {
     ...scope,
-    requestId: str(row.id),
-    conversationId: chat,
-    entryId,
-    instruction: str(row.instruction),
+    ...common,
     query: answer.query,
     status: answer.status,
     citations: answer.citations,
@@ -243,6 +275,7 @@ export function projectResultForEntry(
       projectId: result.projectId,
       sessionId: result.sessionId,
       answerId: result.answerId,
+      ...(result.page && { page: { name:result.page.name, revision:result.page.revision, sources:result.page.sources } }),
       conversationId,
       entryId: userEntryId,
       evidence: result.citations.map(({ source, line }) => ({ ...source, line }))

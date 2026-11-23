@@ -64,6 +64,10 @@ export interface ProjectSessionView {
 }
 
 export interface SessionInvoke {
+  'session:ask-page': {
+    req: { projectId: Id; pageId: Id; revisionId: Id; sha256: string; requestId: Id; instruction: string }
+    res: { conversationId: Id; entryId: Id }
+  }
   'session:instruction': { req: { conversationId: Id; entryId: Id }; res: string | null }
   'session:ask-fai': {
     req: ProjectAddress & { sessionId: Id; answerId: Id; requestId: Id; instruction: string }
@@ -89,4 +93,4 @@ export interface SessionInvoke {
   }
 }
 
-export const SESSION_CHANNELS = ['session:project', 'session:open', 'session:lookup', 'session:history', 'session:ask-fai', 'session:instruction'] as const
+export const SESSION_CHANNELS = ['session:project', 'session:open', 'session:lookup', 'session:history', 'session:ask-fai', 'session:ask-page', 'session:instruction'] as const

@@ -232,5 +232,5 @@ export function createProjectSessions(store: PlatformStore, dataDir: string) {
     if (!answer.citations.every(c => verified.has(keys([c.source])[0]!))) throw new Error('The citation is unverified.')
     return answer
   }
-  return { list, ready, sessionAt, open, save, historyAt, checkAnswer, selectedAnswer }
+  return { address, list, ready, sessionAt, open, save, historyAt, checkAnswer, selectedAnswer }
 }

@@ -7,6 +7,8 @@ import { createAttachmentStore } from '../attachments/attachments'
 import { createHarness, type Harness } from '../agent/testing/fakes'
 import { projectResultTool } from '../agent/project-result-tool'
 import { workBriefTools } from '../agent/work-brief-tools'
+import { readProjectResult } from '../store/project-result-requests'
+import { readPageEvidence } from '../store/page-evidence'
 import type { Services } from '../contracts'
 import type { WorkBrief } from '@shared/work-brief'
 
@@ -32,8 +34,9 @@ function boot() {
   )
 }
 type Ipc = ReturnType<typeof boot>
-function script(partial = false) {
+function script(partial = false, readPage = false) {
   h.engine.script('fai', async (api) => {
+    if (readPage) expect((await api.tool('read_project_result',{})).isError).toBeFalsy()
     const r = await api.tool('plan_work', {
       objective: 'Compare suppliers',
       deliverable: 'Supplier comparison',
@@ -185,6 +188,103 @@ it('refuses publication when source bytes changed before saving and leaves the a
   expect((await ipc['content:project']({ projectId: project.id })).pages).toEqual([])
   expect(h.services.store.artifacts.listByProject(project.id)).toEqual([])
   expect((await ipc['work:list']({ conversationId: req.conversationId }))[0]?.state).toBe('accepted')
+})
+
+it('asks fai about only the selected owner-accepted Page with no sources, then reopens its exact revision', async () => {
+  let ipc = boot()
+  const chat = h.runtime.openDm(h.bot('fai', { isPrimary:true }).id).id
+  const project = await ipc['projects:create']({ name:'Logistics' })
+  const other = await ipc['projects:create']({ name:'Private project' })
+  script(true)
+  await h.send(chat,'Prepare a supplier memo with unknowns.')
+  const saved = await ipc['content:save-work']({ ...await accept(ipc,chat), projectId:project.id })
+  const request = { projectId:project.id, pageId:saved.id, revisionId:saved.revisionId, sha256:saved.sha256,
+    requestId:randomUUID(), instruction:'Which supplier still owes a delivery date?' }
+  await expect(ipc['session:ask-page']({...request,projectId:other.id})).rejects.toThrow(/Page/)
+  await expect(ipc['session:ask-page']({...request,revisionId:randomUUID()})).rejects.toThrow(/revision/)
+  const unreferenced = join(root,'unrelated.md')
+  writeFileSync(unreferenced,'Unrelated private detail.')
+  await ipc['projects:attach-notes']({projectId:project.id,paths:[unreferenced]})
+  let reads = 0
+  h.engine.script('fai', async ({tool,say}) => {
+    const result = await tool('read_project_result',{})
+    expect(result.isError).toBeFalsy()
+    const data = JSON.parse(result.content.find(p=>p.type==='text')!.text)
+    expect(data.page).toMatchObject({id:saved.id,revisionId:saved.revisionId,sha256:saved.sha256,reviewer:'Owner',partial:true,body:memo,sources:[]})
+    expect(JSON.stringify(data)).not.toMatch(/unrelated|Private project/)
+    reads++
+    say('Supplier B still owes a delivery date.')
+  })
+  const [one,two] = await Promise.all([ipc['session:ask-page'](request),ipc['session:ask-page'](request)])
+  await h.runtime.idle()
+  expect(one).toEqual(two)
+  expect(reads).toBe(1)
+  expect(h.services.store.db.prepare('select count(*) n from project_sessions').get()?.n).toBe(0)
+  await h.runtime.shutdown()
+  h.cleanup()
+  ipc = boot()
+  expect(await ipc['session:instruction'](one)).toBe(request.instruction)
+  expect(readProjectResult(h.services.store,h.services,chat,one.entryId)?.page?.sha256).toBe(saved.sha256)
+  const answer = h.services.store.entries.since(chat,0).find(entry =>
+    entry.author.kind === 'bot' && entry.meta?.selectedResultEntryId === one.entryId)!
+  script(false,true)
+  await h.runtime.send({conversationId:chat,replyToId:answer.id,clientNonce:randomUUID(),text:'Prepare a follow-up memo.',
+    mentions:[],mentionsEveryone:false,attachmentPaths:[]})
+  await h.runtime.idle()
+  const next = await accept(ipc,chat)
+  expect((await ipc['content:work-destinations'](next)).projects.map(p => p.id)).toEqual([project.id])
+  const derived = await ipc['content:save-work']({...next,projectId:project.id})
+  const derivedEvidence = readPageEvidence(h.services.store,h.services,project.id,derived.id)
+  expect(derivedEvidence.parentPages).toEqual([{id:saved.id,revisionId:saved.revisionId,name:saved.name,sha256:saved.sha256}])
+  h.services.store.db.prepare("update accepted_work_pages set body='Unverified replacement' where id=?").run(saved.id)
+  expect(await ipc['session:instruction'](one)).toBeNull()
+  await expect(ipc['session:ask-page'](request)).rejects.toThrow(/revision/)
+  expect(() => readPageEvidence(h.services.store,h.services,project.id,derived.id)).toThrow()
+})
+
+it('traces the attachment actually used by a saved chat Page and refuses changed bytes', async () => {
+  const ipc = boot()
+  const chat = h.runtime.openDm(h.bot('fai',{isPrimary:true}).id).id
+  const project = await ipc['projects:create']({name:'Shipping'})
+  const path = join(root,'shipping-note.txt')
+  writeFileSync(path,'The supplier promised to call on Tuesday.')
+  script()
+  await h.runtime.send({conversationId:chat,clientNonce:randomUUID(),text:'Prepare delivery notes.',
+    mentions:[],mentionsEveryone:false,attachmentPaths:[path]})
+  await h.runtime.idle()
+  const req = await accept(ipc,chat)
+  const page = await ipc['content:save-work']({...req,projectId:project.id})
+  const attached = h.services.store.entries.since(chat,0).find(entry => entry.attachments.length)!.attachments[0]!
+  const evidence = readPageEvidence(h.services.store,h.services,project.id,page.id)
+  expect(evidence.attachments).toEqual([{name:attached.name,sha256:attached.sha256}])
+  expect(evidence.sources).toEqual([])
+  writeFileSync(attached.path,'Changed attached content.')
+  expect(() => readPageEvidence(h.services.store,h.services,project.id,page.id)).toThrow()
+})
+
+it('rechecks original sources before releasing a selected Page reply, including after its final tool read', async () => {
+  const ipc = boot()
+  const {req,project,source} = await scoped(ipc)
+  const page = await ipc['content:save-work']({...req,projectId:project.id})
+  const request = {projectId:project.id,pageId:page.id,revisionId:page.revisionId,sha256:page.sha256,
+    requestId:randomUUID(),instruction:'Discuss this Page.'}
+  let verified = false
+  h.engine.script('fai',async ({tool,say}) => {
+    const result = await tool('read_project_result',{})
+    const data = JSON.parse(result.content.find(p=>p.type==='text')!.text)
+    expect(data.page.sources).toMatchObject([{sourceId:source.id,sha256:source.sha256,revision:1}])
+    verified = true
+    say('Private reply before withdrawal.')
+    const store = h.services.store
+    store.projectContent.revoke(project.id,store.projectContent.pin(project.id,source.id).itemId)
+    say('Private reply after withdrawal.')
+  })
+  const response = await ipc['session:ask-page'](request)
+  await h.runtime.idle()
+  expect(verified).toBe(true)
+  expect(await ipc['session:instruction'](response)).toBeNull()
+  expect(JSON.stringify(h.services.store.entries.since(req.conversationId,0))).not.toContain('Private reply')
+  expect(JSON.stringify(h.services.bus.events)).not.toContain('Private reply')
 })
 
 it('rolls back artifacts and reviews if publication fails, retries cleanly and detects altered stored bytes', async () => {

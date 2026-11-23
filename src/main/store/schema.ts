@@ -1,6 +1,7 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
 import { TURN_CONTEXT_SCHEMA } from './turn-context-schema'
+import { PAGE_REQUEST_SCHEMA } from './page-request-schema'
 import { DELEGATION_ATTEMPT_SCHEMA } from './delegation-attempt-schema'
 import { ARTIFACT_SAVE_SCHEMA } from './artifact-save-schema'
 import { workBriefSchema, workConstraintsSchema } from './work-brief-schema'
@@ -380,6 +381,7 @@ export const MIGRATIONS: string[] = [
   /* 23: earlier questions stay open for free-text answers. */ `
   alter table chief_work add column question_choices text not null default '[]';
   `,
+  /* 24: select a reviewed Page or a source-search result for private delivery to fai. */ PAGE_REQUEST_SCHEMA,
   /* 26: persist the condition and outcome for each generation of a waiting brief. */ `
   alter table chief_wakes add column predicate text not null default '{"kind":"all"}';
   alter table chief_wakes add column due_at integer;
