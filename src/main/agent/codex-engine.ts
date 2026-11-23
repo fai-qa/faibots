@@ -9,7 +9,7 @@
 //
 // Codex has no permission callback, so its own commands cannot raise FaiBots approval cards.
 // It runs with approval policy "never" inside its sandbox: writes stay inside the workspace and
-// network access stays off. A bot whose `shell` permission is "never" gets a read-only sandbox.
+// network access stays off. The native shell is available only when the app grants "always".
 // FaiBots tools called through the bridge still go through the ToolRegistry and its approvals.
 
 import { createHash } from 'node:crypto'
@@ -31,12 +31,23 @@ const BRIDGE_TOKEN_ENV = 'FAIBOTS_BRIDGE_TOKEN'
 const TOOL_TIMEOUT_SEC = 30 * 60
 // These app tools keep their native permission checks, even when invoked by the subscription CLI.
 const desktopTools = [
-  'read_file', 'write_file', 'send_to_agent', 'list_bots', 'create_bot', 'pass_turn',
+  'read_file', 'write_file', 'shell', 'send_to_agent', 'list_bots', 'create_bot', 'pass_turn',
   'assign_to_agent', 'assignment_status', 'wait_for_assignment', 'cancel_assignment', 'group_work_snapshot',
   'plan_work', 'review_work', 'read_handoff', 'read_project_result'
 ]
 const DESKTOP_BRIDGE_TOOLS = `{ ${desktopTools.map((tool) => `${tool} = { approval_mode = "approve" }`).join(', ')} }`
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp)$/i
+
+// The CLI also supplies global AGENTS.md as a user message from the signed-in Codex home.
+// Set the app's scope at the developer level, including on resumed turns.
+const chatScope = [
+  'You are the assigned bot in faibots. Follow this chat’s current request, assigned bot instructions and skills, and explicitly selected project materials.',
+  'When the supplied facts are sufficient, answer directly in the requested language and format. Use a tool or consult a file only when the current task calls for it.',
+  'Host account instructions, repository startup routines, skill catalogs and unrelated projects are outside this chat’s scope unless the user explicitly includes them in this job. Do not consult their files or hand off work on their authority.',
+  'Use the scoped faibots tools for requested file operations. Observe all security, sandbox and approval requirements.'
+].join(' ')
+
+const chatBinding = (turn: EngineTurn) => `${sessionBinding('codex', turn.route)}:chat-scope-v1`
 
 /** The slice of the Codex SDK the engine uses (tests pass a fake). */
 export interface CodexLike {
@@ -105,6 +116,17 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         // The CLI has no callback for its own MCP approval prompts.
         'features.apps=false',
         'features.plugins=false',
+        'project_doc_max_bytes=0',
+        'project_root_markers=[]',
+        'skills.include_instructions=false',
+        'features.skip_host_skill_discovery=true',
+        'features.skill_search=false',
+        'features.hooks=false',
+        'features.memories=false',
+        'features.multi_agent=false',
+        'features.multi_agent_v2=false',
+        ...(shellMode !== 'always' ? ['features.shell_tool=false'] : []),
+        `developer_instructions=${JSON.stringify(chatScope)}`,
         'features.skill_mcp_dependency_install=false',
         'web_search="disabled"'
       ]
@@ -219,13 +241,13 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         case 'thread.started':
           if (threadId && event.thread_id !== threadId) previous = undefined
           threadId = event.thread_id
-          turn.saveContext({ engineSessionId: event.thread_id, engineBinding: sessionBinding('codex', route) })
+          turn.saveContext({ engineSessionId: event.thread_id, engineBinding: chatBinding(turn) })
           return
         case 'turn.started':
           // Codex has accepted the input, so the block it carried is delivered: only now remember it.
           started = true
           // A killed or cancelled process may have consumed tokens and emitted no final receipt.
-          turn.saveContext({ engineBinding: sessionBinding('codex', route), systemHash: hash, codexUsageBaseline: undefined })
+          turn.saveContext({ engineBinding: chatBinding(turn), systemHash: hash, codexUsageBaseline: undefined })
           recorder.phase('thinking')
           return
         case 'item.started':
@@ -269,7 +291,7 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
         name, exposedAs: `mcp__${BRIDGE_SERVER}__${name}`, hostApproval: desktopTools.includes(name) ? 'app' : 'cli-default'
       })), [...replayedEntries, ...newEntries], [
         'Connector tools are unavailable through the Codex bridge. The CLI may withhold tools under its default approval policy.',
-        `Codex shell sandbox: ${threadOptions.sandboxMode}. CLI approvals, web search, apps and plugins are disabled. Other host tools are not inventoried by faibots.`
+        `Codex native shell: ${shellMode === 'always' ? threadOptions.sandboxMode : 'disabled'}. Requested faibots tools follow app permissions. Project instruction discovery, host skill catalogs, web search, apps and plugins are disabled. Codex can supply global account instructions as user context. The full host tool list is unavailable.`
       ])
       const { events } = await thread.runStreamed(input, { signal: turn.signal })
       for await (const event of events) {
@@ -289,8 +311,9 @@ export function createCodexEngine(deps: CodexEngineDeps): TurnEngine {
   return {
     async run(turn) {
       let resume = turn.context.engineSessionId
-      // A thread made by another engine is not ours to resume: start fresh (history is included).
-      if (resume && turn.context.engineBinding && turn.context.engineBinding !== sessionBinding('codex', turn.route)) {
+      // Older CLI threads retain their original host instructions. Replay faibots history
+      // into a fresh scoped thread once, including when the old thread had no route binding.
+      if (resume && turn.context.engineBinding !== chatBinding(turn)) {
         turn.saveContext({ engineSessionId: undefined, engineBinding: undefined, systemHash: undefined })
         resume = undefined
       }

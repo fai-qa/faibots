@@ -116,9 +116,20 @@ describe('Codex engine', () => {
     // Our prompt goes before the first message of the thread.
     expect(typeof run.input === 'string' && run.input).toMatch(/You ship small, tested changes\.[\s\S]*---\n\n\[Alex\] what is in my folder\?$/)
     expect(run.options.configOverrides).toEqual([
-      'mcp_servers={ faibots = { url = "http://127.0.0.1:1/mcp", bearer_token_env_var = "FAIBOTS_BRIDGE_TOKEN", tool_timeout_sec = 1800, tools = { read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" }, assign_to_agent = { approval_mode = "approve" }, assignment_status = { approval_mode = "approve" }, wait_for_assignment = { approval_mode = "approve" }, cancel_assignment = { approval_mode = "approve" }, group_work_snapshot = { approval_mode = "approve" }, plan_work = { approval_mode = "approve" }, review_work = { approval_mode = "approve" }, read_handoff = { approval_mode = "approve" }, read_project_result = { approval_mode = "approve" } } } }',
+      'mcp_servers={ faibots = { url = "http://127.0.0.1:1/mcp", bearer_token_env_var = "FAIBOTS_BRIDGE_TOKEN", tool_timeout_sec = 1800, tools = { read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, shell = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" }, assign_to_agent = { approval_mode = "approve" }, assignment_status = { approval_mode = "approve" }, wait_for_assignment = { approval_mode = "approve" }, cancel_assignment = { approval_mode = "approve" }, group_work_snapshot = { approval_mode = "approve" }, plan_work = { approval_mode = "approve" }, review_work = { approval_mode = "approve" }, read_handoff = { approval_mode = "approve" }, read_project_result = { approval_mode = "approve" } } } }',
       'features.apps=false',
       'features.plugins=false',
+      'project_doc_max_bytes=0',
+      'project_root_markers=[]',
+      'skills.include_instructions=false',
+      'features.skip_host_skill_discovery=true',
+      'features.skill_search=false',
+      'features.hooks=false',
+      'features.memories=false',
+      'features.multi_agent=false',
+      'features.multi_agent_v2=false',
+      'features.shell_tool=false',
+      expect.stringMatching(/^developer_instructions=.*current request.*supplied facts.*faibots tools/s),
       'features.skill_mcp_dependency_install=false',
       'web_search="disabled"'
     ])
@@ -174,17 +185,17 @@ describe('Codex engine', () => {
     expect(h.services.store.turns.summary(0, Date.now()+1).rows).toMatchObject([{ inputTokens: 139_090, outputTokens: 1_086 }])
   })
 
-  it('rebaselines after a legacy resume, a counter reset or an unfinished turn, then counts a fresh thread normally', async () => {
+  it('rebaselines a scoped thread after missing usage, a counter reset or an unfinished turn, then counts a fresh thread normally', async () => {
     const first = counted('old', 74_811, 471), second = counted('old', 139_090, 1_086)
-    const dm = setup([first, second, first, done('old'), second, counted('fresh', 74_811, 471)])
-    h.services.store.botContext.set({ ...ctx(dm.id), engineSessionId: 'old' })
+    const dm = setup([done('old'), first, second, first, done('old'), second, counted('fresh', 74_811, 471)])
+    await h.send(dm.id, 'Start without a usage receipt')
     for (const prompt of ['Import', 'Continue', 'Reset counters', 'Interrupted receipt', 'Resume']) await h.send(dm.id, prompt)
     h.services.store.botContext.clearConversation(dm.id)
     await h.send(dm.id, 'Start fresh')
     expect(usageRows().map(r=>[r.codex_usage_state,r.input_tokens,r.output_tokens])).toEqual([
-      ['unknown',0,0], ['measured',64_279,615], ['unknown',0,0], ['unknown',0,0], ['unknown',0,0], ['measured',74_811,471]
+      ['unknown',0,0], ['unknown',0,0], ['measured',64_279,615], ['unknown',0,0], ['unknown',0,0], ['unknown',0,0], ['measured',74_811,471]
     ])
-    expect(h.services.store.turns.summary(0,Date.now()+1).rows[0]?.unreportedTurns).toBe(4)
+    expect(h.services.store.turns.summary(0,Date.now()+1).rows[0]?.unreportedTurns).toBe(5)
   })
 
   it('resends the system block on a resumed thread only after it changed', async () => {
@@ -266,12 +277,19 @@ describe('Codex engine', () => {
     expect(ctx(dm.id).engineSessionId).toBe('t2')
   })
 
-  it('resumes a thread with no binding and records the binding', async () => {
-    const dm = setup([resumedOk])
-    h.services.store.botContext.set({ ...ctx(dm.id), engineSessionId: 'old' })
-    await h.send(dm.id, 'hi')
-    expect(fake.runs[0]!.resumed).toBe('old')
-    expect(ctx(dm.id).engineBinding).toMatch(/^codex:/)
+  it.each(['unbound', 'old scope'])('carries chat history into a scoped thread for an %s session', async (legacy) => {
+    const dm = setup([done('first'), done('scoped'), resumedOk])
+    await h.send(dm.id, 'I call the workshop Cedar.')
+    const old = ctx(dm.id)
+    const engineBinding = legacy === 'unbound' ? undefined : old.engineBinding?.replace(/:chat-scope-v1$/, '')
+    h.services.store.botContext.set({ ...old, engineBinding })
+    await h.send(dm.id, 'Write the announcement from these facts, in Arabic and English.')
+    expect(fake.runs[1]!.resumed).toBeUndefined()
+    expect(fake.runs[1]!.input as string).toContain('I call the workshop Cedar.')
+    expect(fake.runs[1]!.input as string).toContain('in Arabic and English')
+    expect(ctx(dm.id).engineBinding).toMatch(/:chat-scope-v1$/)
+    await h.send(dm.id, 'Keep both languages.')
+    expect(fake.runs[2]!.resumed).toBe('scoped')
   })
 
   it('keeps the thread when the model changes within Codex', async () => {
@@ -286,6 +304,7 @@ describe('Codex engine', () => {
     const dm = setup([[agentMessage('m', 'ok')]], { toolPermissions: { shell: 'never' } }, 'sk-codex-key')
     await h.send(dm.id, 'look around')
     expect(fake.runs[0]!.threadOptions?.sandboxMode).toBe('read-only')
+    expect(fake.runs[0]!.options.configOverrides).toContain('features.shell_tool=false')
     expect(fake.runs[0]!.options.apiKey).toBe('sk-codex-key')
   })
 
@@ -293,6 +312,7 @@ describe('Codex engine', () => {
     const dm = setup([[agentMessage('m', 'ok')]], { toolPermissions: { shell: 'always' } })
     await h.send(dm.id, 'fix the build')
     expect(fake.runs[0]!.threadOptions?.sandboxMode).toBe('workspace-write')
+    expect(fake.runs[0]!.options.configOverrides).not.toContain('features.shell_tool=false')
   })
 
   it('shows FaiBots tool calls by their own names and reports failures', async () => {
