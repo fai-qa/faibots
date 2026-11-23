@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { WorkBrief, WorkDecision, WorkScope } from '@shared/work-brief'
+import type { WorkBrief, WorkDecision, WorkScope, WorkWait } from '@shared/work-brief'
 import { SaveWorkPage } from './SaveWorkPage'
 import { errorMessage, invoke, on } from '../../lib/bridge'
 
@@ -7,6 +7,13 @@ const stateLabels = {
   waiting: 'Waiting for specialists', active: 'In progress', needs_input: 'Needs your answer', review: 'Ready for review',
   accepted: 'Accepted', cancelled: 'Cancelled'
 } as const
+
+function waitLabel(wait: WorkWait) {
+  if (wait.kind === 'time') return `Scheduled for ${new Date(wait.at).toLocaleString()}`
+  const condition = {all:'Waiting for specialists',assignment:'Waiting for the selected assignment',
+    first_match:'Waiting for the expected reply',webhook:'Waiting for the selected webhook'}[wait.kind]
+  return wait.deadline ? `${condition} until ${new Date(wait.deadline).toLocaleString()}` : condition
+}
 
 export function WorkBriefPanel({ conversationId }: { conversationId: string }) {
   const [briefs, setBriefs] = useState<WorkBrief[]>([])
@@ -94,7 +101,7 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
   const button = 'rounded-md border border-line px-2 py-1 font-medium hover:bg-hover disabled:opacity-50'
   return (
     <details open={detailsOpen} onToggle={(e) => setDetailsOpen(e.currentTarget.open)} className="py-1">
-      <summary className="cursor-pointer font-medium">{brief.objective} <span className="font-normal text-fg-3">· {stateLabels[brief.state]}</span></summary>
+      <summary className="cursor-pointer font-medium">{brief.objective} <span className="font-normal text-fg-3">· {brief.waitingFor ? waitLabel(brief.waitingFor) : stateLabels[brief.state]}</span></summary>
       <div className="space-y-2 py-2">
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
           <dt className="text-fg-3">Deliverable</dt><dd>{brief.deliverable}</dd>

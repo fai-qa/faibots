@@ -379,5 +379,11 @@ export const MIGRATIONS: string[] = [
   `,
   /* 23: earlier questions stay open for free-text answers. */ `
   alter table chief_work add column question_choices text not null default '[]';
+  `,
+  /* 26: persist the condition and outcome for each generation of a waiting brief. */ `
+  alter table chief_wakes add column predicate text not null default '{"kind":"all"}';
+  alter table chief_wakes add column due_at integer;
+  alter table chief_wakes add column signal_after integer;
+  alter table chief_wakes add column cancel_ids text not null default '[]';
   `
 ]

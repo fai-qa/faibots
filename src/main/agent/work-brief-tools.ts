@@ -10,6 +10,15 @@ import { defineTool, errorResult, textResult } from '../tools/define'
 /** Only the original fai chat can create or change its work; specialists can still give direct answers. */
 export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: Pick<Services,'dataDir'|'attachments'>) {
   const work = workBriefs(store.db)
+  const timestamp = z.iso.datetime({ offset:true })
+  const waitFor = z.discriminatedUnion('kind', [
+    z.object({kind:z.literal('all'), deadline:timestamp.optional()}),
+    z.object({kind:z.literal('assignment'), assignmentId:z.string().min(1), deadline:timestamp.optional()}),
+    z.object({kind:z.literal('first_match'), assignmentIds:z.array(z.string().min(1)).min(2).max(MAX_ASKS_PER_CHAIN),
+      expectedReply:z.string().trim().min(1).max(2000), remaining:z.enum(['continue','cancel']), deadline:timestamp.optional()}),
+    z.object({kind:z.literal('time'),at:timestamp}),
+    z.object({kind:z.literal('webhook'),routineId:z.string().min(1),deadline:timestamp.optional()})
+  ])
   const available = ({ bot, conversation }: { bot: { isPrimary: boolean; name: string }; conversation: { kind: string } }) =>
     bot.isPrimary && bot.name === MAIN_BOT_NAME && conversation.kind === 'dm'
   const changed = (conversationId: string) => bus.emit('work:changed', { conversationId })
@@ -39,10 +48,12 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
         action: z.enum(['list', 'wait', 'resume', 'question', 'result']), id: z.string().min(1).optional(),
         revision: z.number().int().positive().optional(), text: z.string().trim().min(1).max(16000).optional(),
         choices: z.array(z.string().trim().min(1).max(240)).min(2).max(6).optional(),
+        waitFor: waitFor.optional().describe('For wait only. Choose all returns, a named assignment, the first exact expected answer with an explicit remaining-worker policy, a time, or the next webhook for an existing owner-configured routine. Use ISO dates with time zones.'),
         evidenceEntryIds: z.array(z.string().min(1)).max(32).optional(), partial: z.boolean().optional()
       }),
       source: 'faibots', defaultPermission: 'always', activityLabel: 'Reviewing work', isAvailable: available,
       async execute(input, ctx) {
+        if (input.waitFor && input.action !== 'wait') throw new WorkRefusal('Use a wait condition only with the wait action.')
         if (input.choices && (input.action !== 'question' || new Set(input.choices.map(choice => choice.normalize('NFKC').toLowerCase())).size !== input.choices.length))
           throw new WorkRefusal('Use distinct suggested answers only when asking a question.')
         if (input.action === 'list') return textResult(JSON.stringify(work.list(ctx.conversation.id)))
@@ -54,7 +65,7 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
         }
         if (input.action === 'wait') {
           if (!input.revision) throw new WorkRefusal('Include the current revision.')
-          const brief = work.wait(ctx.conversation.id,input.id,input.revision,ctx.turnId)
+          const brief = work.wait(ctx.conversation.id,input.id,input.revision,ctx.turnId,input.waitFor)
           changed(ctx.conversation.id)
           return textResult(JSON.stringify(brief))
         }

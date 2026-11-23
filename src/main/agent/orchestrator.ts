@@ -186,6 +186,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly delegations: ReturnType<typeof createDelegationRepo>
   private readonly briefs: ReturnType<typeof workBriefs>
   private readonly scheduledWakes = new Set<string>()
+  private wakeTimer?: NodeJS.Timeout
   private readonly scheduledResults = new Set<string>()
   readonly assignments: BackgroundAssignments
   private readonly unsubscribe: () => void
@@ -408,6 +409,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
 
   async shutdown(): Promise<void> {
     this.closed = true
+    clearTimeout(this.wakeTimer)
     for (const id of this.runs.keys()) this.stop(id)
     const settled = Promise.allSettled([...this.background, this.queues.idle()])
     await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, SHUTDOWN_WAIT_MS).unref?.())])
@@ -724,6 +726,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
         this.briefs.finishWake(wake.id,wake.revision,outcome.status === 'sent' || outcome.status === 'pass')
       }).finally(() => this.scheduledWakes.delete(wake.entryId)))
     }
+    clearTimeout(this.wakeTimer)
+    const now = Date.now()
+    const next = this.briefs.nextCheckAt(now)
+    if (next !== undefined) this.wakeTimer = setTimeout(() => this.wakeBriefs(),Math.max(1,Math.min(next-now,2_147_483_647))).unref()
   }
 
   private recoverProjectResults(): void {
@@ -807,7 +813,11 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const claimed = store.db.prepare("update project_result_requests set state='started',turn_id=? where entry_id=? and state='queued'").run(turnId,resultOrigin)
       if (!claimed.changes) return {status:'skipped',posts:[]}
     }
-    if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
+    if (req.wake) {
+      const claimed = this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)
+      if (!claimed) return { status:'skipped',posts:[] }
+      for (const id of claimed.cancel) this.assignments.abort(id)
+    }
     let resultWithdrawn = false
     const selectedResultAvailable: (() => boolean) | undefined = resultOrigin ? () => {
       if (resultWithdrawn) return false
@@ -955,7 +965,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         selectedResultTrigger,
         upToSeq,
         turnNote: [turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
-          ...(req.wake ? [`Resume the specialist returns for work ${req.wake.id}. Check this work and its assignment receipts before submitting a result.`] : []),
+          ...(req.wake ? [`Resume work ${req.wake.id}. Check why it resumed and review any assignment receipts before submitting a result. A deadline alone never completes the job.`] : []),
           ...(selectedResultTrigger ? ['Use read_project_result for the owner’s selected evidence and instruction. If access is withheld, explain that. Cite the actual source revision and line.'] : [])
         ].filter(Boolean).join('\n'),
         recorder,
