@@ -728,8 +728,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private recoverProjectResults(): void {
     if (this.closed) return
     const { store } = this.deps
+    // Repair legacy chat pointers and request states using their persisted request and turn links.
+    store.db.exec(`update entries set meta=json_set(coalesce(meta,'{}'),'$.selectedResultEntryId',id)
+      where id in (select entry_id from project_result_requests) and json_extract(meta,'$.selectedResultEntryId') is null;
+      update project_result_requests set state='interrupted' where state='finished' and
+        (turn_id is null or exists(select 1 from turns where turns.id=project_result_requests.turn_id and turns.status<>'sent'))`)
     for (const row of store.db.prepare("select * from project_result_requests where state='started'").all()) {
-      const finished = store.db.prepare('select 1 from turns where id=?').get(row.turn_id!)
+      const finished = store.db.prepare("select 1 from turns where id=? and status='sent'").get(row.turn_id!)
       store.db.prepare('update project_result_requests set state=? where id=?').run(finished ? 'finished':'interrupted',row.id!)
       if (!finished) this.systemEvent(String(row.conversation_id), 'The app closed while fai was answering a selected project result. Review any existing reply. You can ask again from the project.')
     }
@@ -747,8 +752,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.scheduledResults.add(entry.id)
     this.emitEntry(entry)
     this.track(this.scheduleTurn(entry.conversationId, String(row.owner_id), {trigger:'user',mustAnswer:true,inGroup:false,chain:[],
-      userRequest:{id:entry.id,seq:entry.seq}}).then(() => {
-      if (!this.closed) store.db.prepare("update project_result_requests set state='finished' where entry_id=? and state in ('queued','started')").run(entry.id)
+      userRequest:{id:entry.id,seq:entry.seq}}).then((outcome) => {
+      if (this.closed) return
+      const answered = outcome.status === 'sent'
+      const changed = store.db.prepare("update project_result_requests set state=? where entry_id=? and state in ('queued','started')")
+        .run(answered ? 'finished' : 'interrupted', entry.id)
+      if (changed.changes && !answered && outcome.status !== 'error')
+        this.systemEvent(entry.conversationId, 'This selected project request ended without a completed reply. You can ask again from the project.')
     }).finally(() => this.scheduledResults.delete(entry.id)))
   }
 
@@ -773,10 +783,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const triggerEntry = wakeEntry ?? (req.userRequest && store.entries.get(req.userRequest.id))
     const resultOrigin = triggerEntry && projectResultOrigin(store,conversationId,triggerEntry,req.wake)
     const selectedResultTrigger = resultOrigin ? triggerEntry : undefined
-    if (selectedResultTrigger && selectedResultTrigger.id !== resultOrigin)
+    if (selectedResultTrigger && selectedResultTrigger.meta?.selectedResultEntryId !== resultOrigin)
       store.entries.update(selectedResultTrigger.id,{meta:{...selectedResultTrigger.meta,selectedResultEntryId:resultOrigin}})
     const upToSeq = req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
-    const unseen = selectedResultTrigger ? [selectedResultTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
+    const unseen = selectedResultTrigger ? [selectedResultTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !e.meta?.selectedResultEntryId && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
 

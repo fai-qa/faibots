@@ -300,6 +300,58 @@ it('uses the owner’s explicit Reply action for a new instruction and live evid
   expect(h.engine.turns).toHaveLength(3)
 })
 
+it('keeps a selected project request out of later chat history, including after upgrading an old request', async () => {
+  const { ipc, store, request, chief, dm } = await fixture()
+  const selected = await ipc['session:ask-fai'](request)
+  await h.runtime.idle()
+  const pointer = store.entries.get(selected.entryId)!
+  expect(pointer.meta?.selectedResultEntryId).toBe(pointer.id)
+  store.db.prepare('update entries set meta=null where id=?').run(pointer.id)
+  const neverStarted = queueProjectResult(store, h.services, dm.id, { ...request, requestId: randomUUID() })
+  store.db.prepare("update project_result_requests set state='finished' where entry_id=?").run(neverStarted.id)
+  await h.runtime.shutdown()
+  h.cleanup()
+  boot()
+  await Promise.resolve()
+  await h.runtime.idle()
+  expect(h.services.store.db.prepare('select state from project_result_requests where entry_id=?').get(neverStarted.id)?.state).toBe('interrupted')
+  let prompt: string | undefined
+  h.engine.script(chief.handle, ({ turn, say }) => {
+    prompt = turnPrompt(turn, h.services.store, true).text
+    say('An ordinary reply.')
+  })
+  await h.send(dm.id, 'Another job.')
+  expect(prompt).toContain('Another job.')
+  expect(prompt).not.toContain(pointer.text)
+  expect(h.services.store.entries.get(pointer.id)?.meta?.selectedResultEntryId).toBe(pointer.id)
+})
+
+it('records a stopped queued project request as interrupted and lets the owner ask again', async () => {
+  const { ipc, store, request, chief, dm } = await fixture()
+  let started!: () => void, release!: () => void
+  const running = new Promise<void>((resolve) => { started = resolve })
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  h.engine.script(chief.handle, async () => { started(); await gate })
+  await h.runtime.send({ conversationId: dm.id, text: 'Separate task', clientNonce: randomUUID(), mentions: [], mentionsEveryone: false, attachmentPaths: [] })
+  await running
+  const selected = await ipc['session:ask-fai'](request)
+  h.runtime.stop(dm.id)
+  release()
+  await h.runtime.idle()
+  const state = () => store.db.prepare('select state,turn_id from project_result_requests where entry_id=?').get(selected.entryId)
+  expect(state()).toMatchObject({ state: 'interrupted', turn_id: null })
+  expect(store.entries.since(dm.id, 0).some((entry) => entry.kind === 'event' && entry.text.includes('ask again'))).toBe(true)
+  const count = h.engine.turns.length
+  await ipc['session:ask-fai'](request)
+  await h.runtime.idle()
+  expect(h.engine.turns).toHaveLength(count)
+  h.engine.script(chief.handle, ({ say }) => say('New answer.'))
+  const again = await ipc['session:ask-fai']({ ...request, requestId: randomUUID() })
+  await h.runtime.idle()
+  expect(again.entryId).not.toBe(selected.entryId)
+  expect(store.db.prepare('select state from project_result_requests where entry_id=?').get(again.entryId)?.state).toBe('finished')
+})
+
 it('shows only the linked project inputs on the work card and withdraws their titles when access changes', async () => {
   const { ipc, store, dm, project, request, source, start } = await fixture()
   const entry = queueProjectResult(store, h.services, dm.id, request)
