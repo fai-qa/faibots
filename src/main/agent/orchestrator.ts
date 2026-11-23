@@ -53,7 +53,7 @@ import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
 import { projectReplyOrigin, projectResultForEntry, projectResultOrigin, queueProjectReply } from '../store/project-result-requests'
 import { IncompleteTurnError, type TurnEngine } from './engine'
-import { speakerName } from './history'
+import { isProjectHistory, speakerName } from './history'
 import { LiveStates } from './live-state'
 import { resolveMentionHints } from './mentions'
 import { buildSystemPrompt, turnNote } from './prompt'
@@ -97,6 +97,7 @@ interface TurnRequest {
   chain: Id[]
   /** Selected sources for this turn (manifest-lite, FJ-09); only mission runs set it. */
   projectRun?: { projectId: Id; runId: Id }
+  projectInputId?: Id
   manifestLite?: { sources: ManifestLiteSource[] }
   readProjectNote?: ToolContext['readProjectNote']
   /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
@@ -120,6 +121,7 @@ interface ActiveTurn {
   beforeWaiting?: { phase: BotPhase; activity?: string }
   asks: number
   projectRun?: TurnRequest['projectRun']
+  projectScoped?: boolean
   root: AssignmentRoot
   unresolvedActions: Set<string>
 }
@@ -374,6 +376,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       mentionsEveryone: false,
       attachments: [],
       isStreaming: false,
+      ...(input.projectRun && { meta: { projectScoped: true } }),
       trigger: input.trigger
     })
     this.emitEntry(entry)
@@ -384,6 +387,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       inGroup: false,
       chain: [],
       ...(input.projectRun && { projectRun: input.projectRun }),
+      ...((input.projectRun || input.trigger.kind === 'mission') && { projectInputId: entry.id }),
       ...(input.manifestLite && { manifestLite: input.manifestLite }),
       readProjectNote: input.readProjectNote,
       ...(input.signal && { parentSignal: input.signal })
@@ -509,7 +513,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const exchange = found ??
         store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
       const question = store.entries.append({
-        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id }, meta: { turnId: ctx.turnId },
+        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id }, meta: { turnId: ctx.turnId, ...(asking?.projectScoped && { projectScoped: true }) },
         text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
       })
       return { parent, question }
@@ -541,6 +545,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         mustAnswer: true,
         inGroup: false,
         ...(asking?.projectRun && { projectRun: asking.projectRun }),
+        ...(asking?.projectScoped && { projectInputId: question.id }),
         assignment: { lease, questionId: question.id, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
@@ -792,8 +797,10 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const selectedResultTrigger = resultOrigin ? triggerEntry : undefined
     if (selectedResultTrigger && selectedResultTrigger.meta?.selectedResultEntryId !== resultOrigin)
       store.entries.update(selectedResultTrigger.id,{meta:{...selectedResultTrigger.meta,selectedResultEntryId:resultOrigin}})
-    const upToSeq = req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
-    const unseen = selectedResultTrigger ? [selectedResultTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !e.meta?.selectedResultEntryId && !isOwn(e, botId))
+    const isolatedTrigger = selectedResultTrigger ?? (req.projectInputId ? store.entries.get(req.projectInputId) : undefined)
+    if (req.projectInputId && isolatedTrigger?.conversationId !== conversationId) return { status: 'skipped', posts: [] }
+    const upToSeq = isolatedTrigger?.seq ?? req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+    const unseen = isolatedTrigger ? [isolatedTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isProjectHistory(e) && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
 
@@ -843,13 +850,14 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.assignment && { onLateText: (delta: string) => {
           if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
         } }),
-        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId, ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) } }),
+        meta: { ...(route && {providerId: route.provider.id, modelId: route.modelId}), ...(isolatedTrigger && {projectScoped:true}), ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) },
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
       }
     )
     const active: ActiveTurn = {
       turnId, bot, conversationId, recorder, abort, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
       ...(req.projectRun && { projectRun: req.projectRun }),
+      ...(isolatedTrigger && { projectScoped: true }),
       asks: 0, root: req.root ?? { turnId, conversationId }, unresolvedActions: new Set()
     }
 
@@ -871,7 +879,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (req.trigger === 'routine') this.systemEvent(conversationId, limited)
       return { status: 'limited', posts: [], error: limited }
     }
-    store.botContext.set({ ...context, lastSeenSeq: Math.max(context.lastSeenSeq,upToSeq) })
+    if (!isolatedTrigger) store.botContext.set({ ...context, lastSeenSeq: Math.max(context.lastSeenSeq,upToSeq) })
 
     this.active.set(turnId, active)
     recorder.phase('reading')
@@ -969,8 +977,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
           })
         },
         toolContext,
-        context: selectedResultTrigger ? {botId,conversationId,lastSeenSeq:0,summarizedUpToSeq:0,summary:''} : context,
-        selectedResultTrigger,
+        context: isolatedTrigger ? {botId,conversationId,lastSeenSeq:0,summarizedUpToSeq:0,summary:''} : context,
+        isolatedTrigger,
         upToSeq,
         turnNote: [turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
           ...(req.wake ? [`Resume work ${req.wake.id}. Check why it resumed and review any assignment receipts before submitting a result. A deadline alone never completes the job.`] : []),
@@ -984,7 +992,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         runTool: (call) => this.runTool(recorder, toolContext, turnTools, call),
         // After a stop or reset, an engine's late state (an old session id) must not come back.
         saveContext: (patch) => {
-          if (!signal.aborted && !selectedResultTrigger) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
+          if (!signal.aborted && !isolatedTrigger) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
         }
       })
       if (active.unresolvedActions.size > 0 && !signal.aborted) throw new Error('A tool action remains unresolved or its outcome is unknown. Reconcile it before accepting this run.')

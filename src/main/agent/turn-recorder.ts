@@ -125,7 +125,7 @@ export class TurnRecorder {
     let stored: Entry
     try {
       stored = this.deps.store.entries.append(this.opts.turnId
-        ? { ...entry, meta: { ...entry.meta, turnId: this.opts.turnId } } : entry)
+        ? { ...entry, meta: { ...entry.meta, ...(this.opts.meta?.projectScoped && { projectScoped: true }), turnId: this.opts.turnId } } : entry)
     } catch {
       return undefined
     }

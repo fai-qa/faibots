@@ -352,7 +352,7 @@ it('uses the owner’s explicit Reply action for a new instruction and live evid
   const { ipc, store, chief, dm, request, source } = await fixture()
   const observations: string[] = []
   h.engine.script(chief.handle, async ({ turn, tool, say }) => {
-    if (!turn.selectedResultTrigger) {
+    if (!turn.isolatedTrigger) {
       observations.push('ordinary')
       say('Other matter.')
       return

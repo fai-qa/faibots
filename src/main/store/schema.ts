@@ -11,6 +11,7 @@ import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
 import { SESSION_SCHEMA } from './session-schema'
 import { PROJECT_IMPROVEMENTS_SCHEMA } from './project-improvements-schema'
 import { PROJECT_REQUEST_INSTRUCTIONS_SCHEMA } from './project-request-instructions-schema'
+import { PROJECT_HISTORY_SCHEMA } from './project-history-schema'
 import { ESCALATION_SCHEMA } from './escalation-schema'
 
 export const MIGRATIONS: string[] = [
@@ -394,5 +395,6 @@ export const MIGRATIONS: string[] = [
       and json_extract(predicate,'$.kind')='webhook' and json_extract(predicate,'$.routineId')=new.routine_id
       and exists(select 1 from chief_work w where w.id=chief_wakes.work_id and w.state='waiting' and w.revision=chief_wakes.revision+1);
   end;
-  `
+  `,
+  /* 27: keep project missions out of ordinary model history. */ PROJECT_HISTORY_SCHEMA
 ]

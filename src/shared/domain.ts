@@ -214,7 +214,7 @@ export interface Entry {
   /** Idempotency key for user sends. */
   clientNonce?: string
   /** Model/engine metadata for bot messages. */
-  meta?: { providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number; turnId?: Id; selectedResultEntryId?: Id; selectionReason?: string }
+  meta?: { providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number; turnId?: Id; selectedResultEntryId?: Id; projectScoped?: boolean; selectionReason?: string }
   /** Set on the message FaiBots posts for an automatic run (author is 'system'). */
   trigger?: EntryTrigger
   createdAt: number
