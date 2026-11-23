@@ -36,7 +36,7 @@ export function workBriefs(db: Db) {
     if (row?.work_id !== id) throw new WorkRefusal('This turn already belongs to another brief.')
   }
   function children(id: string) {
-    return db.prepare(`select d.id,d.state,d.receipt,d.updated_at,p.client_nonce from chief_work_turns t
+    return db.prepare(`select d.id,d.state,d.receipt,d.updated_at,p.client_nonce,p.conversation_id from chief_work_turns t
       join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
       join entries p on p.id=d.parent_entry_id where t.work_id=? order by d.created_at,d.id`).all(id)
   }
@@ -118,6 +118,11 @@ export function workBriefs(db: Db) {
     },
     list(chat: string) {
       return db.prepare(selected+' where w.conversation_id=? order by w.updated_at desc, w.rowid desc').all(chat).map(read)
+    },
+    forRequest(chat: string, selectedEntry: string | null, id?: string) {
+      const query = selected+` left join project_result_requests r on r.conversation_id=w.conversation_id and r.entry_id=w.user_entry_id
+        where w.conversation_id=? and r.entry_id is ?`+(id ? ' and w.id=?' : '')+' order by w.updated_at desc,w.rowid desc'
+      return db.prepare(query).all(chat,selectedEntry,...(id?[id]:[])).map(read)
     },
     start(chat: string, entry: string, turnId: string, objective: string, deliverable: string, checks: string, constraints: Partial<WorkConstraints> = {}) {
       const now = Date.now()

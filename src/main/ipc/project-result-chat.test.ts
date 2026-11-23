@@ -120,6 +120,31 @@ it('pins only the chosen project at admission and retains that version or the or
   await expect(reply(fresh.entryId)).rejects.toThrow(/unavailable|granted|selected/i)
 })
 
+it('keeps the full owner card while limiting the model’s work directory to the active request',async()=>{
+  const {ipc,store,chief,dm,request}=await fixture()
+  let selectedId=''
+  const received:string[]=[]
+  h.engine.script(chief.handle,async ({turn,tool,say})=>{
+    const textOf=(r:Awaited<ReturnType<typeof tool>>)=>r.content.map(p=>p.type==='text'?p.text:'').join('')
+    if(turn.toolContext.projectResultTrigger) {
+      const plan=JSON.parse(textOf(await tool('plan_work',{objective:'Private delivery gate',deliverable:'Gate note',checks:'Check this gate'})))
+      selectedId=plan.id
+      received.push(textOf(await tool('review_work',{action:'list'})))
+    } else {
+      received.push(textOf(await tool('review_work',{action:'list'})))
+      expect((await tool('review_work',{action:'resume',id:selectedId})).isError).toBe(true)
+    }
+    say('Recorded.')
+  })
+  await ipc['session:ask-fai'](request)
+  await h.runtime.idle()
+  await h.send(dm.id,'Separate job')
+  expect(JSON.parse(received[0]!)).toEqual([expect.objectContaining({id:selectedId,state:'active'})])
+  expect(received.join(' ')).not.toContain('Private delivery gate')
+  expect(JSON.parse(received[1]!)).toEqual([])
+  expect(workBriefs(store.db).get(selectedId,dm.id).objective).toBe('Private delivery gate')
+})
+
 it('keeps a result pending when the completed project brief omits its pinned output check', async () => {
   const { ipc, store, chief, dm, request } = await fixture()
   const version = publishFixtureVersion(store,request.projectId,1)

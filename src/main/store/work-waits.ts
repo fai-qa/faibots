@@ -25,7 +25,7 @@ export function invalidWait(db: Db, chat: string, wait: WorkWait, jobs: Row[], n
   if (new Set(selected).size !== selected.length || selected.some(id => !jobs.some(job => job.id === id)))
     return 'Choose distinct assignment IDs from this brief.'
   if (wait.kind === 'first_match' && wait.remaining === 'cancel' &&
-      selected.some(id => !jobs.some(job=>job.id===id && job.client_nonce==='faibots:assignment:'+id)))
+      selected.some(id => !jobs.some(job=>job.id===id && job.conversation_id===chat && job.client_nonce==='faibots:assignment:'+id)))
     return 'Cancellation after a match is available only for selected background assignments.'
 }
 

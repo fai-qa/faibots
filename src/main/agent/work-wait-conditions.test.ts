@@ -81,6 +81,41 @@ it('observes only a new webhook on the selected owner-configured routine',()=>{
   expect(entry?.text).not.toContain('private payload')
 })
 
+it.each(['allowed','ask','revoked'] as const)('respects %s cancellation permission across a live wait',async mode=>{
+  const {store,bus}=h.services
+  for(const tool of [...h.runtime.assignments.tools(),...workBriefTools(store,bus)]) h.services.tools.register(tool)
+  const chief=h.bot('fai',{isPrimary:true}), room=h.runtime.openDm(chief.id)
+  h.bot('Reviewer');h.bot('Backup')
+  let releaseReview!:()=>void, releaseBackup!:()=>void
+  const review=new Promise<void>(r=>{releaseReview=r}), backup=new Promise<void>(r=>{releaseBackup=r})
+  const work=workBriefs(store.db)
+  if(mode==='ask') store.bots.update(chief.id,{toolPermissions:{cancel_assignment:'ask'}})
+  let calls=0,registration=''
+  h.engine.script('reviewer',async api=>{await review;api.say('Pass')})
+    .script('backup',async api=>{await Promise.race([backup,api.untilAborted()]);api.say('Backup observation')})
+    .script('fai',async api=>{
+      if(++calls===1) {
+        await api.tool('plan_work',{objective:'Compare reviews',deliverable:'Checked answer',checks:'Exact reviewer reply'})
+        for(const to of ['reviewer','backup']) await api.tool('assign_to_agent',{to,message:'Check the fixture'})
+        const brief=work.list(room.id)[0]!
+        const assigned=work.assignments(brief.id).map(row=>row.id)
+        const saved=await api.tool('review_work',{action:'wait',id:brief.id,revision:brief.revision,
+          waitFor:{kind:'first_match',assignmentIds:assigned,expectedReply:'Pass',remaining:'cancel'}})
+        registration=saved.isError?'refused':'waiting'
+      }
+      api.say('Checked the work state.')
+    })
+  await h.runtime.send({conversationId:room.id,text:'Start the reviews',clientNonce:'review',attachmentPaths:[],mentions:[],mentionsEveryone:false})
+  try {
+    await vi.waitFor(()=>expect(registration).toBe(mode==='ask'?'refused':'waiting'))
+    if(mode==='revoked') store.bots.update(chief.id,{toolPermissions:{cancel_assignment:'never'}})
+    releaseReview()
+    if(mode!=='ask') await vi.waitFor(()=>expect(calls).toBe(2))
+    const statuses=work.assignments(work.list(room.id)[0]!.id).map(child=>child.state)
+    expect(statuses).toContain(mode==='allowed'?'reconciliation_required':'assigned')
+  } finally { releaseReview(); releaseBackup();await h.runtime.idle() }
+})
+
 it('wakes on time with no incoming message or worker, once',async()=>{
   for(const tool of workBriefTools(h.services.store,h.services.bus)) h.services.tools.register(tool)
   const chief=h.bot('fai',{isPrimary:true}),room=h.runtime.openDm(chief.id)

@@ -1,4 +1,4 @@
-import { MAX_ASKS_PER_CHAIN } from '@shared/work-brief'
+import { MAX_ASKS_PER_CHAIN, type WorkBrief } from '@shared/work-brief'
 import { z } from 'zod'
 import { getHandoffCheckpoint } from '../store/escalations'
 import { MAIN_BOT_NAME } from '../store/bots'
@@ -26,6 +26,19 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
   const changed = (conversationId: string) => bus.emit('work:changed', { conversationId })
   const handoffs = (chat: string, lookup: { userEntryId?: string; workId?: string }) =>
     getHandoffCheckpoint(store, chat, lookup, authority).map(({id,workId,availability}) => ({id,workId,availability}))
+  function inScope(ctx: ToolContext, id?: string) {
+    const trigger = ctx.projectResultTrigger
+    const entry = trigger && store.entries.get(trigger.entryId)
+    const origin = entry && projectResultOrigin(store,ctx.conversation.id,entry,trigger?.wake)
+    if (trigger && (!origin || !ctx.selectedResultAvailable?.())) throw new WorkRefusal('The selected project request is unavailable.')
+    const rows = work.forRequest(ctx.conversation.id,origin ?? null,id)
+    if (id && !rows.length) throw new WorkRefusal('No such work in this request.')
+    return rows
+  }
+  // Source content is returned through its live, permission-checked reader. The owner can see the full work card.
+  const receipt = (ctx:ToolContext, brief:WorkBrief) => ctx.projectResultTrigger
+    ? {id:brief.id,state:brief.state,revision:brief.revision,assignmentLimit:brief.assignmentLimit,partial:brief.partial}
+    : brief
   function checkProjectResult(ctx: ToolContext, workId: string, result: string) {
     const entryId = work.get(workId,ctx.conversation.id).userEntryId
     if (!store.db.prepare('select 1 from project_request_instructions where entry_id=? and candidate_id is not null').get(entryId)) return
@@ -54,10 +67,11 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
         const existing = handoffs(ctx.conversation.id,{userEntryId:ctx.userEntryId})
         if (existing.some(ref=>ref.availability==='withheld')) throw new WorkRefusal('The selected handoff is no longer available. Ask the owner to select its current scope.')
         const linked = existing.find(ref => ref.workId)?.workId
+        if (linked) inScope(ctx,linked)
         const brief = linked ? work.resume(ctx.conversation.id,linked,ctx.turnId) :
           work.start(ctx.conversation.id,ctx.userEntryId,ctx.turnId,input.objective,input.deliverable,input.checks,input)
         changed(ctx.conversation.id)
-        return textResult(JSON.stringify({...brief,...(existing.length && {handoffs:existing})}))
+        return textResult(JSON.stringify({...receipt(ctx,brief),...(existing.length && {handoffs:existing})}))
       }
     }),
     defineTool({
@@ -74,25 +88,31 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
         if (input.waitFor && input.action !== 'wait') throw new WorkRefusal('Use a wait condition only with the wait action.')
         if (input.choices && (input.action !== 'question' || new Set(input.choices.map(choice => choice.normalize('NFKC').toLowerCase())).size !== input.choices.length))
           throw new WorkRefusal('Use distinct suggested answers only when asking a question.')
-        if (input.action === 'list') return textResult(JSON.stringify(work.list(ctx.conversation.id)))
+        if (input.action === 'list') return textResult(JSON.stringify(inScope(ctx).map(brief=>receipt(ctx,brief))))
         if (!input.id) throw new WorkRefusal('Choose the brief by its ID.')
+        inScope(ctx,input.id)
         if (input.action === 'resume') {
           const refs = handoffs(ctx.conversation.id,{workId:input.id})
           const brief = work.resume(ctx.conversation.id,input.id,ctx.turnId)
-          return textResult(JSON.stringify({...brief,...(refs.length && {handoffs:refs})}))
+          return textResult(JSON.stringify({...receipt(ctx,brief),...(refs.length && {handoffs:refs})}))
         }
         if (input.action === 'wait') {
           if (!input.revision) throw new WorkRefusal('Include the current revision.')
+          if (input.waitFor?.kind === 'first_match' && input.waitFor.remaining === 'cancel') {
+            const permission = store.bots.get(ctx.bot.id)?.toolPermissions.cancel_assignment ?? store.settings.get().toolPermissions.cancel_assignment ?? 'always'
+            if (permission !== 'always' || !ctx.admittedTools?.has('cancel_assignment'))
+              throw new WorkRefusal('This chat requires a separate decision to cancel an assignment. Keep remaining workers running and request cancellation separately.')
+          }
           const brief = work.wait(ctx.conversation.id,input.id,input.revision,ctx.turnId,input.waitFor)
           changed(ctx.conversation.id)
-          return textResult(JSON.stringify(brief))
+          return textResult(JSON.stringify(receipt(ctx,brief)))
         }
         if (!input.text || !input.revision) throw new WorkRefusal('Include the current revision and the question or result.')
         if (input.action === 'result' && !input.partial) checkProjectResult(ctx,input.id,input.text)
         const brief = work.submit(ctx.conversation.id, input.id, input.revision, input.action, input.text,
           input.action === 'result' ? input.evidenceEntryIds ?? [] : [], ctx.turnId, input.action === 'result' && input.partial === true, input.choices)
         changed(ctx.conversation.id)
-        return textResult(JSON.stringify(brief))
+        return textResult(JSON.stringify(receipt(ctx,brief)))
       }
     })
   ]

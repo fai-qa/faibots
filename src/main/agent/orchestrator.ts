@@ -813,10 +813,11 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const claimed = store.db.prepare("update project_result_requests set state='started',turn_id=? where entry_id=? and state='queued'").run(turnId,resultOrigin)
       if (!claimed.changes) return {status:'skipped',posts:[]}
     }
+    let cancelAfterReview: string[] = []
     if (req.wake) {
       const claimed = this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)
       if (!claimed) return { status:'skipped',posts:[] }
-      for (const id of claimed.cancel) this.assignments.abort(id)
+      cancelAfterReview = claimed.cancel
     }
     let resultWithdrawn = false
     const selectedResultAvailable: (() => boolean) | undefined = resultOrigin ? () => {
@@ -931,6 +932,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
           !selectedResultAvailable?.())) {
         recorder.event(SELECTED_RESULT_WITHHELD)
         return { status: 'skipped', posts: [] }
+      }
+      if (cancelAfterReview.length) {
+        const cancel = turnTools.find(tool=>tool.name==='cancel_assignment')
+        const permission = store.bots.get(bot.id)?.toolPermissions.cancel_assignment ?? store.settings.get().toolPermissions.cancel_assignment ?? cancel?.defaultPermission
+        if (cancel && permission==='always' && !signal.aborted) {
+          for (const id of cancelAfterReview) this.assignments.abort(id)
+        } else recorder.event('Cancellation permission changed. Check the remaining assignments before continuing.')
       }
       await engine.run({
         turnId,
