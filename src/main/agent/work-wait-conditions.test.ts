@@ -7,6 +7,8 @@ import { createHarness, type Harness } from './testing/fakes'
 import { workBriefTools } from './work-brief-tools'
 import { backgroundAnchor, createDelegationRepo } from '../store/delegations'
 import { workBriefs } from '../store/work-briefs'
+import { createRoutineService } from '../routines/routines'
+import { createWebhookServer } from '../routines/webhook-server'
 
 let h: Harness
 beforeEach(()=>{h=createHarness()})
@@ -119,6 +121,43 @@ it.each(['allowed','ask','revoked'] as const)('respects %s cancellation permissi
     const statuses=work.assignments(work.list(room.id)[0]!.id).map(child=>child.state)
     expect(statuses).toContain(mode==='allowed'?'reconciliation_required':'assigned')
   } finally { releaseReview(); releaseBackup();await h.runtime.idle() }
+})
+
+it('resumes the brief when the local listener admits an authenticated routine event',async()=>{
+  const {store,bus}=h.services
+  const chief=h.bot('fai',{isPrimary:true}), room=h.runtime.openDm(chief.id)
+  const routines=createRoutineService({store,bus,runtime:h.runtime})
+  const listener=createWebhookServer(routines)
+  const hook=routines.save({name:'Delivery update',botId:chief.id,prompt:'Acknowledge receipt.',schedule:{kind:'manual'},webhookEnabled:true})
+  const token=routines.newWebhookToken(hook.id)
+  for(const tool of workBriefTools(store,bus)) h.services.tools.register(tool)
+  const work=workBriefs(store.db)
+  let resumed=0
+  h.engine.script('fai',async api=>{
+    if (!work.list(room.id).length) {
+      await api.tool('plan_work',{objective:'Watch the delivery',deliverable:'Arrival time',checks:'Wait for the delivery event'})
+      const brief=work.list(room.id)[0]!
+      const registered=await api.tool('review_work',{action:'wait',id:brief.id,revision:brief.revision,waitFor:{kind:'webhook',routineId:hook.id}})
+      expect(registered.isError).not.toBe(true)
+    } else if (h.engine.turns.at(-1)?.newTexts.some(text=>text.includes('The selected routine received a webhook.'))) resumed++
+    api.say('Recorded.')
+  })
+  try {
+    let port=0
+    for(let i=0;i<5;i++) {
+      port=40_000+Math.floor(Math.random()*20_000)
+      if((await listener.listen(port)).listening) break
+    }
+    expect(listener.status().listening).toBe(true)
+    store.settings.update({webhooks:{enabled:true,port}})
+    await h.send(room.id,'Watch this delivery.')
+    expect(work.list(room.id)[0]?.state).toBe('waiting')
+    const ack=await fetch(listener.url(hook.id,port),{method:'POST',headers:{authorization:'Bearer '+token},body:'Delivered'})
+    expect(ack.status).toBe(202)
+    await vi.waitFor(()=>expect(resumed).toBe(1),{timeout:4000})
+    await h.runtime.idle()
+    expect(store.db.prepare("select count(*) as n from chief_wakes where state='finished'").get()?.n).toBe(1)
+  } finally {await listener.close();await routines.shutdown()}
 })
 
 it('wakes on time with no incoming message or worker, once',async()=>{
