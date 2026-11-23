@@ -116,7 +116,7 @@ describe('Codex engine', () => {
     // Our prompt goes before the first message of the thread.
     expect(typeof run.input === 'string' && run.input).toMatch(/You ship small, tested changes\.[\s\S]*---\n\n\[Alex\] what is in my folder\?$/)
     expect(run.options.configOverrides).toEqual([
-      'mcp_servers={ faibots = { url = "http://127.0.0.1:1/mcp", bearer_token_env_var = "FAIBOTS_BRIDGE_TOKEN", tool_timeout_sec = 1800, tools = { read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, shell = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" }, assign_to_agent = { approval_mode = "approve" }, assignment_status = { approval_mode = "approve" }, wait_for_assignment = { approval_mode = "approve" }, cancel_assignment = { approval_mode = "approve" }, group_work_snapshot = { approval_mode = "approve" }, plan_work = { approval_mode = "approve" }, review_work = { approval_mode = "approve" }, read_handoff = { approval_mode = "approve" }, read_project_result = { approval_mode = "approve" } } } }',
+      'mcp_servers={ faibots = { url = "http://127.0.0.1:1/mcp", bearer_token_env_var = "FAIBOTS_BRIDGE_TOKEN", tool_timeout_sec = 1800, tools = { read_file = { approval_mode = "approve" }, write_file = { approval_mode = "approve" }, shell = { approval_mode = "approve" }, send_to_agent = { approval_mode = "approve" }, list_bots = { approval_mode = "approve" }, create_bot = { approval_mode = "approve" }, pass_turn = { approval_mode = "approve" }, assign_to_agent = { approval_mode = "approve" }, assignment_status = { approval_mode = "approve" }, wait_for_assignment = { approval_mode = "approve" }, cancel_assignment = { approval_mode = "approve" }, group_work_snapshot = { approval_mode = "approve" }, plan_work = { approval_mode = "approve" }, review_work = { approval_mode = "approve" }, list_routines = { approval_mode = "approve" }, read_handoff = { approval_mode = "approve" }, read_project_result = { approval_mode = "approve" } } } }',
       'features.apps=false',
       'features.plugins=false',
       'project_doc_max_bytes=0',
@@ -277,19 +277,27 @@ describe('Codex engine', () => {
     expect(ctx(dm.id).engineSessionId).toBe('t2')
   })
 
-  it.each(['unbound', 'old scope'])('carries chat history into a scoped thread for an %s session', async (legacy) => {
+  it.each(['unbound', 'old scope', 'account MCP scope'])('carries chat history into a scoped thread for an %s session', async (legacy) => {
     const dm = setup([done('first'), done('scoped'), resumedOk])
     await h.send(dm.id, 'I call the workshop Cedar.')
     const old = ctx(dm.id)
-    const engineBinding = legacy === 'unbound' ? undefined : old.engineBinding?.replace(/:chat-scope-v1$/, '')
+    const engineBinding = legacy === 'unbound' ? undefined : old.engineBinding?.replace(/:chat-scope-v2$/, legacy === 'account MCP scope' ? ':chat-scope-v1' : '')
     h.services.store.botContext.set({ ...old, engineBinding })
     await h.send(dm.id, 'Write the announcement from these facts, in Arabic and English.')
     expect(fake.runs[1]!.resumed).toBeUndefined()
     expect(fake.runs[1]!.input as string).toContain('I call the workshop Cedar.')
     expect(fake.runs[1]!.input as string).toContain('in Arabic and English')
-    expect(ctx(dm.id).engineBinding).toMatch(/:chat-scope-v1$/)
+    expect(ctx(dm.id).engineBinding).toMatch(/:chat-scope-v2$/)
     await h.send(dm.id, 'Keep both languages.')
     expect(fake.runs[2]!.resumed).toBe('scoped')
+  })
+
+  it('explains incompatible scoped sign-in without retrying with account configuration', async () => {
+    const dm = setup([done('first'), [{ type: 'turn.failed', error: { message: '401 Unauthorized' } }]])
+    await h.send(dm.id, 'First draft')
+    await h.send(dm.id, 'Continue')
+    expect(fake.runs).toHaveLength(2)
+    expect(entries(dm.id).filter(entry => entry.kind === 'event').map(entry => entry.text).join(' ')).toContain('custom credential store')
   })
 
   it('keeps the thread when the model changes within Codex', async () => {
