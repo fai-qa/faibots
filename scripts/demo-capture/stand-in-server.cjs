@@ -10,15 +10,14 @@ const SUMMARY = [
   LABEL,
   '- The riverside market opens at 8.',
   '- Stall holders bring their own tables.',
-  '- The square closes at noon on market day.',
-  '- Tables are not supplied with the stall.',
-  '- Morning trade ends at noon.'
+  '- The square closes at noon on market day.'
 ].join('\n')
 
 const ASK = `${LABEL} Please tighten these three notes into one sentence: the riverside market opens at 8, stall holders bring their own tables, and the square closes at noon.`
 const EDITOR_EXCHANGE = `${LABEL} Tightened: The riverside market runs from 8 until noon, and stall holders bring their own tables.`
 const RESEARCHER_FOLLOWUP = `${LABEL} I asked Editor to tighten the three notes. @editor, please confirm this line: The riverside market runs from 8 until noon, and stall holders bring their own tables.`
 const EDITOR_GROUP = `${LABEL} Yes. That line matches the notes: open at 8, own tables, and close at noon.`
+const REVIEWER_GROUP = `${LABEL} That line covers all three notes.`
 const FALLBACK = `${LABEL} This stand-in has no other scripted reply.`
 
 function textOf(message) {
@@ -82,7 +81,7 @@ function decide(body) {
   let decision
   if (kind === 'exchange') {
     decision = asText(name === 'Editor' ? EDITOR_EXCHANGE : FALLBACK)
-  } else if (flat.includes('Summarise these 3 notes into 5 bullet points.') && kind !== 'group') {
+  } else if (flat.includes('Summarise these 3 notes into 3 bullet points.') && kind !== 'group') {
     decision = asText(SUMMARY)
   } else if (kind === 'group' && name === 'Researcher') {
     if (tool) decision = asText(RESEARCHER_FOLLOWUP)
@@ -90,6 +89,10 @@ function decide(body) {
     else decision = asTool('send_to_agent', { to: '@editor', message: ASK, reason: 'Editor tightens wording.' })
   } else if (kind === 'group' && name === 'Editor') {
     decision = addressed ? asText(EDITOR_GROUP) : asTool('pass_turn', { reason: 'Nothing to add.' })
+  } else if (kind === 'group' && name === 'Reviewer') {
+    const lineIsIn = flat.includes('The riverside market runs from 8 until noon')
+    if (spoke || !lineIsIn) decision = asTool('pass_turn', { reason: 'Nothing to add.' })
+    else decision = asText(REVIEWER_GROUP)
   } else if (kind === 'group') {
     decision = addressed ? asText(FALLBACK) : asTool('pass_turn', { reason: 'Nothing to add.' })
   } else if (kind === 'dm') {
@@ -258,9 +261,10 @@ async function selfTest() {
   const system = (who, where) => ({ role: 'system', content: `You are ${who}.\n${where}` })
   const summary = await post([
     system('Researcher (@researcher).', 'A private chat between you and Sam.'),
-    { role: 'user', content: [{ type: 'text', text: 'Summarise these 3 notes into 5 bullet points.\n\nNote 1: opens at 8.' }] }
+    { role: 'user', content: [{ type: 'text', text: 'Summarise these 3 notes into 3 bullet points.\n\nNote 1: opens at 8.' }] }
   ])
-  if (!summary.includes(LABEL) || !summary.includes('Morning trade ends at noon.')) throw new Error('summary reply was not canned')
+  if (summary !== SUMMARY) throw new Error('summary reply was not the three notes')
+  if (summary.includes('Morning trade') || summary.includes('not supplied')) throw new Error('summary added a fact')
   const ask = await post([
     system('Researcher (@researcher).', 'The group chat "Notes".'),
     { role: 'user', content: '[Sam] @researcher Ask Editor to tighten the notes.\n(faibots: you were addressed, so reply; do not pass.)' }
@@ -285,6 +289,17 @@ async function selfTest() {
     { role: 'user', content: '(faibots: nobody addressed you directly. Reply only if you can add something useful; otherwise call pass_turn.)' }
   ])
   if (!reviewer.includes('pass_turn')) throw new Error('reviewer did not pass')
+  const reviewerSpeaks = await post([
+    system('Reviewer (@reviewer).', 'The group chat "Notes".'),
+    { role: 'user', content: '[Researcher] The riverside market runs from 8 until noon, and stall holders bring their own tables.\n(faibots: nobody addressed you directly. Reply only if you can add something useful; otherwise call pass_turn.)' }
+  ])
+  if (!reviewerSpeaks.startsWith(LABEL) || !reviewerSpeaks.includes('That line covers all three notes.')) throw new Error('reviewer group reply was not the three-note check')
+  const reviewerAgain = await post([
+    system('Reviewer (@reviewer).', 'The group chat "Notes".'),
+    { role: 'assistant', content: REVIEWER_GROUP },
+    { role: 'user', content: '[Editor] Yes. The riverside market runs from 8 until noon.\n(faibots: nobody addressed you directly. Reply only if you can add something useful; otherwise call pass_turn.)' }
+  ])
+  if (!reviewerAgain.includes('pass_turn')) throw new Error('reviewer spoke twice')
   const models = await fetch(`${baseUrl}/models`)
   if (!(await models.json()).data.some((row) => row.id === 'stand-in')) throw new Error('model list missing stand-in')
   await close()

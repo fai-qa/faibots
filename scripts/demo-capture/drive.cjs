@@ -251,7 +251,7 @@ async function ensureModel(win, name, model) {
 }
 
 const DM_MESSAGE = [
-  'Summarise these 3 notes into 5 bullet points.',
+  'Summarise these 3 notes into 3 bullet points.',
   '',
   'Note 1: The riverside market opens at 8.',
   'Note 2: Stall holders bring their own tables.',
@@ -321,7 +321,14 @@ async function demo(win) {
   await pressEnter(win, DM_FIELD)
   await waitFor(win, `(() => {
     const text = document.querySelector('main')?.innerText || ''
-    return text.includes('[stand-in model]') && text.includes('Morning trade ends at noon.') && !/is (typing|working|reading)/.test(text)
+    const n = (s) => text.split(s).length - 1
+    return text.includes('[stand-in model]')
+      && n('The riverside market opens at 8.') >= 2
+      && n('Stall holders bring their own tables.') >= 2
+      && n('The square closes at noon on market day.') >= 2
+      && !text.includes('Morning trade ends at noon')
+      && !text.includes('Tables are not supplied')
+      && !/is (typing|working|reading)/.test(text)
   })()`, 'the Researcher reply', 45000)
   await sleep(1600)
   markProof()
@@ -358,8 +365,8 @@ async function demo(win) {
     const text = document.querySelector('main')?.innerText || ''
     const link = document.querySelector('button[aria-label^="Open bot conversation:"]')?.getAttribute('aria-label') || ''
     const labels = (text.match(/\\[stand-in model\\]/g) || []).length
-    return labels >= 2 && link.includes('messages with Editor') && text.includes('I asked Editor to tighten') && text.includes('That line matches the notes') && !/is (typing|working|reading)/.test(text)
-  })()`, 'both group replies and the messages link', 60000)
+    return labels >= 3 && link.includes('messages with Editor') && text.includes('I asked Editor to tighten') && text.includes('That line matches the notes') && text.includes('That line covers all three notes.') && !/is (typing|working|reading)/.test(text)
+  })()`, 'all three group replies and the messages link', 60000)
   await evalJs(win, `(() => { const el = document.querySelector('[data-transcript]'); if (el) el.scrollTop = el.scrollHeight })()`)
   const linkLabel = await evalJs(win, `document.querySelector('button[aria-label^="Open bot conversation:"]')?.getAttribute('aria-label') || ''`)
   log(`link ${linkLabel}`)
