@@ -30,7 +30,7 @@ const REVIEW_PRESENTATION = {
   partial: { label: 'Review incomplete', tone: 'neutral' }
 } as const
 
-export function ProjectView({ projectId }: { projectId: string }) {
+export function ProjectView({ projectId, pageId }: { projectId: string; pageId?: string }) {
   const project = useData((s) => s.projects.find((p) => p.id === projectId))
   // The journey version bumps on every push from the main process, so panels refetch honestly.
   const journeyVersion = useData((s) => s.versions.journey[projectId] ?? 0)
@@ -138,7 +138,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                 attach here.
               </EmptyState>
             )}
-          </section> : <ProjectSpace key={projectId} projectId={projectId} version={journeyVersion} attaching={attaching} onAttach={()=>void attach()} />}
+          </section> : <ProjectSpace key={pageId ?? projectId} projectId={projectId} initialPageId={pageId} version={journeyVersion} attaching={attaching} onAttach={()=>void attach()} />}
           <ProjectImprovements key={projectId + '-instructions'} projectId={projectId} version={journeyVersion} />
 
           {/* Mission ----------------------------------------------------------------- */}
@@ -202,7 +202,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                 )}
               </div>
             ) : (
-              <EmptyState icon={FileCheck2} title="No artifacts yet">
+              <EmptyState icon={FileCheck2} title="No proposal drafts yet">
                 Saved drafts and their reviews appear here.
               </EmptyState>
             )}

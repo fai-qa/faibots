@@ -3,7 +3,7 @@
 import { create } from 'zustand'
 import type { Id } from '@shared/domain'
 
-export type Route = { kind: 'conversation'; id: Id } | { kind: 'project'; id: Id } | { kind: 'new-chat' } | { kind: 'home' }
+export type Route = { kind: 'conversation'; id: Id } | { kind: 'project'; id: Id; pageId?: Id } | { kind: 'new-chat' } | { kind: 'home' }
 
 export type DetailsTab = 'profile' | 'memory' | 'skills' | 'routines' | 'tools' | 'connectors'
 

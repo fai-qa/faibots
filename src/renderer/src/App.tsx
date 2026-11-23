@@ -94,7 +94,7 @@ function Shell() {
           {route.kind === 'new-chat' ? (
             <NewChatView />
           ) : route.kind === 'project' ? (
-            <ProjectView key={route.id} projectId={route.id} />
+            <ProjectView key={route.id} projectId={route.id} pageId={route.pageId} />
           ) : conv ? (
             <ChatView key={conv.id} conv={conv} />
           ) : (

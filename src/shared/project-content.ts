@@ -22,6 +22,19 @@ export interface SpacePage {
   createdAt: number
 }
 
+export interface AcceptedWorkPage extends Omit<SpacePage, 'runId'> {
+  projectId: Id
+  workId: Id
+  workRevision: number
+  partial: boolean
+}
+
+export interface WorkPageRequest {
+  conversationId: Id
+  workId: Id
+  revision: number
+}
+
 export interface ProjectEvaluation {
   runId: Id
   status: string
@@ -43,11 +56,16 @@ export interface ProjectEvaluation {
 export interface ProjectContent {
   space: { id: Id; name: string }
   library: LibrarySource[]
-  pages: SpacePage[]
+  pages: (SpacePage | AcceptedWorkPage)[]
   evaluations: ProjectEvaluation[]
 }
 
 export interface ContentInvoke {
+  'content:work-destinations': {
+    req: WorkPageRequest
+    res: { projects: { id: Id; name: string }[]; saved?: AcceptedWorkPage }
+  }
+  'content:save-work': { req: WorkPageRequest & { projectId: Id }; res: AcceptedWorkPage }
   'content:project': { req: { projectId: Id }; res: ProjectContent }
   'content:select': { req: { projectId: Id; itemId: Id; selected: boolean }; res: void }
   'content:revoke': { req: { projectId: Id; itemId: Id; targetProjectId?: Id }; res: void }
@@ -57,13 +75,16 @@ export interface ContentInvoke {
   'content:read-source': { req: { projectId: Id; sourceId: Id }; res: { text: string; sha256: string } }
   'content:read-page': {
     req: { projectId: Id; pageId: Id }
-    res: { body: string; sources: { name: string; sha256: string }[] }
+    res: { body: string; sources: { name: string; sha256: string }[]
+      attribution?: { workId: Id; workRevision: number; ownerAccepted: true; partial: boolean } }
   }
   'content:rerun': { req: { projectId: Id; runId: Id }; res: { runId: Id } }
   'content:evaluate': { req: { projectId: Id; runId: Id }; res: ProjectEvaluation }
 }
 
 export const CONTENT_CHANNELS = [
+  'content:work-destinations',
+  'content:save-work',
   'content:project',
   'content:select',
   'content:revoke',

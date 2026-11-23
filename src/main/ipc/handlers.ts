@@ -238,7 +238,8 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
     },
     'artifacts:list': ({ projectId }) => {
       if (!store.projects.get(projectId)) throw new Error('Project not found')
-      return store.artifacts.listByProject(projectId).map((artifact) => {
+      // Owner-saved chat results are private Space Pages with their own live access checks.
+      return store.artifacts.listByProject(projectId).filter((artifact) => artifact.kind !== 'work-result').map((artifact) => {
         const revisions = store.artifacts.revisions(artifact.id)
         const latest = revisions[revisions.length - 1]
         // The latest revision's content is shown only when the workspace deliverable file still
