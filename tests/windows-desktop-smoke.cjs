@@ -41,7 +41,7 @@ function fixtureResponse(messages) {
     if (result.tool_call_id === 'call_plan_work') {
       const brief = JSON.parse(textOf(result))
       return {name:'review_work',arguments:{id:brief.id,revision:brief.revision,action:answering?'result':'question',
-        text:answering?'Meet at Gate 4.':'Which pickup gate?'}}
+        text:answering?'Meet at Gate 4.':'Which pickup gate?',...(answering?{}:{choices:['Gate 2','Gate 4']})}}
     }
     return answering ? 'Your pickup note is ready.' : 'Please choose a gate.'
   }
@@ -221,8 +221,9 @@ async function checkWorkBrief(invoke, window, mode, profile, baseUrl) {
     writeFileSync(join(profile,'brief-id.txt'),brief.id)
   } else if (mode === 'brief-answer') {
     await waitForWindow(evaluate,contains('Which pickup gate?'),'the recovered owner question')
-    await evaluate(`document.querySelector('textarea[aria-label="Your answer"]').focus()`)
-    await window.webContents.insertText('Gate 4')
+    await evaluate(`[...document.querySelectorAll('[aria-label="Suggested answers"] button')].find(b=>b.textContent==='Gate 4').click()`)
+    await waitForWindow(evaluate,`document.querySelector('textarea[aria-label="Your answer"]').value === 'Gate 4'`, 'the editable selected answer')
+    assert.equal((await invoke('work:list',query))[0].state,'needs_input')
     await waitForWindow(evaluate, `[...document.querySelectorAll('button')].some(b=>b.textContent==='Send answer' && !b.disabled)`, 'the answer button')
     await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent==='Send answer').click()`)
     await waitForWindow(evaluate,contains('Meet at Gate 4.'),'the pickup note')

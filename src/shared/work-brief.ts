@@ -20,6 +20,7 @@ export interface WorkBrief extends WorkConstraints {
   revision: number
   lastInstruction: string
   question: string
+  choices: string[]
   partial: boolean
   result: string
   evidenceIds: string[]

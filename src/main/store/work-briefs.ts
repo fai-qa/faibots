@@ -10,6 +10,7 @@ function read(row: Row): WorkBrief {
     objective: str(row.objective), deliverable: str(row.deliverable), checks: str(row.checks),
     exclusions: str(row.exclusions), stopWhen: str(row.stop_when), assignmentLimit: num(row.assignment_limit),
     state: str(row.state) as WorkState, revision: num(row.revision), question: str(row.question), lastInstruction: str(row.last_instruction ?? ''),
+    choices: parseJson<string[]>(row.question_choices, []),
     result: str(row.result), partial: Boolean(row.partial), evidenceIds: parseJson<string[]>(row.evidence_ids, []), updatedAt: num(row.updated_at) }
 }
 
@@ -128,7 +129,7 @@ export function workBriefs(db: Db) {
         return get(id, chat)
       })
     },
-    submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[], turnId: string, partial: boolean) {
+    submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[], turnId: string, partial: boolean, choices: string[] = []) {
       return transaction(db, () => {
         const current = get(id, chat)
         if (current.state !== 'active' || current.revision !== revision) throw new WorkRefusal('This brief changed. Read its current state before updating it.')
@@ -141,9 +142,10 @@ export function workBriefs(db: Db) {
         for (const evidence of evidenceIds) {
           if (!db.prepare('select id from entries where id=? and conversation_id=?').get(evidence, chat)) throw new WorkRefusal('The evidence is unavailable in this chat.')
         }
-        const result = db.prepare(`update chief_work set state=?, question=?, result=?, partial=?, evidence_ids=?, revision=revision+1, updated_at=?
+        const result = db.prepare(`update chief_work set state=?, question=?, question_choices=?, result=?, partial=?, evidence_ids=?, revision=revision+1, updated_at=?
           where id=? and revision=? and state='active'`).run(kind === 'question' ? 'needs_input' : 'review',
-          kind === 'question' ? text : '', kind === 'result' ? text : current.result, partial ? 1 : 0, JSON.stringify(evidenceIds), Date.now(), id, revision)
+          kind === 'question' ? text : '', JSON.stringify(kind === 'question' ? choices : []),
+          kind === 'result' ? text : current.result, partial ? 1 : 0, JSON.stringify(evidenceIds), Date.now(), id, revision)
         if (!result.changes) throw new WorkRefusal('The brief was updated in another session.')
         return get(id, chat)
       })

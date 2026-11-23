@@ -34,14 +34,17 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
       }
     }),
     defineTool({
-      name: 'review_work', description: 'Look up work in this chat, ask a consequential question or submit a result for the user to review. Never mark your own work accepted.',
+      name: 'review_work', description: 'Look up work, ask a question when a missing decision blocks the job, or submit a result. For a question with distinct answers, put the question in text and the suggested answers in choices. The user can also type an answer. Never mark your own work accepted.',
       schema: z.object({
         action: z.enum(['list', 'wait', 'resume', 'question', 'result']), id: z.string().min(1).optional(),
         revision: z.number().int().positive().optional(), text: z.string().trim().min(1).max(16000).optional(),
+        choices: z.array(z.string().trim().min(1).max(240)).min(2).max(6).optional(),
         evidenceEntryIds: z.array(z.string().min(1)).max(32).optional(), partial: z.boolean().optional()
       }),
       source: 'faibots', defaultPermission: 'always', activityLabel: 'Reviewing work', isAvailable: available,
       async execute(input, ctx) {
+        if (input.choices && (input.action !== 'question' || new Set(input.choices.map(choice => choice.normalize('NFKC').toLowerCase())).size !== input.choices.length))
+          throw new WorkRefusal('Use distinct suggested answers only when asking a question.')
         if (input.action === 'list') return textResult(JSON.stringify(work.list(ctx.conversation.id)))
         if (!input.id) throw new WorkRefusal('Choose the brief by its ID.')
         if (input.action === 'resume') {
@@ -57,7 +60,7 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
         }
         if (!input.text || !input.revision) throw new WorkRefusal('Include the current revision and the question or result.')
         const brief = work.submit(ctx.conversation.id, input.id, input.revision, input.action, input.text,
-          input.action === 'result' ? input.evidenceEntryIds ?? [] : [], ctx.turnId, input.action === 'result' && input.partial === true)
+          input.action === 'result' ? input.evidenceEntryIds ?? [] : [], ctx.turnId, input.action === 'result' && input.partial === true, input.choices)
         changed(ctx.conversation.id)
         return textResult(JSON.stringify(brief))
       }

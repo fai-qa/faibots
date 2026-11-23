@@ -376,5 +376,8 @@ export const MIGRATIONS: string[] = [
     inputs text not null, body text not null, partial integer not null, created_at integer not null
   );
   create index accepted_pages_space on accepted_work_pages(space_id,created_at);
+  `,
+  /* 23: earlier questions stay open for free-text answers. */ `
+  alter table chief_work add column question_choices text not null default '[]';
   `
 ]

@@ -102,10 +102,17 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
           {brief.lastInstruction && <><dt className="text-fg-3">Your instruction</dt><dd>{brief.lastInstruction}</dd></>}
         </dl>
         <ScopeAndLimits brief={brief} />
-        {brief.state === 'needs_input' && <p className="whitespace-pre-wrap">{brief.question}</p>}
+        {brief.state === 'needs_input' && <>
+          <p dir="auto" className="whitespace-pre-wrap">{brief.question}</p>
+          {brief.choices.length > 0 && <div role="group" aria-label="Suggested answers" className="flex flex-wrap gap-2">
+            {brief.choices.map(choice => <button key={choice} type="button" dir="auto" aria-pressed={note === choice}
+              disabled={pending} onClick={() => setNote(choice)}
+              className={button + (note === choice ? ' bg-active ring-1 ring-ink' : '')}>{choice}</button>)}
+          </div>}
+        </>}
         {detailsOpen && brief.state === 'accepted' && <SaveWorkPage brief={brief} />}
         {brief.result && <div><strong>{brief.partial ? 'Partial result' : 'Result'}</strong><p className="whitespace-pre-wrap">{brief.result}</p></div>}
-        {(needsOwner || canSteer) && <textarea aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
+        {(needsOwner || canSteer) && <textarea dir="auto" aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
         <div className="flex flex-wrap gap-2">
           {canSteer && <button className={button} disabled={pending || !note.trim()} onClick={() => void decide('steer')}>Update this job</button>}
           {brief.state === 'needs_input' && <button className={button} disabled={pending || !note.trim()} onClick={() => void decide('answer')}>Send answer</button>}
