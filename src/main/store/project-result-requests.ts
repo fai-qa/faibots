@@ -83,7 +83,10 @@ export function queueProjectResult(
     }
     const nonce = 'project-result-' + req.requestId
     if (store.entries.findByNonce(chat, nonce)) throw new Error('This request ID is already in use.')
+    const entryId = randomUUID()
     const entry = store.entries.append({
+      id: entryId,
+      meta: { selectedResultEntryId: entryId },
       conversationId: chat,
       kind: 'message',
       author: { kind: 'user' },
