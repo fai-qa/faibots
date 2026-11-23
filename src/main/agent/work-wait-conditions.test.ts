@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { WorkWait } from '@shared/work-brief'
 import { createHarness, type Harness } from './testing/fakes'
 import { workBriefTools } from './work-brief-tools'
@@ -145,4 +148,32 @@ it('reports an expired deadline without cancelling work, and ignores a stale wak
   expect(store.entries.get(wake!.entryId)?.text).toContain('deadline expired')
   work.decide(room.id,{id:brief.id,revision:3,decision:'cancel',note:''})
   expect(work.claimWake(brief.id,wake!.revision,'obsolete')).toBeUndefined()
+})
+
+it('delivers an overdue scheduled brief once across two desktop restarts',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'faibots-overdue-'))
+  let disk=createHarness({diskProfile:dir})
+  try {
+    const chief=disk.bot('fai',{isPrimary:true}),chat=disk.runtime.openDm(chief.id)
+    const entry=disk.services.store.entries.append({conversationId:chat.id,kind:'message',author:{kind:'user'},text:'Follow up later',
+      mentions:[],mentionsEveryone:false,attachments:[],isStreaming:false})
+    const work=workBriefs(disk.services.store.db)
+    const brief=work.start(chat.id,entry.id,'initial','Follow up','A reminder','At the selected time')
+    const at=new Date(Date.now()+60_000).toISOString()
+    work.wait(chat.id,brief.id,1,'initial',{kind:'time',at})
+    await disk.runtime.shutdown()
+    // Model elapsed wall time while the app was closed, without sleeping for a minute.
+    disk.services.store.db.prepare('update chief_wakes set due_at=? where work_id=?').run(Date.now()-1,brief.id)
+    disk.cleanup()
+    let calls=0
+    for(let boot=0;boot<2;boot++) {
+      disk=createHarness({diskProfile:dir})
+      disk.engine.script('fai',api=>{calls++;api.say('Here is the reminder.')})
+      await Promise.resolve()
+      await disk.runtime.idle()
+      expect(calls).toBe(1)
+      expect(disk.services.store.entries.since(chat.id,0).filter(e=>e.clientNonce?.startsWith('work-wake-'))).toHaveLength(1)
+      if(boot===0) {await disk.runtime.shutdown();disk.cleanup()}
+    }
+  } finally {await disk.runtime.shutdown();disk.cleanup();rmSync(dir,{recursive:true,force:true})}
 })
