@@ -31,12 +31,15 @@ const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
 const IMPROVEMENTS_VERSION = MIGRATIONS.indexOf(PROJECT_IMPROVEMENTS_SCHEMA) + 1
 const ESCALATION_VERSION = MIGRATIONS.indexOf(ESCALATION_SCHEMA) + 1
+const WORK_PAGE_VERSION = 22
 const RESULT_REQUEST_VERSION = 19
 const LATEST = MIGRATIONS.length
 
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name:'accepted_work_pages', since:WORK_PAGE_VERSION, order:'id',
+    cols:['id','space_id','work_id','work_revision','chat_id','entry_id','revision_id','review_id','inputs','body','partial','created_at'] },
   { name: 'project_result_requests', since: RESULT_REQUEST_VERSION,
     cols: ['id','session_id','answer_id','owner_id','conversation_id','entry_id','instruction','state','turn_id'], order: 'id' },
   { name: 'turn_context_receipts', since: CONTEXT_VERSION, cols: ['turn_id','conversation_id','session_id','project_id','payload'], order: 'turn_id' },
@@ -130,6 +133,11 @@ function seed(db: DatabaseSync, v: number): void {
       `rev-${t}`, `art-${t}`, 'b'.repeat(64))
     run(`insert into review_decisions (id, artifact_revision_id, rubric, reviewer, decision, explanation, created_at) values (?, ?, ?, 'user', 'accepted', '', 1)`,
       `dec-${t}`, `rev-${t}`, `rubric ${t}`)
+  }
+  if (v >= WORK_PAGE_VERSION) {
+    run('insert into accepted_work_pages values (?,?,?,?,?,?,?,?,?,?,?,?)',
+      'work-page-'+t,'proj-'+t,'work-'+t,3,'conv-'+t,'entry-'+t,'rev-'+t,'dec-'+t,
+      '{"results":[],"handoffs":[],"attachments":[],"evidenceIds":[]}','Comparison memo',0,3)
   }
   if (v >= 7) {
     run(`insert into journey_runs (id, project_id, artifact_id, status, budgets, started_at, ended_at) values (?, ?, ?, 'complete', '{}', 1, 2)`,

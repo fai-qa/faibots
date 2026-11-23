@@ -593,7 +593,7 @@ export interface ProjectSource {
 }
 
 /** The project deliverable (owner decision c: Markdown only). Revisions hold its content identity. */
-export type ArtifactKind = 'proposal'
+export type ArtifactKind = 'proposal' | 'work-result'
 /** Draft: revisions exist, nothing is reviewed yet. Reviewed: a review decision was recorded. */
 export type ArtifactStatus = 'draft' | 'reviewed'
 

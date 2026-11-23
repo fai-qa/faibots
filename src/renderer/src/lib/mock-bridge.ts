@@ -818,6 +818,7 @@ export function createMockBridge(): FaiBotsBridge {
     'improvement:list': () => ({ active: null, cases: [], candidates: [], trials: [], history: [], production: [] }),
     'improvement:propose': desktopContent, 'improvement:review': desktopContent, 'improvement:trial': desktopContent,
     'improvement:publish': desktopContent, 'improvement:rollback': desktopContent,
+    'content:work-destinations': desktopContent, 'content:save-work': desktopContent,
     'content:project': desktopContent, 'content:select': desktopContent, 'content:revoke': desktopContent, 'content:restore': desktopContent,
     'context:turns': desktopContent,
     'session:project': desktopContent, 'session:open': desktopContent, 'session:lookup': desktopContent, 'session:history': desktopContent, 'session:ask-fai': desktopContent, 'session:instruction': desktopContent,

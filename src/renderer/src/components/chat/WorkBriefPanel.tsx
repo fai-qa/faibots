@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { WorkBrief, WorkDecision, WorkScope } from '@shared/work-brief'
+import { SaveWorkPage } from './SaveWorkPage'
 import { errorMessage, invoke, on } from '../../lib/bridge'
 
 const stateLabels = {
@@ -102,6 +103,7 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
         </dl>
         <ScopeAndLimits brief={brief} />
         {brief.state === 'needs_input' && <p className="whitespace-pre-wrap">{brief.question}</p>}
+        {detailsOpen && brief.state === 'accepted' && <SaveWorkPage brief={brief} />}
         {brief.result && <div><strong>{brief.partial ? 'Partial result' : 'Result'}</strong><p className="whitespace-pre-wrap">{brief.result}</p></div>}
         {(needsOwner || canSteer) && <textarea aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
         <div className="flex flex-wrap gap-2">

@@ -366,5 +366,15 @@ export const MIGRATIONS: string[] = [
   create index delegation_question on delegations(question_id);
   create index assignment_children on assignment_admissions(parent_assignment_id);
   create index message_replies on entries(reply_to_id) where kind='message' and reply_to_id is not null;
+  `,
+  /* 22: an explicitly saved work result keeps its immutable body and source receipts in one transaction. */ `
+  create table accepted_work_pages (
+    id text primary key, space_id text not null references project_spaces(id) on delete cascade,
+    work_id text not null unique, work_revision integer not null, chat_id text not null, entry_id text not null,
+    revision_id text not null unique references artifact_revisions(id) on delete cascade,
+    review_id text not null references review_decisions(id) on delete cascade,
+    inputs text not null, body text not null, partial integer not null, created_at integer not null
+  );
+  create index accepted_pages_space on accepted_work_pages(space_id,created_at);
   `
 ]

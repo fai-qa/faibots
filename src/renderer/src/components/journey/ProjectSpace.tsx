@@ -145,6 +145,9 @@ function PublishedPage({ projectId, pageId }: { projectId: string; pageId: strin
   if (!page.data) return <p className="text-[12px] text-fg-3">Opening Page…</p>
   return (
     <article className="space-y-2 rounded-card border border-line-soft p-3">
+      {page.data.attribution && <p className="text-xs text-fg-3">
+        {page.data.attribution.partial ? 'Partial result accepted by you' : 'Accepted by you'} in fai chat · Work revision {page.data.attribution.workRevision}
+      </p>}
       <Markdown text={page.data.body} />
       <details>
         <summary className="cursor-pointer text-[12px] text-fg-3">Source revisions</summary>
@@ -160,17 +163,19 @@ function PublishedPage({ projectId, pageId }: { projectId: string; pageId: strin
 
 export function ProjectSpace({
   projectId,
+  initialPageId,
   version,
   attaching,
   onAttach
 }: {
   projectId: string
+  initialPageId?: string
   version: number
   attaching: boolean
   onAttach: () => void
 }) {
   const state = useAsync(() => invoke('content:project', { projectId }), [projectId, version])
-  const [pageId, setPageId] = useState('')
+  const [pageId, setPageId] = useState(initialPageId ?? '')
   if (state.error) return <p role="alert">{state.error}</p>
   if (!state.data) return null
   const { space, library, pages, evaluations } = state.data
