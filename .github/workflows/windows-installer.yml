@@ -35,6 +35,8 @@ jobs:
             throw "Expected one installer exe in dist, found $($files.Count)."
           }
           $file = $files[0]
+          node scripts/windows-notices.cjs $file.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Installer license verification failed." }
           $signature = Get-AuthenticodeSignature -FilePath $file.FullName
           if ($signature.Status -ne 'NotSigned') {
             throw "Expected an unsigned installer. Authenticode status: $($signature.Status)."

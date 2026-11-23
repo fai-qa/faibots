@@ -8,6 +8,7 @@ import { attempt, run } from '../../store/actions'
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Field'
 import { Markdown } from '../chat/Markdown'
+import { AskFai } from './AskFai'
 
 function SourcePreview({ projectId, sourceId }: { projectId: string; sourceId: string }) {
   const state = useAsync(() => invoke('content:read-source', { projectId, sourceId }), [projectId, sourceId])
@@ -134,7 +135,7 @@ function LibraryRow({ projectId, item }: { projectId: string; item: LibrarySourc
   )
 }
 
-function PublishedPage({ projectId, pageId }: { projectId: string; pageId: string }) {
+function PublishedPage({ projectId, pageId, revisionId, sha256 }: { projectId: string; pageId: string; revisionId: string; sha256: string }) {
   const page = useAsync(() => invoke('content:read-page', { projectId, pageId }), [projectId, pageId])
   if (page.error)
     return (
@@ -145,7 +146,11 @@ function PublishedPage({ projectId, pageId }: { projectId: string; pageId: strin
   if (!page.data) return <p className="text-[12px] text-fg-3">Opening Page…</p>
   return (
     <article className="space-y-2 rounded-card border border-line-soft p-3">
+      {page.data.attribution && <p className="text-xs text-fg-3">
+        {page.data.attribution.partial ? 'Partial result accepted by you' : 'Accepted by you'} in fai chat · Work revision {page.data.attribution.workRevision}
+      </p>}
       <Markdown text={page.data.body} />
+      <AskFai selection={{projectId,pageId,revisionId,sha256}} />
       <details>
         <summary className="cursor-pointer text-[12px] text-fg-3">Source revisions</summary>
         {page.data.sources.map((source, index) => (
@@ -160,17 +165,19 @@ function PublishedPage({ projectId, pageId }: { projectId: string; pageId: strin
 
 export function ProjectSpace({
   projectId,
+  initialPageId,
   version,
   attaching,
   onAttach
 }: {
   projectId: string
+  initialPageId?: string
   version: number
   attaching: boolean
   onAttach: () => void
 }) {
   const state = useAsync(() => invoke('content:project', { projectId }), [projectId, version])
-  const [pageId, setPageId] = useState('')
+  const [pageId, setPageId] = useState(initialPageId ?? '')
   if (state.error) return <p role="alert">{state.error}</p>
   if (!state.data) return null
   const { space, library, pages, evaluations } = state.data
@@ -204,7 +211,7 @@ export function ProjectSpace({
               <Button size="sm" onClick={() => setPageId(pageId === page.id ? '' : page.id)}>
                 {page.name}
               </Button>
-              {pageId === page.id && <PublishedPage key={page.id + ':' + version} projectId={projectId} pageId={page.id} />}
+              {pageId === page.id && <PublishedPage key={page.id + ':' + version} projectId={projectId} pageId={page.id} revisionId={page.revisionId} sha256={page.sha256} />}
             </div>
           ))
         ) : (

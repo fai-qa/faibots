@@ -9,7 +9,7 @@ import type { RuntimeProviders } from '../providers/provider-service'
 import type { StepEvents, StepResult, ToolSpec } from '../providers/types'
 import { KEEP_VERBATIM, needsCompaction, planCompaction, summarizeCovered } from './compaction'
 import { IncompleteTurnError, type TurnEngine } from './engine'
-import { buildBotView, viewChars, withTurnNote } from './history'
+import { buildBotView, isProjectHistory, viewChars, withTurnNote } from './history'
 
 export const MAX_STEPS = 25
 
@@ -52,8 +52,8 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
       const conversationId = turn.conversation.id
 
       let summary = turn.context.summary
-      let entries = turn.selectedResultTrigger ? [turn.selectedResultTrigger] : deps.store.entries.since(conversationId, turn.context.summarizedUpToSeq)
-        .filter((e) => e.seq <= turn.upToSeq && !e.meta?.selectedResultEntryId)
+      let entries = turn.isolatedTrigger ? [turn.isolatedTrigger] : deps.store.entries.since(conversationId, turn.context.summarizedUpToSeq)
+        .filter((e) => e.seq <= turn.upToSeq && !isProjectHistory(e))
       const view = () => buildBotView({ botId: bot.id, entries, summary, nameOf: turn.nameOf, loadImage })
       let messages = view()
 
@@ -87,7 +87,7 @@ export function createNativeEngine(deps: NativeEngineDeps): TurnEngine {
         } catch (err) {
           if (!signal.aborted) {
             compactionFailedAt.set(`${conversationId}:${bot.id}`, Date.now())
-            console.warn(`[runtime] compaction failed for ${bot.handle}:`, turn.selectedResultTrigger ? 'Selected-result context unavailable.' : err instanceof Error ? err.message : String(err))
+            console.warn(`[runtime] compaction failed for ${bot.handle}:`, turn.isolatedTrigger ? 'Project context unavailable.' : err instanceof Error ? err.message : String(err))
           }
           return false
         }

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { INVOKE_CHANNELS, type InvokeMap } from '@shared/ipc'
+import type { BrowserWindow } from 'electron'
 import type { Services } from '../contracts'
 import { createAttachmentStore } from '../attachments/attachments'
 import { MAX_NOTE_BYTES } from '../attachments/snapshots'
@@ -23,13 +24,17 @@ vi.mock('electron', () => ({
 
 const { buildHandlers, registerHandlers } = await import('./handlers')
 
+function testWindow(): BrowserWindow {
+  return { isDestroyed: () => false, webContents: { mainFrame: {}, isDestroyed: () => false } } as unknown as BrowserWindow
+}
+
 describe('IPC handlers', () => {
   it('cover exactly the allowlisted invoke channels, and register only those', () => {
     const store = openStore(':memory:', { homeDir: tmpdir() })
     try {
       const table = buildHandlers({ store } as unknown as Services, () => null)
       expect(Object.keys(table).sort()).toEqual([...INVOKE_CHANNELS].sort())
-      registerHandlers(table)
+      registerHandlers(table, () => null)
       expect(handle.mock.calls.map((c) => c[0]).sort()).toEqual([...INVOKE_CHANNELS].sort())
     } finally {
       store.close()
@@ -39,11 +44,33 @@ describe('IPC handlers', () => {
   it('pass errors to the renderer as plain messages', async () => {
     handle.mockClear()
     const failing = { store: { bots: { list: () => { throw new Error('boom') } } } } as unknown as Services
-    registerHandlers(buildHandlers(failing, () => null))
+    const window = testWindow()
+    registerHandlers(buildHandlers(failing, () => window), () => window)
     const listener = handle.mock.calls.find((c) => c[0] === 'bots:list')![1] as (e: unknown, req: unknown) => Promise<unknown>
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    await expect(listener({}, undefined)).rejects.toThrow('boom')
+    await expect(listener({ sender: window.webContents, senderFrame: window.webContents.mainFrame }, undefined)).rejects.toThrow('boom')
     spy.mockRestore()
+  })
+
+  it('dispatches only for the current desktop window and its main frame', async () => {
+    handle.mockClear()
+    const list = vi.fn(() => [])
+    const services = { store: { bots: { list } } } as unknown as Services
+    let window: BrowserWindow | null = testWindow()
+    const first = window.webContents
+    const getWindow = () => window
+    registerHandlers(buildHandlers(services, getWindow), getWindow)
+    const listener = handle.mock.calls.find((c) => c[0] === 'bots:list')![1] as (event: unknown) => Promise<unknown>
+    await expect(listener({ sender: first, senderFrame: first.mainFrame })).resolves.toEqual([])
+    await expect(listener({ sender: first, senderFrame: {} })).rejects.toThrow(/faibots window/)
+    await expect(listener({ sender: first, senderFrame: null })).rejects.toThrow(/faibots window/)
+    window = testWindow()
+    await expect(listener({ sender: first, senderFrame: first.mainFrame })).rejects.toThrow(/faibots window/)
+    const next = window.webContents
+    await expect(listener({ sender: next, senderFrame: next.mainFrame })).resolves.toEqual([])
+    window = null
+    await expect(listener({ sender: next, senderFrame: next.mainFrame })).rejects.toThrow(/faibots window/)
+    expect(list).toHaveBeenCalledTimes(2)
   })
 
   it('validate group member changes', () => {

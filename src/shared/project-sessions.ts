@@ -31,6 +31,12 @@ export interface EvidenceCitation {
   excerpt: string
 }
 
+/** Each citation index addresses this answer's immutable, verified list of source lines. */
+export interface EvidenceRelationship {
+  field: string
+  values: { value: string; citationIndexes: number[] }[]
+}
+
 export interface ProjectAnswer {
   id: Id
   sessionId: Id
@@ -40,7 +46,8 @@ export interface ProjectAnswer {
   createdAt: number
   status: 'found' | 'conflict' | 'unavailable'
   retrieval: 'native'
-  graph: 'disconnected'
+  graph: 'disconnected' | 'local'
+  relationships?: EvidenceRelationship[]
   modelRequested: boolean
   verifiedSourceIds: string[]
   citations: EvidenceCitation[]
@@ -57,6 +64,10 @@ export interface ProjectSessionView {
 }
 
 export interface SessionInvoke {
+  'session:ask-page': {
+    req: { projectId: Id; pageId: Id; revisionId: Id; sha256: string; requestId: Id; instruction: string }
+    res: { conversationId: Id; entryId: Id }
+  }
   'session:instruction': { req: { conversationId: Id; entryId: Id }; res: string | null }
   'session:ask-fai': {
     req: ProjectAddress & { sessionId: Id; answerId: Id; requestId: Id; instruction: string }
@@ -82,4 +93,4 @@ export interface SessionInvoke {
   }
 }
 
-export const SESSION_CHANNELS = ['session:project', 'session:open', 'session:lookup', 'session:history', 'session:ask-fai', 'session:instruction'] as const
+export const SESSION_CHANNELS = ['session:project', 'session:open', 'session:lookup', 'session:history', 'session:ask-fai', 'session:ask-page', 'session:instruction'] as const

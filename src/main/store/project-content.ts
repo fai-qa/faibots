@@ -19,6 +19,14 @@ const PAGES = `select p.*, c.space_id, a.name, v.sha256, d.reviewer from space_p
   join project_context c on c.run_id=p.run_id join project_spaces s on s.id=c.space_id
   join artifact_revisions v on v.id=p.revision_id join artifacts a on a.id=v.artifact_id
   join review_decisions d on d.id=p.review_id where s.project_id=?`
+// A missing instruction row is the original default. SQLite IS matches two defaults.
+const MATCHING_REVIEW_CASES = `select b.run_id baseline_id, c.run_id candidate_id
+  from project_context b join project_context c
+    on b.space_id=c.space_id and b.sources=c.sources and b.rubric=c.rubric
+  left join improvement_runs bi on bi.run_id=b.run_id
+  left join improvement_runs ci on ci.run_id=c.run_id
+  where bi.candidate_id is ci.candidate_id and (ci.lane is null or ci.lane='production')`
+const DIFFERENT_CHECKS = 'This result was reviewed under different checks. Recheck using the original sources and project instruction.'
 
 export function linkLibraryRevision(db: Db, source: ProjectSource, existingItem?: Id) {
   const itemId = existingItem ?? source.id
@@ -124,7 +132,9 @@ export function createProjectContentRepo(db: Db, sources: ProjectSourceRepo) {
   const evaluations = (projectId: Id): ProjectEvaluation[] =>
     db
       .prepare(
-        `select e.*,c.rubric,t.candidate_id,t.outcome,t.integrity,t.contract,t.reason report_reason,t.created_at reported
+        `select e.*,c.rubric,t.candidate_id,t.outcome,t.integrity,t.contract,t.reason report_reason,t.created_at reported,
+    t.outcome='passed' and not exists (select 1 from (${MATCHING_REVIEW_CASES}) m
+      where m.baseline_id=e.run_id and m.candidate_id=t.candidate_id) invalid_comparison
     from project_evaluations e join project_context c on c.run_id=e.run_id join project_spaces s on s.id=c.space_id
     left join evaluation_trials t on t.id=(select max(id) from evaluation_trials where run_id=e.run_id)
     where s.project_id=? order by e.created_at desc,e.rowid desc`
@@ -145,7 +155,11 @@ export function createProjectContentRepo(db: Db, sources: ProjectSourceRepo) {
             integrity: str(r.integrity) as 'verified' | 'unavailable' | 'unknown',
             contract: str(r.contract) as 'accepted' | 'unmet',
             reason: readableReview(projectId, str(r.candidate_id), str(r.report_reason)),
-            at: num(r.reported)
+            at: num(r.reported),
+            // Preserve old trial receipts while preventing a pre-fix comparison from claiming a pass.
+            ...(r.invalid_comparison && {
+              status: 'failed' as const, integrity: 'unknown' as const, contract: 'unmet' as const, reason: DIFFERENT_CHECKS
+            })
           }
         })
       }))
@@ -265,14 +279,15 @@ export function createProjectContentRepo(db: Db, sources: ProjectSourceRepo) {
         )
       const baseline = db.prepare('select baseline_run_id from project_context where run_id=?').get(run.id)?.baseline_run_id
       if (baseline && recorded.changes) {
-        const published = run.status === 'complete' && !!db.prepare('select 1 from space_pages where run_id=?').get(run.id)
+        const matches = db.prepare(`select 1 from (${MATCHING_REVIEW_CASES}) where baseline_id=? and candidate_id=?`).get(baseline,run.id)
+        const published = matches && run.status === 'complete' && !!db.prepare('select 1 from space_pages where run_id=?').get(run.id)
         db.prepare(
           'insert into evaluation_trials(run_id,candidate_id,outcome,reason,created_at,integrity,contract) values (?,?,?,?,?,?,?)'
         ).run(
           baseline,
           run.id,
           published ? 'passed' : 'failed',
-          run.error ?? String(row?.explanation ?? 'Review completed.'),
+          matches ? run.error ?? String(row?.explanation ?? 'Review completed.') : DIFFERENT_CHECKS,
           run.endedAt,
           published ? 'verified' : 'unknown',
           published ? 'accepted' : 'unmet'
@@ -286,10 +301,10 @@ export function createProjectContentRepo(db: Db, sources: ProjectSourceRepo) {
         // Compare only a later reviewed run with exactly the same pinned inputs and rubric.
         const matched = db
           .prepare(
-            `select trial.run_id from project_context baseline join project_context trial
-          on trial.space_id=baseline.space_id and trial.sources=baseline.sources and trial.rubric=baseline.rubric
-          join journey_runs r on r.id=trial.run_id join journey_runs b on b.id=baseline.run_id
-          where baseline.run_id=? and r.status='complete' and r.started_at>=b.started_at order by r.started_at desc,r.rowid desc limit 1`
+            `select r.id run_id from (${MATCHING_REVIEW_CASES}) m
+          join space_pages p on p.run_id=m.candidate_id
+          join journey_runs r on r.id=m.candidate_id join journey_runs b on b.id=m.baseline_id
+          where m.baseline_id=? and r.status='complete' and r.started_at>=b.started_at order by r.started_at desc,r.rowid desc limit 1`
           )
           .get(runId)
         const candidateId = matched ? str(matched.run_id) : runId

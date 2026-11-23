@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react'
-import type { WorkBrief, WorkDecision, WorkScope } from '@shared/work-brief'
+import type { WorkBrief, WorkDecision, WorkScope, WorkWait } from '@shared/work-brief'
+import { SaveWorkPage } from './SaveWorkPage'
 import { errorMessage, invoke, on } from '../../lib/bridge'
 
 const stateLabels = {
   waiting: 'Waiting for specialists', active: 'In progress', needs_input: 'Needs your answer', review: 'Ready for review',
   accepted: 'Accepted', cancelled: 'Cancelled'
 } as const
+
+function waitLabel(wait: WorkWait) {
+  if (wait.kind === 'time') return `Scheduled for ${new Date(wait.at).toLocaleString()}`
+  const condition = {all:'Waiting for specialists',assignment:'Waiting for the selected assignment',
+    first_match:'Waiting for the expected reply',webhook:'Waiting for the selected webhook'}[wait.kind]
+  return wait.deadline ? `${condition} until ${new Date(wait.deadline).toLocaleString()}` : condition
+}
 
 export function WorkBriefPanel({ conversationId }: { conversationId: string }) {
   const [briefs, setBriefs] = useState<WorkBrief[]>([])
@@ -65,6 +73,11 @@ function ScopeAndLimits({ brief }: { brief: WorkBrief }) {
         </dd>
         {brief.exclusions && <><dt className="text-fg-3">Out of scope</dt><dd>{brief.exclusions}</dd></>}
         <dt className="text-fg-3">Assignment limit</dt><dd>{brief.assignmentLimit} specialist {brief.assignmentLimit === 1 ? 'assignment' : 'assignments'} across the whole job</dd>
+        {scope?.waitingOn && <><dt className="text-fg-3">Waiting on</dt><dd>{scope.waitingOn.join(', ')}</dd></>}
+        {brief.waitingFor?.kind === 'first_match' && <>
+          <dt className="text-fg-3">Expected reply</dt><dd dir="auto">{brief.waitingFor.expectedReply}</dd>
+          <dt className="text-fg-3">After a match</dt><dd>{brief.waitingFor.remaining === 'cancel' ? 'Request cancellation of the other selected assignments' : 'Keep other assignments running'}</dd>
+        </>}
         <dt className="text-fg-3">Stop when</dt><dd>{brief.stopWhen || 'The result is ready for your review, or a decision needs your input.'}</dd>
         <dt className="text-fg-3">Return to</dt><dd>This fai chat for your review</dd>
       </dl>}
@@ -93,7 +106,7 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
   const button = 'rounded-md border border-line px-2 py-1 font-medium hover:bg-hover disabled:opacity-50'
   return (
     <details open={detailsOpen} onToggle={(e) => setDetailsOpen(e.currentTarget.open)} className="py-1">
-      <summary className="cursor-pointer font-medium">{brief.objective} <span className="font-normal text-fg-3">· {stateLabels[brief.state]}</span></summary>
+      <summary className="cursor-pointer font-medium">{brief.objective} <span className="font-normal text-fg-3">· {brief.waitingFor ? waitLabel(brief.waitingFor) : stateLabels[brief.state]}</span></summary>
       <div className="space-y-2 py-2">
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
           <dt className="text-fg-3">Deliverable</dt><dd>{brief.deliverable}</dd>
@@ -101,9 +114,17 @@ function BriefCard({ brief }: { brief: WorkBrief }) {
           {brief.lastInstruction && <><dt className="text-fg-3">Your instruction</dt><dd>{brief.lastInstruction}</dd></>}
         </dl>
         <ScopeAndLimits brief={brief} />
-        {brief.state === 'needs_input' && <p className="whitespace-pre-wrap">{brief.question}</p>}
+        {brief.state === 'needs_input' && <>
+          <p dir="auto" className="whitespace-pre-wrap">{brief.question}</p>
+          {brief.choices.length > 0 && <div role="group" aria-label="Suggested answers" className="flex flex-wrap gap-2">
+            {brief.choices.map(choice => <button key={choice} type="button" dir="auto" aria-pressed={note === choice}
+              disabled={pending} onClick={() => setNote(choice)}
+              className={button + (note === choice ? ' bg-active ring-1 ring-ink' : '')}>{choice}</button>)}
+          </div>}
+        </>}
+        {detailsOpen && brief.state === 'accepted' && <SaveWorkPage brief={brief} />}
         {brief.result && <div><strong>{brief.partial ? 'Partial result' : 'Result'}</strong><p className="whitespace-pre-wrap">{brief.result}</p></div>}
-        {(needsOwner || canSteer) && <textarea aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
+        {(needsOwner || canSteer) && <textarea dir="auto" aria-label={canSteer ? 'Update this job' : brief.state === 'review' ? 'Requested changes' : 'Your answer'} placeholder={canSteer ? 'Change the instructions for this job' : brief.state === 'review' ? 'What needs to change?' : 'Your answer'} value={note} onChange={(e) => setNote(e.target.value)} maxLength={8000} className="w-full rounded-md border border-line bg-pane px-2 py-1" />}
         <div className="flex flex-wrap gap-2">
           {canSteer && <button className={button} disabled={pending || !note.trim()} onClick={() => void decide('steer')}>Update this job</button>}
           {brief.state === 'needs_input' && <button className={button} disabled={pending || !note.trim()} onClick={() => void decide('answer')}>Send answer</button>}

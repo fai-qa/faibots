@@ -216,10 +216,14 @@ describe('routine service', () => {
       expect(created.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('Mon at 08:00') })
       const mine = service.list(bot.id)
       expect(mine).toMatchObject([{ name: 'Brief', createdBy: 'bot' }])
+      service.save({...mine[0]!,webhookEnabled:true})
+      const token = service.newWebhookToken(mine[0]!.id)
 
       const listed = await list!.execute({}, ctx)
       expect(listed.content[0]).toMatchObject({ text: expect.stringContaining('Brief') })
       expect(listed.content[0]).toMatchObject({ text: expect.not.stringContaining('Not yours') })
+      expect(listed.content[0]).toMatchObject({ text: expect.stringContaining('webhook configured') })
+      expect(JSON.stringify(listed)).not.toContain(token)
 
       const theirs = service.list(other.id)[0]!
       expect((await remove!.execute({ id: theirs.id }, ctx)).isError).toBe(true)

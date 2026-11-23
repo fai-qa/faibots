@@ -214,7 +214,12 @@ export interface Entry {
   /** Idempotency key for user sends. */
   clientNonce?: string
   /** Model/engine metadata for bot messages. */
-  meta?: { providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number; turnId?: Id; selectedResultEntryId?: Id }
+  meta?: {
+    providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number; turnId?: Id
+    selectedResultEntryId?: Id; projectScoped?: boolean; selectionReason?: string
+    jobKind?: import('./specialist-work').SpecialistJobKind; comparisonRoute?: string; measuredChildUsage?: true
+    selectionComparison?: import('./specialist-work').SelectionComparison & { questionId: Id }
+  }
   /** Set on the message FaiBots posts for an automatic run (author is 'system'). */
   trigger?: EntryTrigger
   createdAt: number
@@ -593,7 +598,7 @@ export interface ProjectSource {
 }
 
 /** The project deliverable (owner decision c: Markdown only). Revisions hold its content identity. */
-export type ArtifactKind = 'proposal'
+export type ArtifactKind = 'proposal' | 'work-result'
 /** Draft: revisions exist, nothing is reviewed yet. Reviewed: a review decision was recorded. */
 export type ArtifactStatus = 'draft' | 'reviewed'
 

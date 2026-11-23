@@ -4,7 +4,8 @@
 // and must surface as partial/failed — never success.
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHarness, type Harness } from '../agent/testing/fakes'
@@ -16,6 +17,9 @@ import { createAttachmentStore } from '../attachments/attachments'
 import { pdfFixture } from '../attachments/testing/pdf-fixture'
 import { createSnapshotService } from '../attachments/snapshots'
 import { projectContentHandlers } from '../ipc/project-content'
+import { readPageEvidence } from '../store/page-evidence'
+import { openStore } from '../store'
+import { artifactSaves } from './artifact-saves'
 import { improvementHandlers } from '../ipc/project-improvements'
 import type { MissionRunService, Services } from '../contracts'
 import {
@@ -29,18 +33,22 @@ const REVIEW_MESSAGE = /<<<REVIEW MESSAGE\n([\s\S]*?)REVIEW MESSAGE>>>/
 
 describe('mission run (M1c)', () => {
   let h: Harness | undefined
+  let diskProfile: string | undefined
   afterEach(async () => {
     if (h) {
       await h.runtime.shutdown()
       h.cleanup()
     }
     h = undefined
+    if (diskProfile) rmSync(diskProfile, { recursive: true, force: true, maxRetries: 5 })
+    diskProfile = undefined
   })
 
   /** Harness with the native engine driven by a scripted adapter, file tools, and a real attachment store. */
   const setup = (name = 'launch-notes.md', contents: string | Buffer = NOTE_BODY) => {
     const adapter = new ScriptedAdapter()
     h = createHarness({
+      diskProfile,
       engines: (services, providers) => ({
         native: createNativeEngine({
           store: services.store,
@@ -289,6 +297,49 @@ describe('mission run (M1c)', () => {
     expect(run.budgets.b10).toMatchObject({ checksPassed: 1, checksTotal: 1 })
   })
 
+  it.each(['error', 'cancelled'] as const)('preserves a finished %s after the draft file was written and the app reopens', async (outcome) => {
+    diskProfile = mkdtempSync(join(tmpdir(), 'faibots-finished-draft-'))
+    const { missions, adapter, projectId, chiefId } = setup()
+    const { store, dataDir } = h!.services
+    adapter.push(writeDraft(h!, chiefId), (events, signal) => {
+      if (outcome === 'error') throw new Error('Fixture failure after file write')
+      h!.runtime.stop(store.conversations.findDm(chiefId)!.id)
+      return endTurn(events, signal)
+    })
+    const { id } = missions.start(projectId)
+    await missions.idle()
+    const finished = store.journeyRuns.get(id)!
+    expect(finished).toMatchObject({ status: 'failed', endedAt: expect.any(Number), error: expect.stringContaining(outcome) })
+    if (outcome === 'error') expect(finished.error).toContain('Fixture failure after file write')
+    const evaluation = store.projectContent.evaluations(projectId).find(e => e.runId === id)!
+    expect(evaluation).toMatchObject({ status: 'failed', reason: finished.error })
+    expect(store.db.prepare('select state from artifact_saves where run_id=?').get(id)?.state).toBe('expected')
+    expect(store.artifacts.revisions(finished.artifactId!)).toHaveLength(0)
+    const workspaceFile = join(store.settings.get().workspaceRoot, store.bots.get(chiefId)!.handle, 'mission-'+id, DELIVERABLE_PATH)
+    expect(readFileSync(workspaceFile, 'utf8')).toBe(DRAFT)
+    await h!.runtime.shutdown()
+    h!.cleanup()
+    h = undefined
+
+    let originalRevision: string | undefined
+    for (const at of [finished.endedAt! + 1000, finished.endedAt! + 2000]) {
+      const reopened = openStore(join(diskProfile, 'faibots.db'), { homeDir: diskProfile })
+      try {
+        artifactSaves(reopened, dataDir).recover(at)
+        expect(reopened.journeyRuns.get(id)).toEqual(finished)
+        expect(reopened.projectContent.evaluations(projectId).find(e => e.runId === id)).toEqual(evaluation)
+        const revisions = reopened.artifacts.revisions(finished.artifactId!)
+        expect(revisions).toHaveLength(1)
+        const revision = revisions[0]!
+        expect(revision).toMatchObject({ artifactId: finished.artifactId, sha256: sha(DRAFT), provenance: { projectId } })
+        expect(readFileSync(join(revision.provenance.file!.workspace, revision.provenance.file!.path), 'utf8')).toBe(DRAFT)
+        expect(reopened.artifacts.reviews(revision.id)).toEqual([])
+        if (originalRevision) expect(revision.id).toBe(originalRevision)
+        originalRevision = revision.id
+      } finally { reopened.close() }
+    }
+  })
+
   it('chief failure: a draft turn that errors ends the run as failed with no revision', async () => {
     const { adapter, missions, projectId } = setup()
     adapter.push(() => {
@@ -441,12 +492,13 @@ describe('mission run (M1c)', () => {
     expect(store.conversations.findExchange(chiefId, alternate.id)).toBeUndefined()
   })
 
-  it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {
+  async function projectCorrectionCases() {
     const { adapter, missions, projectId, chiefId } = setup()
     const services = h!.services
     const store = services.store
     const attachments = createAttachmentStore({ dataDir: services.dataDir })
     const handlers = improvementHandlers({ ...services, missions, attachments } as unknown as Services, store)
+    const content = projectContentHandlers({ ...services, missions, attachments } as unknown as Services, store)
     const other = store.projects.create({ name: 'Separate project' })
     const requiredText = '## Next decision'
     const instruction = 'Include a Next decision heading before the final recommendation.'
@@ -471,6 +523,11 @@ describe('mission run (M1c)', () => {
     const heldout = missions.start(projectId).id
     await missions.idle()
     expect(store.journeyRuns.get(heldout)?.status,store.journeyRuns.get(heldout)?.error).toBe('complete')
+    return { store, adapter, missions, projectId, other, handlers, content, instruction, requiredText, matched, heldout, heldNotes, stage }
+  }
+
+  it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {
+    const { store, missions, projectId, other, handlers, instruction, requiredText, matched, heldout, heldNotes, stage } = await projectCorrectionCases()
     expect(() => handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout:matched})).toThrow(/different/)
     const candidateId = handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout})
     const req = { projectId,candidateId }
@@ -506,6 +563,76 @@ describe('mission run (M1c)', () => {
     expect(result.trials.map((t)=>t.observed)).toEqual(['passed','failed','passed'])
   })
 
+  it('replays and compares the exact original review checks across publication, rollback and replacement', async () => {
+    const { store, adapter, missions, projectId, other, handlers, content, instruction, requiredText, matched, heldout, heldNotes, stage } = await projectCorrectionCases()
+    const interrupt = async () => {
+      adapter.push(() => { throw new Error('Replay fixture interrupted.') })
+      const id = missions.start(projectId).id
+      await missions.idle()
+      expect(store.journeyRuns.get(id)?.status).toBe('failed')
+      return id
+    }
+    const publish = async () => {
+      const candidateId = handlers['improvement:propose']({ projectId, instruction, requiredText, matched, heldout })
+      const req = { projectId, candidateId }
+      handlers['improvement:review']({ ...req, decision:'approved' })
+      for (const [lane, source] of [['matched', NOTE_BODY], ['heldout', heldNotes]] as const) {
+        stage(true,true,source)
+        handlers['improvement:trial']({ ...req, lane })
+        await missions.idle()
+      }
+      handlers['improvement:publish'](req)
+      return req
+    }
+    const originalDefault = await interrupt()
+    const first = await publish()
+    stage(true,true,heldNotes)
+    const live = missions.start(projectId).id
+    await missions.idle()
+    expect(store.journeyRuns.get(live)?.status).toBe('complete')
+    const baseline = { projectId, runId: originalDefault }
+    expect(content['content:evaluate'](baseline).report?.status).toBe('failed')
+    // An old installation may already have compared these incompatible runs.
+    store.db.prepare("insert into evaluation_trials(run_id,candidate_id,outcome,reason,created_at,integrity,contract) values (?,?,'passed','Old comparison',?,'verified','accepted')")
+      .run(originalDefault, live, Date.now())
+    expect(content['content:project']({ projectId }).evaluations.find(e => e.runId === originalDefault)?.report)
+      .toMatchObject({ status:'failed', contract:'unmet', candidateId:live })
+    expect(() => content['content:rerun']({ projectId:other.id, runId:originalDefault })).toThrow(/not found/)
+    stage(false,true,heldNotes)
+    const priorDefault = content['content:rerun'](baseline).runId
+    await missions.idle()
+    expect(store.journeyRuns.get(priorDefault)?.status).toBe('complete')
+    expect(store.db.prepare('select candidate_id from improvement_runs where run_id=?').get(priorDefault)).toBeUndefined()
+    const originalVersion = await interrupt()
+    handlers['improvement:rollback'](first)
+    stage(false,true,heldNotes)
+    missions.start(projectId)
+    await missions.idle()
+    const versionedCase = { projectId, runId:originalVersion }
+    expect(content['content:evaluate'](versionedCase).report?.status).toBe('failed')
+    stage(true,true,heldNotes)
+    const replay = content['content:rerun'](versionedCase).runId
+    await missions.idle()
+    expect(store.journeyRuns.get(replay)?.status).toBe('complete')
+    expect(store.db.prepare('select candidate_id,lane from improvement_runs where run_id=?').get(replay))
+      .toMatchObject({ candidate_id:first.candidateId, lane:'production' })
+    expect(content['content:evaluate'](versionedCase).report).toMatchObject({ status:'passed', candidateId:replay })
+
+    // Publishing the same text under a new revision must not make its receipts interchangeable.
+    const second = await publish()
+    stage(true,true,heldNotes)
+    const newRun = missions.start(projectId).id
+    await missions.idle()
+    expect(store.db.prepare('select candidate_id,observed from improvement_runs where run_id=?').get(newRun))
+      .toMatchObject({ candidate_id:second.candidateId, observed:'passed' })
+    expect(content['content:evaluate'](versionedCase).report).toMatchObject({ status:'passed', candidateId:replay })
+    stage(true,true,heldNotes)
+    const originalChecks = content['content:rerun'](versionedCase).runId
+    await missions.idle()
+    expect(store.db.prepare('select candidate_id,observed from improvement_runs where run_id=?').get(originalChecks))
+      .toMatchObject({ candidate_id:first.candidateId, observed:'passed' })
+  })
+
   it('publishes a Page tied to the accepted revision and captures a failed case to recheck against a later matching run', async () => {
     const { adapter, missions, projectId, chiefId } = setup()
     const store = h!.services.store
@@ -531,6 +658,8 @@ describe('mission run (M1c)', () => {
     expect(page).toMatchObject({spaceId:content.space(projectId).id, runId:accepted.id,sha256:sha(DRAFT)})
     const handlers=projectContentHandlers({...h!.services,attachments:createAttachmentStore({dataDir:h!.services.dataDir})} as unknown as Services,store)
     expect(handlers['content:read-page']({projectId,pageId:page!.id}).body).toBe(DRAFT)
+    expect(readPageEvidence(store,{ dataDir:h!.services.dataDir,attachments:createAttachmentStore({dataDir:h!.services.dataDir}) },projectId,page!.id))
+      .toMatchObject({id:page!.id,revisionId:page!.revisionId,body:DRAFT,sha256:sha(DRAFT),sources:[{sha256:sha(NOTE_BODY),revision:1}]})
     expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.report).toMatchObject({status:'passed',candidateId:accepted.id})
     expect(handlers['content:evaluate']({projectId,runId:failed.id}).report).toMatchObject({status:'passed',candidateId:accepted.id})
     expect(content.evaluations(projectId).find(e=>e.runId===failed.id)?.status).toBe('failed')

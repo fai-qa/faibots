@@ -16,6 +16,9 @@ files:
   - out/**
   - package.json
 
+# Installed users can read the distribution notices in licenses/ beside faibots.exe.
+afterPack: scripts/windows-notices.cjs
+
 # Reuse the Electron runtime `npm ci` already downloaded instead of fetching it again.
 electronDist: node_modules/electron/dist
 # No native modules to compile (the database is Node's built-in node:sqlite).

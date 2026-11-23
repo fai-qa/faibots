@@ -195,11 +195,18 @@ function startServices(): Services {
 
 let shuttingDown = false
 
-/** Stop turns, MCP servers and the bridge, then close the database. Bounded so quitting never hangs. */
+/** Stop background work before quitting. The renderer can still read until its window closes. */
 async function shutdown(): Promise<void> {
   const s = services
   if (!s) return
   services = undefined
+  app.once('will-quit', () => {
+    try {
+      s.store.close()
+    } catch (err) {
+      console.error('[main] closing the database failed:', err instanceof Error ? err.message : err)
+    }
+  })
   tray?.destroy()
   tray = undefined
   // Routines and webhooks first (they start turns), then turns (they use the bridge and MCP
@@ -210,11 +217,6 @@ async function shutdown(): Promise<void> {
     await Promise.allSettled([s.mcp.shutdown(), s.bridge.shutdown()])
   })()
   await Promise.race([steps, new Promise((r) => setTimeout(r, 5000))])
-  try {
-    s.store.close()
-  } catch (err) {
-    console.error('[main] closing the database failed:', err instanceof Error ? err.message : err)
-  }
 }
 
 // One running copy only: two would write the same database and secrets file.
@@ -233,7 +235,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     try {
       services = startServices()
-      registerHandlers(buildHandlers(services, () => mainWindow))
+      const getWindow = () => mainWindow
+      registerHandlers(buildHandlers(services, getWindow), getWindow)
     } catch (err) {
       // Without services the window would be an empty shell; say why and quit instead.
       const message = err instanceof Error ? err.message : String(err)
@@ -251,10 +254,17 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', (event) => {
     quitting = true
-    if (shuttingDown || !services) return
+    if (shuttingDown) {
+      event.preventDefault()
+      return
+    }
+    if (!services) return
     event.preventDefault()
     shuttingDown = true
-    void shutdown().finally(() => app.quit())
+    void shutdown().finally(() => {
+      shuttingDown = false
+      app.quit()
+    })
   })
 
   app.on('window-all-closed', () => {

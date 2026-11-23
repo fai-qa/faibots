@@ -54,7 +54,10 @@ describe('fai work briefs', () => {
     h.engine.script('fai', async api => {
       const brief=asBrief(await api.tool('plan_work', briefInput))
       if (brief.revision === 1) {
-        asBrief(await api.tool('review_work',{action:'question',id:brief.id,revision:1,text:'Which gate?'}))
+        const question = {action:'question',id:brief.id,revision:1,text:'Which gate?'}
+        expect((await api.tool('review_work',{...question,choices:['Gate 2','gate 2']})).isError).toBe(true)
+        expect((await api.tool('review_work',{...question,action:'result',choices:['Gate 2','Gate 3']})).isError).toBe(true)
+        asBrief(await api.tool('review_work',{...question,choices:['Gate 2','البوابة ٣']}))
         api.say('Which gate?')
       } else {
         asBrief(await api.tool('review_work',{action:'result',id:brief.id,revision:brief.revision,text:'Meet at Gate 4.'}))
@@ -63,7 +66,7 @@ describe('fai work briefs', () => {
     })
     await h.send(dm.id,'Write our pickup note.')
     const first=work.list(dm.id)[0]!
-    expect(first).toMatchObject({state:'needs_input',question:'Which gate?',revision:2})
+    expect(first).toMatchObject({state:'needs_input',question:'Which gate?',choices:['Gate 2','البوابة ٣'],revision:2})
     expect(work.list(other.id)).toEqual([])
     const answer = {id:first.id,revision:2,decision:'answer' as const,note:'Gate 4'}
     expect(() => work.decide(other.id,answer)).toThrow(/this chat/)
@@ -79,7 +82,7 @@ describe('fai work briefs', () => {
     expect(h.engine.turns.filter(t=>t.handle==='fai')).toHaveLength(2)
     const review=work.list(dm.id)
     expect(review).toHaveLength(1)
-    expect(review[0]).toMatchObject({id:first.id,revision:4,state:'review',result:'Meet at Gate 4.'})
+    expect(review[0]).toMatchObject({id:first.id,revision:4,state:'review',result:'Meet at Gate 4.',choices:[]})
     expect(() => work.decide(dm.id,{...answer,decision:'accept'})).toThrow(/changed/)
     expect(work.decide(dm.id,{id:first.id,revision:4,decision:'accept',note:''}).state).toBe('accepted')
     expect(() => work.resume(dm.id,first.id,'new-turn')).toThrow(/closed/)

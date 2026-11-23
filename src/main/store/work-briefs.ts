@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { EntryRepo } from '../contracts'
-import { MAX_ASKS_PER_CHAIN, type WorkBrief, type WorkConstraints, type WorkReply, type WorkState } from '@shared/work-brief'
+import { MAX_ASKS_PER_CHAIN, type WorkBrief, type WorkConstraints, type WorkReply, type WorkState, type WorkWait } from '@shared/work-brief'
 import { num, parseJson, str, transaction, type Db, type Row } from './db'
+import { evaluateWait, invalidWait, waitDueAt } from './work-waits'
 
 export class WorkRefusal extends Error {}
 
@@ -10,11 +11,14 @@ function read(row: Row): WorkBrief {
     objective: str(row.objective), deliverable: str(row.deliverable), checks: str(row.checks),
     exclusions: str(row.exclusions), stopWhen: str(row.stop_when), assignmentLimit: num(row.assignment_limit),
     state: str(row.state) as WorkState, revision: num(row.revision), question: str(row.question), lastInstruction: str(row.last_instruction ?? ''),
+    choices: parseJson<string[]>(row.question_choices, []),
+    ...(row.state === 'waiting' && { waitingFor: parseJson<WorkWait>(row.predicate, {kind:'all'}) }),
     result: str(row.result), partial: Boolean(row.partial), evidenceIds: parseJson<string[]>(row.evidence_ids, []), updatedAt: num(row.updated_at) }
 }
 
 export function workBriefs(db: Db) {
-  const selected = `select w.*, (select d.note from chief_decisions d where d.work_id=w.id and d.decision in ('answer','steer','request_changes')
+  const selected = `select w.*, (select k.predicate from chief_wakes k where k.work_id=w.id and k.revision=w.revision-1) as predicate,
+    (select d.note from chief_decisions d where d.work_id=w.id and d.decision in ('answer','steer','request_changes')
     order by d.revision desc limit 1) as last_instruction from chief_work w`
   function superseded(turnId: string) {
     return Boolean(db.prepare(`select 1 from chief_work_turns t join chief_decisions d on d.work_id=t.work_id
@@ -32,8 +36,9 @@ export function workBriefs(db: Db) {
     if (row?.work_id !== id) throw new WorkRefusal('This turn already belongs to another brief.')
   }
   function children(id: string) {
-    return db.prepare(`select d.id, d.state from chief_work_turns t join assignment_admissions a on a.root_turn_id=t.turn_id
-      join delegations d on d.id=a.assignment_id where t.work_id=? order by d.created_at,d.id`).all(id)
+    return db.prepare(`select d.id,d.child_id,d.state,d.receipt,d.updated_at,p.client_nonce,p.conversation_id from chief_work_turns t
+      join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
+      join entries p on p.id=d.parent_entry_id where t.work_id=? order by d.created_at,d.id`).all(id)
   }
   return {
     get, superseded,
@@ -42,30 +47,34 @@ export function workBriefs(db: Db) {
         join chief_work_turns t on t.work_id=w.id where b.turn_id=? order by t.rowid limit 1`).get(turnId)
       return bound && { id: str(bound.id), state: str(bound.state), rootTurnId: str(bound.turn_id), assignmentLimit: num(bound.assignment_limit) }
     },
-    assignments(id: string) { return children(id).map(row => ({ id: str(row.id), state: str(row.state) })) },
-    wait(chat: string, id: string, revision: number, turnId: string) {
+    assignments(id: string) { return children(id).map(row => ({ id: str(row.id), botId:str(row.child_id), state: str(row.state) })) },
+    wait(chat: string, id: string, revision: number, turnId: string, predicate: WorkWait = {kind:'all'}) {
       return transaction(db, () => {
         const current = get(id,chat)
         if (current.state !== 'active' || current.revision !== revision) throw new WorkRefusal('Review the current brief before waiting.')
         bindTurn(id,turnId)
-        if (!children(id).length) throw new WorkRefusal('This brief has no admitted specialist assignments.')
-        db.prepare("insert into chief_wakes(work_id,revision,state) values(?,?,'pending')").run(id, revision)
+        const reason = invalidWait(db,chat,predicate,children(id),Date.now())
+        if (reason) throw new WorkRefusal(reason)
+        db.prepare("insert into chief_wakes(work_id,revision,state,predicate,due_at) values(?,?,'pending',?,?)")
+          .run(id,revision,JSON.stringify(predicate),waitDueAt(predicate))
         db.prepare("update chief_work set state='waiting',revision=revision+1,updated_at=? where id=?").run(Date.now(),id)
         return get(id,chat)
       })
     },
     ready(entries: EntryRepo) {
       return transaction(db, () => {
-        const waits = db.prepare(`select k.work_id,k.revision,w.conversation_id from chief_wakes k join chief_work w on w.id=k.work_id
+        const waits = db.prepare(`select k.*,w.conversation_id from chief_wakes k join chief_work w on w.id=k.work_id
           where k.state='pending' and w.state='waiting' and w.revision=k.revision+1`).all()
         for (const row of waits) {
           const id = str(row.work_id)
           const jobs = children(id)
-          if (jobs.some(job => job.state === 'assigned')) continue
+          const outcome = evaluateWait(db,row,parseJson<WorkWait>(row.predicate,{kind:'all'}),jobs,Date.now())
+          if (!outcome) continue
           const entry = entries.append({ conversationId: str(row.conversation_id), kind: 'message', author: {kind:'system'},
-            text: `Specialist returns for brief ${id}: ${jobs.map(job => job.id+' '+job.state).join(', ')}. Read their receipts and review the result.`,
+            text: `Work brief ${id}. ${outcome.message}`,
             clientNonce: `work-wake-${id}-${row.revision}`, mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false })
-          db.prepare("update chief_wakes set state='ready',entry_id=? where work_id=? and revision=?").run(entry.id,id,row.revision!)
+          db.prepare("update chief_wakes set state='ready',entry_id=?,cancel_ids=? where work_id=? and revision=?")
+            .run(entry.id,JSON.stringify(outcome.cancel ?? []),id,row.revision!)
           db.prepare("update chief_work set state='active',revision=revision+1,updated_at=? where id=?").run(Date.now(),id)
         }
         return db.prepare(`select k.work_id,k.revision,k.entry_id,w.conversation_id from chief_wakes k join chief_work w on w.id=k.work_id
@@ -73,12 +82,22 @@ export function workBriefs(db: Db) {
           .map(row => ({ id:str(row.work_id), revision:num(row.revision), entryId:str(row.entry_id), chat:str(row.conversation_id) }))
       })
     },
+    nextCheckAt(now: number): number | undefined {
+      const pending = ` from chief_wakes k join chief_work w on w.id=k.work_id where k.state='pending'
+        and w.state='waiting' and w.revision=k.revision+1`
+      const due = db.prepare('select min(k.due_at) as at'+pending).get()?.at
+      const external = db.prepare('select 1'+pending+" and json_extract(k.predicate,'$.kind')='webhook' limit 1").get()
+      if (external) return Math.min(now+1000, due == null ? Infinity : num(due))
+      return due == null ? undefined : num(due)
+    },
     claimWake(id: string, revision: number, turnId: string) {
       return transaction(db,() => {
         const changed = db.prepare(`update chief_wakes set state='started' where work_id=? and revision=? and state='ready'
           and exists(select 1 from chief_work where id=? and state='active' and revision=?+2)`).run(id,revision,id,revision)
-        if (changed.changes) bindTurn(id,turnId)
-        return Boolean(changed.changes)
+        if (!changed.changes) return undefined
+        bindTurn(id,turnId)
+        const row = db.prepare('select cancel_ids from chief_wakes where work_id=? and revision=?').get(id,revision)
+        return { cancel: parseJson<string[]>(row?.cancel_ids,[]) }
       })
     },
     finishWake(id: string, revision: number, ok: boolean) {
@@ -99,6 +118,11 @@ export function workBriefs(db: Db) {
     },
     list(chat: string) {
       return db.prepare(selected+' where w.conversation_id=? order by w.updated_at desc, w.rowid desc').all(chat).map(read)
+    },
+    forRequest(chat: string, selectedEntry: string | null, id?: string) {
+      const query = selected+` left join project_result_requests r on r.conversation_id=w.conversation_id and r.entry_id=w.user_entry_id
+        where w.conversation_id=? and r.entry_id is ?`+(id ? ' and w.id=?' : '')+' order by w.updated_at desc,w.rowid desc'
+      return db.prepare(query).all(chat,selectedEntry,...(id?[id]:[])).map(read)
     },
     start(chat: string, entry: string, turnId: string, objective: string, deliverable: string, checks: string, constraints: Partial<WorkConstraints> = {}) {
       const now = Date.now()
@@ -128,7 +152,7 @@ export function workBriefs(db: Db) {
         return get(id, chat)
       })
     },
-    submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[], turnId: string, partial: boolean) {
+    submit(chat: string, id: string, revision: number, kind: 'question' | 'result', text: string, evidenceIds: string[], turnId: string, partial: boolean, choices: string[] = []) {
       return transaction(db, () => {
         const current = get(id, chat)
         if (current.state !== 'active' || current.revision !== revision) throw new WorkRefusal('This brief changed. Read its current state before updating it.')
@@ -141,9 +165,10 @@ export function workBriefs(db: Db) {
         for (const evidence of evidenceIds) {
           if (!db.prepare('select id from entries where id=? and conversation_id=?').get(evidence, chat)) throw new WorkRefusal('The evidence is unavailable in this chat.')
         }
-        const result = db.prepare(`update chief_work set state=?, question=?, result=?, partial=?, evidence_ids=?, revision=revision+1, updated_at=?
+        const result = db.prepare(`update chief_work set state=?, question=?, question_choices=?, result=?, partial=?, evidence_ids=?, revision=revision+1, updated_at=?
           where id=? and revision=? and state='active'`).run(kind === 'question' ? 'needs_input' : 'review',
-          kind === 'question' ? text : '', kind === 'result' ? text : current.result, partial ? 1 : 0, JSON.stringify(evidenceIds), Date.now(), id, revision)
+          kind === 'question' ? text : '', JSON.stringify(kind === 'question' ? choices : []),
+          kind === 'result' ? text : current.result, partial ? 1 : 0, JSON.stringify(evidenceIds), Date.now(), id, revision)
         if (!result.changes) throw new WorkRefusal('The brief was updated in another session.')
         return get(id, chat)
       })

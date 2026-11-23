@@ -9,6 +9,11 @@
 import type { Attachment, Bot, Entry, Id, RoutineRunTrigger } from '@shared/domain'
 import type { ChatMessage, ChatPart } from '../providers/types'
 
+/** These entries remain readable in the app. Ordinary model turns must not replay them. */
+export function isProjectHistory(entry: Entry): boolean {
+  return !!(entry.meta?.projectScoped || entry.meta?.selectedResultEntryId || entry.trigger?.kind === 'mission')
+}
+
 export interface ViewInput {
   botId: Id
   /** Message entries (and others, which are skipped), oldest first. */

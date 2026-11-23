@@ -26,8 +26,8 @@ export interface EngineTurn {
   context: BotContextState
   /** The turn sees entries up to this seq; later ones wait for its next turn. */
   upToSeq: number
-  /** A selected project result gets an isolated provider turn with only its actual trigger. */
-  selectedResultTrigger?: Entry
+  /** A project request, mission step or its delegated question runs with only its own input. */
+  isolatedTrigger?: Entry
   /** Per-turn instructions for the end of the newest message ('' = none). */
   turnNote: string
   recorder: TurnRecorder

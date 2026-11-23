@@ -2,6 +2,7 @@ import type { ContentInvoke } from '@shared/project-content'
 import type { Id } from '@shared/domain'
 import type { Services } from '../contracts'
 import type { PlatformStore } from '../store'
+import { acceptedWorkPages } from '../store/accepted-work-pages'
 import { createSnapshotService } from '../attachments/snapshots'
 import { prepareNoteReader, revisionText } from '../attachments/project-reads'
 
@@ -9,12 +10,15 @@ type Handlers = { [C in keyof ContentInvoke]: (req: ContentInvoke[C]['req']) =>
   C extends 'content:read-source' ? Promise<ContentInvoke[C]['res']> : ContentInvoke[C]['res'] }
 
 export function projectContentHandlers(s: Services, store: PlatformStore): Handlers {
+  const workPages = acceptedWorkPages(store, s)
   const changed = (projectId: Id) => s.bus.emit('journey:changed', { projectId })
   const refreshGrants = (itemId: Id) => {
     for (const row of store.db.prepare('select project_id from library_access where item_id=?').all(itemId))
       changed(String(row.project_id))
   }
   const readPage = (projectId: Id, pageId: Id) => {
+    const work = workPages.read(projectId, pageId)
+    if (work) return work
     const page = store.projectContent.pages(projectId).find((p) => p.id === pageId)
     if (!page) throw new Error('Page not found in this project.')
     const run = store.journeyRuns.get(page.runId)
@@ -24,7 +28,16 @@ export function projectContentHandlers(s: Services, store: PlatformStore): Handl
     return { body, sources: (revision.provenance.sources ?? []).map(({ name, sha256 }) => ({ name, sha256 })) }
   }
   return {
-    'content:project': ({ projectId }) => store.projectContent.overview(projectId),
+    'content:work-destinations': (req) => workPages.destinations(req),
+    'content:save-work': (req) => {
+      const page = workPages.save(req)
+      changed(req.projectId)
+      return page
+    },
+    'content:project': ({ projectId }) => {
+      const content = store.projectContent.overview(projectId)
+      return { ...content, pages: [...content.pages, ...workPages.list(projectId)].sort((a,b) => b.createdAt-a.createdAt) }
+    },
     'content:select': ({ projectId, itemId, selected }) => {
       store.projectContent.select(projectId, itemId, selected)
       changed(projectId)

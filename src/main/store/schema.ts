@@ -1,6 +1,7 @@
 // Schema migrations, applied in order. PRAGMA user_version holds how many have run.
 // Never edit a shipped migration: append a new one.
 import { TURN_CONTEXT_SCHEMA } from './turn-context-schema'
+import { PAGE_REQUEST_SCHEMA } from './page-request-schema'
 import { DELEGATION_ATTEMPT_SCHEMA } from './delegation-attempt-schema'
 import { ARTIFACT_SAVE_SCHEMA } from './artifact-save-schema'
 import { workBriefSchema, workConstraintsSchema } from './work-brief-schema'
@@ -9,6 +10,8 @@ import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
 import { SESSION_SCHEMA } from './session-schema'
 import { PROJECT_IMPROVEMENTS_SCHEMA } from './project-improvements-schema'
+import { PROJECT_REQUEST_INSTRUCTIONS_SCHEMA } from './project-request-instructions-schema'
+import { PROJECT_HISTORY_SCHEMA } from './project-history-schema'
 import { ESCALATION_SCHEMA } from './escalation-schema'
 
 export const MIGRATIONS: string[] = [
@@ -366,5 +369,32 @@ export const MIGRATIONS: string[] = [
   create index delegation_question on delegations(question_id);
   create index assignment_children on assignment_admissions(parent_assignment_id);
   create index message_replies on entries(reply_to_id) where kind='message' and reply_to_id is not null;
-  `
+  `,
+  /* 22: an explicitly saved work result keeps its immutable body and source receipts in one transaction. */ `
+  create table accepted_work_pages (
+    id text primary key, space_id text not null references project_spaces(id) on delete cascade,
+    work_id text not null unique, work_revision integer not null, chat_id text not null, entry_id text not null,
+    revision_id text not null unique references artifact_revisions(id) on delete cascade,
+    review_id text not null references review_decisions(id) on delete cascade,
+    inputs text not null, body text not null, partial integer not null, created_at integer not null
+  );
+  create index accepted_pages_space on accepted_work_pages(space_id,created_at);
+  `,
+  /* 23: earlier questions stay open for free-text answers. */ `
+  alter table chief_work add column question_choices text not null default '[]';
+  `,
+  /* 24: select a reviewed Page or a source-search result for private delivery to fai. */ PAGE_REQUEST_SCHEMA,
+  /* 25: preserve the reviewed instruction for an explicitly selected project request. */ PROJECT_REQUEST_INSTRUCTIONS_SCHEMA,
+  /* 26: persist the condition and outcome for each generation of a waiting brief. */ `
+  alter table chief_wakes add column predicate text not null default '{"kind":"all"}';
+  alter table chief_wakes add column due_at integer;
+  alter table chief_wakes add column signaled_at integer;
+  alter table chief_wakes add column cancel_ids text not null default '[]';
+  create trigger brief_webhook_received after insert on routine_runs when new.trigger='webhook' begin
+    update chief_wakes set signaled_at=new.started_at where state='pending' and signaled_at is null
+      and json_extract(predicate,'$.kind')='webhook' and json_extract(predicate,'$.routineId')=new.routine_id
+      and exists(select 1 from chief_work w where w.id=chief_wakes.work_id and w.state='waiting' and w.revision=chief_wakes.revision+1);
+  end;
+  `,
+  /* 27: keep project missions out of ordinary model history. */ PROJECT_HISTORY_SCHEMA
 ]

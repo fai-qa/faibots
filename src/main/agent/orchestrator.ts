@@ -48,12 +48,14 @@ import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
 import { attachmentContext, projectSelections, safeModelId, saveTurnContext } from '../store/turn-context'
 import { startOfLocalDay } from '../store/turns'
+import { comparableAssignments, comparableRoute, type JobComparison } from '../store/comparable-assignments'
+import type { SpecialistJobKind } from '@shared/specialist-work'
 import { MAIN_BOT_NAME } from '../store/bots'
 import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
 import { projectReplyOrigin, projectResultForEntry, projectResultOrigin, queueProjectReply } from '../store/project-result-requests'
 import { IncompleteTurnError, type TurnEngine } from './engine'
-import { speakerName } from './history'
+import { isProjectHistory, speakerName } from './history'
 import { LiveStates } from './live-state'
 import { resolveMentionHints } from './mentions'
 import { buildSystemPrompt, turnNote } from './prompt'
@@ -97,6 +99,7 @@ interface TurnRequest {
   chain: Id[]
   /** Selected sources for this turn (manifest-lite, FJ-09); only mission runs set it. */
   projectRun?: { projectId: Id; runId: Id }
+  projectInputId?: Id
   manifestLite?: { sources: ManifestLiteSource[] }
   readProjectNote?: ToolContext['readProjectNote']
   /** Aborts the turn from outside (the asking bot's turn, the exchange timeout). */
@@ -120,6 +123,7 @@ interface ActiveTurn {
   beforeWaiting?: { phase: BotPhase; activity?: string }
   asks: number
   projectRun?: TurnRequest['projectRun']
+  projectScoped?: boolean
   root: AssignmentRoot
   unresolvedActions: Set<string>
 }
@@ -186,6 +190,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   private readonly delegations: ReturnType<typeof createDelegationRepo>
   private readonly briefs: ReturnType<typeof workBriefs>
   private readonly scheduledWakes = new Set<string>()
+  private wakeTimer?: NodeJS.Timeout
   private readonly scheduledResults = new Set<string>()
   readonly assignments: BackgroundAssignments
   private readonly unsubscribe: () => void
@@ -373,6 +378,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       mentionsEveryone: false,
       attachments: [],
       isStreaming: false,
+      ...(input.projectRun && { meta: { projectScoped: true } }),
       trigger: input.trigger
     })
     this.emitEntry(entry)
@@ -383,6 +389,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       inGroup: false,
       chain: [],
       ...(input.projectRun && { projectRun: input.projectRun }),
+      ...((input.projectRun || input.trigger.kind === 'mission') && { projectInputId: entry.id }),
       ...(input.manifestLite && { manifestLite: input.manifestLite }),
       readProjectNote: input.readProjectNote,
       ...(input.signal && { parentSignal: input.signal })
@@ -408,6 +415,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
 
   async shutdown(): Promise<void> {
     this.closed = true
+    clearTimeout(this.wakeTimer)
     for (const id of this.runs.keys()) this.stop(id)
     const settled = Promise.allSettled([...this.background, this.queues.idle()])
     await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, SHUTDOWN_WAIT_MS).unref?.())])
@@ -425,7 +433,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // Collab tools
   // -------------------------------------------------------------------------------------------
 
-  jobHistory(bot: Bot, conversationId: Id) {
+  jobHistory(bot: Bot, conversationId: Id, comparison?: JobComparison) {
     const { db, turns } = this.deps.store
     const running = db.prepare("select count(*) as n from delegations where child_id=? and state='assigned'").get(bot.id)
     const recent = db.prepare(`select d.updated_at-d.created_at as elapsed from delegations d join entries p on p.id=d.parent_entry_id
@@ -438,7 +446,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
       where w.conversation_id=? and w.state='accepted' and w.partial=0 and d.child_id=? and d.state='answered'`).get(conversationId,bot.id)
     return { running: Number(running?.n ?? 0), remaining: bot.dailyRunLimit > 0 ? Math.max(0,bot.dailyRunLimit-used) : null,
-      medianMs, accepted: Number(accepted?.n ?? 0) }
+      medianMs, accepted: Number(accepted?.n ?? 0),
+      ...(comparison && { comparable: comparableAssignments(db,bot.id,conversationId,comparison) }) }
   }
 
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer' {
@@ -449,7 +458,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     return 'passed'
   }
 
-  async askBot(ctx: ToolContext, target: Bot, message: string): Promise<{ reply: string; exchange: Conversation }> {
+  async askBot(ctx: ToolContext, target: Bot, message: string, reason?: string, jobKind?: SpecialistJobKind): Promise<{ reply: string; exchange: Conversation }> {
     const { store, bus } = this.deps
     const from = ctx.bot
     if (target.id === from.id) throw new CollabRefusal('You cannot send a message to yourself.')
@@ -484,7 +493,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
     const assignmentLimit = work?.assignmentLimit ?? MAX_ASKS_PER_CHAIN
     const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
-    const inputHash = createHash('sha256').update(message.trim()).digest('hex')
+    const protectedWork = !!(ctx.projectResultTrigger || asking?.projectScoped)
+    // Keep the original idempotency format, including older classified project jobs.
+    const identityKind = ctx.projectResultTrigger ? undefined : jobKind
+    const classification = protectedWork ? undefined : identityKind
+    const messageHash = createHash('sha256').update(message.trim()).digest('hex')
+    const inputHash = identityKind ? `${identityKind}:${messageHash}` : messageHash
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
       if (!this.delegations.reserve(id, root, assignmentLimit)) {
         const reason = work
@@ -498,6 +512,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const parent = card ?? store.entries.append({
         conversationId: ctx.conversation.id, kind: 'event', author: { kind: 'system' },
         text: detached ? `Assigned ${target.name} background work (${id}).` : `Messaging ${target.name}`,
+        ...(reason && !protectedWork && { meta: { selectionReason: this.deps.secrets.redact(reason) } }),
         ...(detached && { clientNonce: backgroundAnchor(id) }), mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
       })
       if (detached && (parent.kind !== 'event' || parent.author.kind !== 'system')) throw new CollabRefusal('The assignment anchor is already in use.')
@@ -506,9 +521,23 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const exchange = found ??
         store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
       const question = store.entries.append({
-        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id }, meta: { turnId: ctx.turnId },
+        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id },
+        meta: {turnId:ctx.turnId,...(protectedWork && {projectScoped:true}),...(classification && {jobKind:classification})},
         text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
       })
+      if (classification) {
+        const current = store.bots.get(target.id)
+        let route
+        try { if (current) route = this.deps.providers.resolve(current.model) } catch { /* Unavailable providers have no comparable route. */ }
+        const criteria = route && comparableRoute(route.provider, route.modelId, route.effort)
+        if (criteria) {
+          const { count, medianMs, metered, medianTokens } = comparableAssignments(store.db, target.id, ctx.conversation.id, { ...criteria, kind: classification })
+          // Keep the source chat's statistics on its own anchor. The pair room is reused across unrelated chats.
+          store.entries.update(parent.id, { meta: { ...parent.meta, selectionComparison: {
+            questionId: question.id, kind: classification, count, medianMs, metered, medianTokens
+          } } })
+        }
+      }
       return { parent, question }
     })
     if (assignment.existing) {
@@ -538,6 +567,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         mustAnswer: true,
         inGroup: false,
         ...(asking?.projectRun && { projectRun: asking.projectRun }),
+        ...(protectedWork && { projectInputId: question.id }),
         assignment: { lease, questionId: question.id, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),
@@ -723,13 +753,22 @@ export class Orchestrator implements Runtime, CollabRuntime {
         this.briefs.finishWake(wake.id,wake.revision,outcome.status === 'sent' || outcome.status === 'pass')
       }).finally(() => this.scheduledWakes.delete(wake.entryId)))
     }
+    clearTimeout(this.wakeTimer)
+    const now = Date.now()
+    const next = this.briefs.nextCheckAt(now)
+    if (next !== undefined) this.wakeTimer = setTimeout(() => this.wakeBriefs(),Math.max(1,Math.min(next-now,2_147_483_647))).unref()
   }
 
   private recoverProjectResults(): void {
     if (this.closed) return
     const { store } = this.deps
+    // Repair legacy chat pointers and request states using their persisted request and turn links.
+    store.db.exec(`update entries set meta=json_set(coalesce(meta,'{}'),'$.selectedResultEntryId',id)
+      where id in (select entry_id from project_result_requests) and json_extract(meta,'$.selectedResultEntryId') is null;
+      update project_result_requests set state='interrupted' where state='finished' and
+        (turn_id is null or exists(select 1 from turns where turns.id=project_result_requests.turn_id and turns.status<>'sent'))`)
     for (const row of store.db.prepare("select * from project_result_requests where state='started'").all()) {
-      const finished = store.db.prepare('select 1 from turns where id=?').get(row.turn_id!)
+      const finished = store.db.prepare("select 1 from turns where id=? and status='sent'").get(row.turn_id!)
       store.db.prepare('update project_result_requests set state=? where id=?').run(finished ? 'finished':'interrupted',row.id!)
       if (!finished) this.systemEvent(String(row.conversation_id), 'The app closed while fai was answering a selected project result. Review any existing reply. You can ask again from the project.')
     }
@@ -747,8 +786,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
     this.scheduledResults.add(entry.id)
     this.emitEntry(entry)
     this.track(this.scheduleTurn(entry.conversationId, String(row.owner_id), {trigger:'user',mustAnswer:true,inGroup:false,chain:[],
-      userRequest:{id:entry.id,seq:entry.seq}}).then(() => {
-      if (!this.closed) store.db.prepare("update project_result_requests set state='finished' where entry_id=? and state in ('queued','started')").run(entry.id)
+      userRequest:{id:entry.id,seq:entry.seq}}).then((outcome) => {
+      if (this.closed) return
+      const answered = outcome.status === 'sent'
+      const changed = store.db.prepare("update project_result_requests set state=? where entry_id=? and state in ('queued','started')")
+        .run(answered ? 'finished' : 'interrupted', entry.id)
+      if (changed.changes && !answered && outcome.status !== 'error')
+        this.systemEvent(entry.conversationId, 'This selected project request ended without a completed reply. You can ask again from the project.')
     }).finally(() => this.scheduledResults.delete(entry.id)))
   }
 
@@ -773,10 +817,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
     const triggerEntry = wakeEntry ?? (req.userRequest && store.entries.get(req.userRequest.id))
     const resultOrigin = triggerEntry && projectResultOrigin(store,conversationId,triggerEntry,req.wake)
     const selectedResultTrigger = resultOrigin ? triggerEntry : undefined
-    if (selectedResultTrigger && selectedResultTrigger.id !== resultOrigin)
+    if (selectedResultTrigger && selectedResultTrigger.meta?.selectedResultEntryId !== resultOrigin)
       store.entries.update(selectedResultTrigger.id,{meta:{...selectedResultTrigger.meta,selectedResultEntryId:resultOrigin}})
-    const upToSeq = req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
-    const unseen = selectedResultTrigger ? [selectedResultTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isOwn(e, botId))
+    const isolatedTrigger = selectedResultTrigger ?? (req.projectInputId ? store.entries.get(req.projectInputId) : undefined)
+    if (req.projectInputId && isolatedTrigger?.conversationId !== conversationId) return { status: 'skipped', posts: [] }
+    const upToSeq = isolatedTrigger?.seq ?? req.userRequest?.seq ?? wakeEntry?.seq ?? req.assignment?.questionSeq ?? store.entries.page(conversationId, { limit: 1 }).entries[0]?.seq ?? context.lastSeenSeq
+    const unseen = isolatedTrigger ? [isolatedTrigger] : wakeEntry ? [wakeEntry] : store.entries.since(conversationId, context.lastSeenSeq).filter((e) => e.seq <= upToSeq && e.kind === 'message' && !isProjectHistory(e) && !isOwn(e, botId))
     // Nothing new (an earlier queued turn already answered it): no model call.
     if (unseen.length === 0) return { status: 'skipped', posts: [] }
 
@@ -796,7 +842,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const claimed = store.db.prepare("update project_result_requests set state='started',turn_id=? where entry_id=? and state='queued'").run(turnId,resultOrigin)
       if (!claimed.changes) return {status:'skipped',posts:[]}
     }
-    if (req.wake && !this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)) return { status:'skipped',posts:[] }
+    let cancelAfterReview: string[] = []
+    if (req.wake) {
+      const claimed = this.briefs.claimWake(req.wake.id,req.wake.revision,turnId)
+      if (!claimed) return { status:'skipped',posts:[] }
+      cancelAfterReview = claimed.cancel
+    }
     let resultWithdrawn = false
     const selectedResultAvailable: (() => boolean) | undefined = resultOrigin ? () => {
       if (resultWithdrawn) return false
@@ -806,6 +857,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       return false
     } : undefined
     let lateBuffer = ''
+    const childRoute = req.assignment && route && comparableRoute(route.provider, route.modelId, route.effort)
     const recorder: TurnRecorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
@@ -821,13 +873,15 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.assignment && { onLateText: (delta: string) => {
           if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
         } }),
-        ...(route && { meta: { providerId: route.provider.id, modelId: route.modelId, ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) } }),
+        meta: { ...(route && {providerId:route.provider.id,modelId:route.modelId}), ...(childRoute && {comparisonRoute:childRoute.routeKey}),
+          ...(isolatedTrigger && {projectScoped:true}), ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) },
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
       }
     )
     const active: ActiveTurn = {
       turnId, bot, conversationId, recorder, abort, mustAnswer: req.mustAnswer, passed: false, waiting: 0,
       ...(req.projectRun && { projectRun: req.projectRun }),
+      ...(isolatedTrigger && { projectScoped: true }),
       asks: 0, root: req.root ?? { turnId, conversationId }, unresolvedActions: new Set()
     }
 
@@ -849,7 +903,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       if (req.trigger === 'routine') this.systemEvent(conversationId, limited)
       return { status: 'limited', posts: [], error: limited }
     }
-    store.botContext.set({ ...context, lastSeenSeq: Math.max(context.lastSeenSeq,upToSeq) })
+    if (!isolatedTrigger) store.botContext.set({ ...context, lastSeenSeq: Math.max(context.lastSeenSeq,upToSeq) })
 
     this.active.set(turnId, active)
     recorder.phase('reading')
@@ -911,6 +965,13 @@ export class Orchestrator implements Runtime, CollabRuntime {
         recorder.event(SELECTED_RESULT_WITHHELD)
         return { status: 'skipped', posts: [] }
       }
+      if (cancelAfterReview.length) {
+        const cancel = turnTools.find(tool=>tool.name==='cancel_assignment')
+        const permission = store.bots.get(bot.id)?.toolPermissions.cancel_assignment ?? store.settings.get().toolPermissions.cancel_assignment ?? cancel?.defaultPermission
+        if (cancel && permission==='always' && !signal.aborted) {
+          for (const id of cancelAfterReview) this.assignments.abort(id)
+        } else recorder.event('Cancellation permission changed. Check the remaining assignments before continuing.')
+      }
       await engine.run({
         turnId,
         bot,
@@ -940,11 +1001,11 @@ export class Orchestrator implements Runtime, CollabRuntime {
           })
         },
         toolContext,
-        context: selectedResultTrigger ? {botId,conversationId,lastSeenSeq:0,summarizedUpToSeq:0,summary:''} : context,
-        selectedResultTrigger,
+        context: isolatedTrigger ? {botId,conversationId,lastSeenSeq:0,summarizedUpToSeq:0,summary:''} : context,
+        isolatedTrigger,
         upToSeq,
         turnNote: [turnNote({ inGroup: req.inGroup, mustAnswer: req.mustAnswer, isWindingDown: !!req.isWindingDown }),
-          ...(req.wake ? [`Resume the specialist returns for work ${req.wake.id}. Check this work and its assignment receipts before submitting a result.`] : []),
+          ...(req.wake ? [`Resume work ${req.wake.id}. Check why it resumed and review any assignment receipts before submitting a result. A deadline alone never completes the job.`] : []),
           ...(selectedResultTrigger ? ['Use read_project_result for the owner’s selected evidence and instruction. If access is withheld, explain that. Cite the actual source revision and line.'] : [])
         ].filter(Boolean).join('\n'),
         recorder,
@@ -955,7 +1016,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         runTool: (call) => this.runTool(recorder, toolContext, turnTools, call),
         // After a stop or reset, an engine's late state (an old session id) must not come back.
         saveContext: (patch) => {
-          if (!signal.aborted && !selectedResultTrigger) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
+          if (!signal.aborted && !isolatedTrigger) store.botContext.set({ ...store.botContext.get(conversationId, botId), ...patch })
         }
       })
       if (active.unresolvedActions.size > 0 && !signal.aborted) throw new Error('A tool action remains unresolved or its outcome is unknown. Reconcile it before accepting this run.')

@@ -68,8 +68,20 @@ describe('buildSystemPrompt', () => {
     expect(promptText(prompt)).toBe(`${prompt.stable}\n\n${prompt.volatile}`)
   })
 
-  it('falls back to the description when the soul is empty', () => {
+  it('includes the description when the soul is empty', () => {
     expect(buildSystemPrompt(base({ bot: bot({ soul: '' }) })).stable).toContain('Finds and checks sources.')
+  })
+
+  it('gives the selected specialist its advertised responsibilities alongside its persona in an exchange', () => {
+    const specialist = bot({ description: 'Compare delivery dates and return a ranked shortlist.', soul: 'Use short sentences.' })
+    const prompt = buildSystemPrompt(base({ bot: specialist, conversation: conversation({ kind: 'exchange' }) }))
+    expect(prompt.stable).toContain(specialist.description)
+    expect(prompt.stable).toContain(specialist.soul)
+  })
+
+  it('states a responsibility once when both profile fields contain the same text', () => {
+    const specialist = bot({ description: 'Check the sources.', soul: ' Check the sources. ' })
+    expect(buildSystemPrompt(base({ bot: specialist })).stable.split('Check the sources.')).toHaveLength(2)
   })
 
   it('describes a group with its members, notes and the passing rule', () => {

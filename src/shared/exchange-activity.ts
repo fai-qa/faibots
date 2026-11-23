@@ -1,4 +1,5 @@
 import type { Id } from './domain'
+import type { SelectionComparison } from './specialist-work'
 
 export interface ExchangeSummary {
   anchorId: Id
@@ -15,6 +16,9 @@ export interface ExchangeMessage {
   conversationId: Id
   authorId: Id
   recipientId: Id
+  /** The caller's recorded reason for selecting this recipient. Only assignment questions carry it. */
+  selectionReason?: string
+  selectionComparison?: SelectionComparison
   text: string
   createdAt: number
   isStreaming: boolean

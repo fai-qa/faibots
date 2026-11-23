@@ -59,7 +59,8 @@ it('reads a live detached exchange and its nested native call, excludes overlapp
   h.engine
     .script(chief.handle, async (a) => {
       const message = ++calls === 1 ? 'Review the gate.' : 'Unrelated job.'
-      await a.tool('assign_to_agent', { to: editor.handle, message })
+      const reason = calls === 1 ? 'Alfred maintains the gate checklist.' : 'Separate job, separate reason.'
+      await a.tool('assign_to_agent', { to: editor.handle, message, reason })
       a.say('Assigned.')
     })
     .script(editor.handle, async (a) => {
@@ -67,7 +68,7 @@ it('reads a live detached exchange and its nested native call, excludes overlapp
         a.say('Other answer.')
         return
       }
-      await a.tool('send_to_agent', { to: reviewer.handle, message: 'Check the colour.' })
+      await a.tool('send_to_agent', { to: reviewer.handle, message: 'Check the colour.', reason: 'Brand owns the colour guide.' })
       a.say('Review complete.')
     })
     .script(reviewer.handle, async (a) => {
@@ -103,6 +104,9 @@ it('reads a live detached exchange and its nested native call, excludes overlapp
     ])
     const stream = api['conv:exchange-messages'](scope).messages
     expect(stream.map((m) => m.text)).toEqual(['Review the gate.', 'Check the colour.', 'Verified'])
+    expect(stream.map((m) => [m.recipientId, m.selectionReason])).toEqual([
+      [editor.id, 'Alfred maintains the gate checklist.'], [reviewer.id, 'Brand owns the colour guide.'], [editor.id, undefined]
+    ])
     expect(stream[2]).toMatchObject({ authorId: reviewer.id, recipientId: editor.id, isStreaming: true })
     expect(stream[0]!.conversationId).not.toBe(stream[1]!.conversationId)
     expect(api['conv:exchange-messages']({ ...scope, entryIds: [two!] }).messages.map((m) => m.text)).toEqual(
@@ -128,6 +132,12 @@ it('reads a live detached exchange and its nested native call, excludes overlapp
   expect([...older.messages, ...newest.messages]).toEqual(all.messages)
   expect(older.before).toBeUndefined()
   const sibling = api['conv:exchange-messages']({ ...scope, entryIds: [two!] })
+  const combined = api['conv:exchange-messages']({ ...scope, entryIds: [two!, one!] })
+  expect(combined.messages.filter(m => m.selectionReason).map(m => [m.text, m.selectionReason])).toEqual([
+    ['Review the gate.', 'Alfred maintains the gate checklist.'],
+    ['Check the colour.', 'Brand owns the colour guide.'],
+    ['Unrelated job.', 'Separate job, separate reason.']
+  ])
   expect(api['conv:exchange-messages']({ ...scope, before: sibling.messages[0]!.id }).messages).toEqual([])
   expect(
     api['conv:exchange-messages']({ ...scope, conversationId: h.runtime.openDm(editor.id).id }).messages
@@ -146,6 +156,12 @@ it('reads a live detached exchange and its nested native call, excludes overlapp
   } finally {
     reopened.close()
   }
+  // Earlier releases stored the background reason only on the issuing tool card.
+  store.db.prepare('update entries set meta=null where id=?').run(one!)
+  expect(api['conv:exchange-messages'](scope)).toEqual(all)
+  const outer = store.entries.since(chat.id, 0).find(e => e.toolCall?.toolName === 'assign_to_agent')!
+  store.entries.update(outer.id, {toolCall: {...outer.toolCall!, resultText: 'Unlinked earlier receipt'}})
+  expect(api['conv:exchange-messages'](scope).messages[0]!.selectionReason).toBeUndefined()
   store.db.prepare("update delegations set state='reconciliation_required' where caller_id=?").run(editor.id)
   store.db.prepare("update delegations set state='failed' where parent_entry_id=?").run(one!)
   expect(api['conv:exchange-summaries'](scope)).toMatchObject([
@@ -161,11 +177,11 @@ it('uses the bridge fallback event and refuses unproven replies for two legacy a
       if (++job === 1) {
         await h.services.tools.execute(
           'send_to_agent',
-          { to: editor.handle, message: 'Bridge question.' },
+          { to: editor.handle, message: 'Bridge question.', reason: 'Owns the sk-secret-value checklist.' },
           { ...a.turn.toolContext, callId: 'independent-bridge-id' }
         )
       } else {
-        await a.tool('send_to_agent', { to: editor.handle, message: 'First same-root question.' })
+        await a.tool('send_to_agent', { to: editor.handle, message: 'First same-root question.', reason: 'Knows the first job.' })
         await a.tool('send_to_agent', { to: editor.handle, message: 'Second same-root question.' })
       }
       a.say('Done.')
@@ -182,6 +198,12 @@ it('uses the bridge fallback event and refuses unproven replies for two legacy a
   const scope = { conversationId: chat.id, entryIds: [bridge!, one!, two!] }
   expect(api['conv:exchange-summaries'](scope).map((s) => s.messageCount)).toEqual([3, 3, 3])
   expect(api['conv:exchange-messages'](scope).messages).toHaveLength(9)
+  expect(api['conv:exchange-messages'](scope).messages.filter(m => m.selectionReason).map(m => [m.text, m.selectionReason])).toEqual([
+    ['Bridge question.', 'Owns the «secret:KEY» checklist.'], ['First same-root question.', 'Knows the first job.']
+  ])
+  // Older event-backed bridge calls did not record a reason on the canonical event.
+  store.db.prepare('update entries set meta=null where id=?').run(bridge!)
+  expect(api['conv:exchange-messages']({ ...scope, entryIds: [bridge!] }).messages.every(m => !m.selectionReason)).toBe(true)
   const room = store.conversations.findExchange(chief.id, editor.id)!
   store.db.prepare('update entries set reply_to_id=null where conversation_id=?').run(room.id)
   const summaries = api['conv:exchange-summaries'](scope)
@@ -211,4 +233,70 @@ it('uses the bridge fallback event and refuses unproven replies for two legacy a
   expect(api['conv:exchange-summaries']({ ...scope, entryIds: [one!] })).toMatchObject([
     { messageCount: 1, incompleteHistory: true }
   ])
+})
+
+it('keeps reasons from protected project requests off event anchors and exchange messages', async () => {
+  const { chief, editor, chat, store, api, anchors } = fixture()
+  h.engine.script(chief.handle, async (a) => {
+    await h.runtime.askBot({
+      ...a.turn.toolContext, callId: 'protected-bridge-call', projectResultTrigger: { entryId: 'selected-result' }
+    }, editor, 'A safe question.', 'Private source material.', 'research')
+    a.say('Done.')
+  }).script(editor.handle, (a) => a.say('A safe answer.'))
+  await h.send(chat.id, 'Protected project request')
+  const entryIds = anchors()
+  expect(entryIds).toHaveLength(1)
+  expect(store.entries.get(entryIds[0]!)?.meta?.selectionReason).toBeUndefined()
+  expect(store.entries.get(entryIds[0]!)?.meta?.selectionComparison).toBeUndefined()
+  const page = api['conv:exchange-messages']({ conversationId: chat.id, entryIds })
+  expect(page.messages).toHaveLength(2)
+  expect(page.messages.every(message => !message.selectionReason)).toBe(true)
+  expect(page.messages.every(message => !message.selectionComparison)).toBe(true)
+})
+
+it('opens only the chosen question’s selection-time sample, including after further assignments and a reopen', async () => {
+  const { chief, editor, chat, store, api, anchors } = fixture()
+  let step = 0
+  h.engine.script(editor.handle, a => {
+    if (step !== 2) a.turn.recorder.addUsage({ inputTokens: 20, outputTokens: 6 })
+    a.say('Reviewed.')
+  })
+  h.engine.script(chief.handle, async a => {
+    step++
+    const input = { to: editor.handle, message: `Check catalogue ${step}.`, jobKind: 'review', reason:'Owns the catalogue.' }
+    if (step === 2) await a.tool('assign_to_agent', input)
+    else if (step === 3) await h.services.tools.execute('send_to_agent', input, { ...a.turn.toolContext, callId:'bridge-3' })
+    else await a.tool('send_to_agent', input)
+    a.say('Done.')
+  })
+  await h.send(chat.id, 'First catalogue.')
+  const [native] = anchors()
+  store.db.prepare('update delegations set updated_at=created_at+1250 where parent_entry_id=?').run(native!)
+  await h.send(chat.id, 'Second catalogue.')
+  await h.send(chat.id, 'Third catalogue.')
+  const [, background, bridge] = anchors()
+  const scope = { conversationId: chat.id, entryIds: [native!, background!, bridge!] }
+  const first = api['conv:exchange-messages'](scope).messages
+  const questions = first.filter(m => m.authorId === chief.id)
+  expect(questions.map(m => m.selectionComparison)).toEqual([
+    { kind:'review', count:0, medianMs:null, metered:0, medianTokens:null },
+    { kind:'review', count:1, medianMs:1250, metered:1, medianTokens:26 },
+    { kind:'review', count:2, medianMs:expect.any(Number), metered:1, medianTokens:26 }
+  ])
+  expect(first.filter(m => m.authorId === editor.id).every(m => !m.selectionComparison)).toBe(true)
+  const room = store.conversations.findExchange(chief.id, editor.id)!
+  expect(store.entries.since(room.id,0).every(entry => !entry.meta?.selectionComparison)).toBe(true)
+  expect(api['conv:exchange-messages']({ ...scope, conversationId:room.id }).messages).toEqual([])
+  expect(api['conv:exchange-summaries'](scope).every(summary => !('selectionComparison' in summary))).toBe(true)
+  // Removing the older job changes live history. The exact selection-time comparison remains frozen.
+  store.db.prepare('delete from entries where id=?').run(native!)
+  const reopened = openStore(join(root, 'faibots.db'), { homeDir:root })
+  try {
+    const read = exchangeActivityHandlers(reopened.db)['conv:exchange-messages']
+    const selected = { conversationId:chat.id, entryIds:[background!] }
+    expect(read(selected).messages[0]?.selectionComparison).toEqual(questions[1]!.selectionComparison)
+    reopened.db.prepare("update entries set meta=json_set(meta,'$.selectionComparison.questionId',?) where id=?")
+      .run(questions[2]!.id, background!)
+    expect(read(selected).messages.every(m => !m.selectionComparison)).toBe(true)
+  } finally { reopened.close() }
 })
