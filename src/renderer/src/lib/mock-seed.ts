@@ -55,8 +55,8 @@ export interface MockDb {
 const MIN = 60_000
 const HOUR = 60 * MIN
 
-export const WORKSPACE_ROOT = 'C:\\Users\\sample\\FaiBots\\workspaces'
-export const DATA_DIR = 'C:\\Users\\sample\\AppData\\Roaming\\FaiBots'
+export const WORKSPACE_ROOT = 'C:\\Users\\sample\\faibots\\workspaces'
+export const DATA_DIR = 'C:\\Users\\sample\\AppData\\Roaming\\faibots'
 
 const FAI_SOUL = `# fai
 

@@ -31,7 +31,7 @@ describe('store', () => {
   describe('settings', () => {
     it('seeds defaults on first run', () => {
       const s = store.settings.get()
-      expect(s.workspaceRoot).toBe(join('/home/me', 'FaiBots', 'workspaces'))
+      expect(s.workspaceRoot).toBe(join('/home/me', 'faibots', 'workspaces'))
       expect(s.compactAt).toBe(0.7)
       expect(s.theme).toBe('system')
       expect(s.userName).toBe('Me')
@@ -303,6 +303,7 @@ describe('store on disk', () => {
     expect(store.db.prepare('pragma journal_mode').get()).toEqual({ journal_mode: 'wal' })
     expect(schemaVersion(store.db)).toBe(MIGRATIONS.length)
     const bot = store.bots.create({ name: 'Keeper' })
+    store.settings.update({workspaceRoot:join(dir,'FaiBots','workspaces')})
     store.close()
 
     const reopened = createStore({ dataDir: dir, homeDir: '/elsewhere' })

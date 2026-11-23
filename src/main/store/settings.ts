@@ -3,7 +3,7 @@ import type { AppSettings } from '@shared/domain'
 import type { SettingsRepo } from '../contracts'
 import { parseJson, type Db } from './db'
 
-export function defaultSettings(homeDir: string, userName = '', workspaceRoot = join(homeDir, 'FaiBots', 'workspaces')): AppSettings {
+export function defaultSettings(homeDir: string, userName = '', workspaceRoot = join(homeDir, 'faibots', 'workspaces')): AppSettings {
   return {
     theme: 'system',
     botColorInChat: false,
