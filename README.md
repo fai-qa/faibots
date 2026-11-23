@@ -44,11 +44,11 @@ Model availability and sign-in depend on your provider. Install and start from t
 
 You can speak to fai in English, Arabic or a mix. A request with a clear answer can finish in one sentence. For a longer job, open the work brief to see the deliverable, checks and assignment limit. If fai needs a decision, choose a suggested answer or type your own, then press **Send answer**. You can update the job while specialists work. A brief can wait for a particular reply, a time or an enabled webhook. Reopening the app restores the brief and checks what happened while it was closed.
 
-When bots work together, select the message count in your chat to read what they said for that job. Choose **Close chat** or press **Esc** to return to the same place.
+When bots work together, select the message count in your chat to read their exchange. Open an assignment to see what fai knew about that specialist’s past work on similar jobs when it chose them. Choose **Close chat** or press **Esc** to return to the same place.
 
 When a work brief has a result you want to keep, choose **Accept result**, then **Save to project**. Open the saved Page in the project's Space. A result based on selected project evidence goes back to that project.
 
-Each project has a Library for selected sources and a Space for reviewed Pages. In a search result, open **Compare source lines** to see where selected files record the same or different values. To work with a search result or an accepted Page, open it, choose **Ask fai**, enter your instruction and select **Send to fai**. Use **Reply** on the answer to continue with that same revision. Project instructions can be tried on two sets of notes before you activate them.
+Each project has a Library for selected sources and a Space for reviewed Pages. In a search result, open **Compare source lines** to see where selected files agree or disagree. To ask about a search result or an accepted Page, open it, choose **Ask fai**, enter your question and select **Send to fai**. You can test project instructions on two sets of notes before activating them for new project jobs. Use **Reply** on an answer to continue with the same source revision and instructions that the job started with.
 
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
 
