@@ -36,7 +36,7 @@ export function workBriefs(db: Db) {
     if (row?.work_id !== id) throw new WorkRefusal('This turn already belongs to another brief.')
   }
   function children(id: string) {
-    return db.prepare(`select d.id,d.state,d.receipt,d.updated_at,p.client_nonce,p.conversation_id from chief_work_turns t
+    return db.prepare(`select d.id,d.child_id,d.state,d.receipt,d.updated_at,p.client_nonce,p.conversation_id from chief_work_turns t
       join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
       join entries p on p.id=d.parent_entry_id where t.work_id=? order by d.created_at,d.id`).all(id)
   }
@@ -47,7 +47,7 @@ export function workBriefs(db: Db) {
         join chief_work_turns t on t.work_id=w.id where b.turn_id=? order by t.rowid limit 1`).get(turnId)
       return bound && { id: str(bound.id), state: str(bound.state), rootTurnId: str(bound.turn_id), assignmentLimit: num(bound.assignment_limit) }
     },
-    assignments(id: string) { return children(id).map(row => ({ id: str(row.id), state: str(row.state) })) },
+    assignments(id: string) { return children(id).map(row => ({ id: str(row.id), botId:str(row.child_id), state: str(row.state) })) },
     wait(chat: string, id: string, revision: number, turnId: string, predicate: WorkWait = {kind:'all'}) {
       return transaction(db, () => {
         const current = get(id,chat)

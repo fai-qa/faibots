@@ -7,6 +7,7 @@ import { createHarness, type Harness } from './testing/fakes'
 import { workBriefTools } from './work-brief-tools'
 import { backgroundAnchor, createDelegationRepo } from '../store/delegations'
 import { workBriefs } from '../store/work-briefs'
+import { workScope } from '../store/work-scope'
 import { createRoutineService } from '../routines/routines'
 import { createWebhookServer } from '../routines/webhook-server'
 
@@ -37,12 +38,13 @@ function fixture() {
 }
 
 it('wakes on the named return and keeps unrelated obligations open',()=>{
-  const {work,brief,room,delegations,admit,wait,ready}=fixture()
+  const {store,work,brief,room,delegations,admit,wait,ready}=fixture()
   const selected=admit('selected')
   admit('other')
   expect(()=>wait({kind:'assignment',assignmentId:'another-job'})).toThrow(/this brief/)
   delegations.finish(selected,'answered',{text:'Venue checked.'})
   expect(wait({kind:'assignment',assignmentId:selected.id}).waitingFor).toMatchObject({assignmentId:'selected'})
+  expect(workScope(store,h.services,room.id,brief.id).waitingOn).toEqual(['Scout'])
   const [wake]=ready()
   expect(wake).toBeDefined()
   expect(work.claimWake(wake!.id,wake!.revision,'next')).toEqual({cancel:[]})

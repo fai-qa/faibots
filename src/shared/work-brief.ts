@@ -46,4 +46,5 @@ export interface WorkReply {
 export interface WorkScope {
   inputs: string[]
   withheld: boolean
+  waitingOn?: string[]
 }

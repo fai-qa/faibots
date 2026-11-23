@@ -73,6 +73,11 @@ function ScopeAndLimits({ brief }: { brief: WorkBrief }) {
         </dd>
         {brief.exclusions && <><dt className="text-fg-3">Out of scope</dt><dd>{brief.exclusions}</dd></>}
         <dt className="text-fg-3">Assignment limit</dt><dd>{brief.assignmentLimit} specialist {brief.assignmentLimit === 1 ? 'assignment' : 'assignments'} across the whole job</dd>
+        {scope?.waitingOn && <><dt className="text-fg-3">Waiting on</dt><dd>{scope.waitingOn.join(', ')}</dd></>}
+        {brief.waitingFor?.kind === 'first_match' && <>
+          <dt className="text-fg-3">Expected reply</dt><dd dir="auto">{brief.waitingFor.expectedReply}</dd>
+          <dt className="text-fg-3">After a match</dt><dd>{brief.waitingFor.remaining === 'cancel' ? 'Request cancellation of the other selected assignments' : 'Keep other assignments running'}</dd>
+        </>}
         <dt className="text-fg-3">Stop when</dt><dd>{brief.stopWhen || 'The result is ready for your review, or a decision needs your input.'}</dd>
         <dt className="text-fg-3">Return to</dt><dd>This fai chat for your review</dd>
       </dl>}

@@ -7,7 +7,8 @@ import { workBriefs } from './work-briefs'
 
 /** Resolve display names on demand, with the same current grants as the model tools. */
 export function workScope(store: PlatformStore, authority: Pick<Services, 'dataDir' | 'attachments'>, chat: string, id: string): WorkScope {
-  const brief = workBriefs(store.db).get(id, chat)
+  const work = workBriefs(store.db)
+  const brief = work.get(id, chat)
   const original = store.entries.get(brief.userEntryId)
   const inputs = new Set<string>(['Your original message'])
   for (const file of original?.attachments ?? []) inputs.add(file.name + ' (attached to your message)')
@@ -35,5 +36,18 @@ export function workScope(store: PlatformStore, authority: Pick<Services, 'dataD
     const project = handoff.scope && store.projects.get(handoff.scope.projectId)
     if (project) inputs.add(project.name)
   }
-  return { inputs: [...inputs], withheld }
+  const waitingOn = new Set<string>()
+  const wait = brief.waitingFor
+  if (wait?.kind === 'webhook') {
+    const routine = store.routines.get(wait.routineId)
+    if (routine && store.conversations.get(chat)?.botIds.includes(routine.botId)) waitingOn.add(routine.name)
+  } else if (wait && wait.kind !== 'time') {
+    for (const task of work.assignments(id)) {
+      if (wait.kind === 'assignment' && wait.assignmentId !== task.id) continue
+      if (wait.kind === 'first_match' && !wait.assignmentIds.includes(task.id)) continue
+      const bot = store.bots.get(task.botId)
+      if (bot) waitingOn.add(bot.name)
+    }
+  }
+  return { inputs: [...inputs], withheld, ...(waitingOn.size && {waitingOn:[...waitingOn]}) }
 }
