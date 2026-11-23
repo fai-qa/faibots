@@ -27,7 +27,7 @@ Chat one-to-one or in a group. Run routines. Bring your own model providers and 
 
 <p align="center"><img alt="faibots group chat with three bots: the user asks Researcher to get Editor to tighten three notes, Researcher asks Editor, Editor confirms the line, and Reviewer says the line covers all three notes. Replies come from a stand-in test model." src="docs/media/faibots-group-chat.png" width="100%"></p>
 
-<!-- demo GIF: two-bot group chat, added in a later PR -->
+<p align="center"><img src="docs/media/faibots-demo.gif" width="960" alt="faibots demo: create and name a bot, chat with it one-to-one, put three bots in one group chat, then see what they said to each other. Bot replies in this demo come from a test model."></p>
 
 ## Quick start
 
