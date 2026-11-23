@@ -244,6 +244,8 @@ async function main() {
     })
 
     await waitForReady(stop)
+    spawnSync('powershell.exe', ['-NoProfile', '-Command', '(New-Object -ComObject Shell.Application).MinimizeAll()'], { windowsHide: true })
+    await sleep(400)
     recorder = startRecorder(bin)
     await sleep(800)
     if (recorder.exitCode !== null) {

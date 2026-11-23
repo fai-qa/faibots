@@ -283,7 +283,11 @@ async function demo(win) {
     }
   }
   if (!videoStartedAt) throw new Error('The recorder did not start.')
-  await sleep(600)
+  win.show()
+  win.focus()
+  win.moveTop()
+  try { fit(win) } catch (error) { log(error instanceof Error ? error.message : String(error)) }
+  await sleep(700)
 
   beginShot(1)
   await clickSelector(win, 'button[title^="New Bot"]')
@@ -319,9 +323,9 @@ async function demo(win) {
     const text = document.querySelector('main')?.innerText || ''
     return text.includes('[stand-in model]') && text.includes('Morning trade ends at noon.') && !/is (typing|working|reading)/.test(text)
   })()`, 'the Researcher reply', 45000)
-  await sleep(500)
+  await sleep(1600)
   markProof()
-  await sleep(1800)
+  await sleep(700)
   endShot()
 
   beginShot(3)
@@ -359,10 +363,10 @@ async function demo(win) {
   await evalJs(win, `(() => { const el = document.querySelector('[data-transcript]'); if (el) el.scrollTop = el.scrollHeight })()`)
   const linkLabel = await evalJs(win, `document.querySelector('button[aria-label^="Open bot conversation:"]')?.getAttribute('aria-label') || ''`)
   log(`link ${linkLabel}`)
-  await sleep(400)
+  await sleep(1200)
   markProof()
   await captureClient(win, 'group-chat.png')
-  await sleep(1800)
+  await sleep(800)
   endShot()
 
   beginShot(4)
@@ -371,9 +375,9 @@ async function demo(win) {
     const dialog = [...document.querySelectorAll('[role="dialog"]')].find((el) => (el.innerText || '').includes('Close chat'))
     return dialog && ((dialog.innerText.match(/\\[stand-in model\\]/g) || []).length >= 2)
   })()`, 'the bot conversation dialog', 20000)
-  await sleep(400)
+  await sleep(1800)
   markProof()
-  await sleep(2200)
+  await sleep(700)
   await clickButton(win, 'Close chat')
   await waitFor(win, `![...document.querySelectorAll('[role="dialog"]')].some((el) => (el.innerText || '').includes('Close chat'))`, 'the dialog to close')
   await sleep(900)
@@ -398,9 +402,9 @@ async function demo(win) {
     return row?.nextElementSibling?.textContent || ''
   })()`)
   log(`Your data: ${dataDir}`)
-  await sleep(400)
+  await sleep(1600)
   markProof()
-  await sleep(2200)
+  await sleep(800)
   endShot()
   writeShots()
 }
