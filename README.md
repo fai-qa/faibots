@@ -4,9 +4,11 @@ A Windows desktop app where you create role-based bots that chat with you and wi
 
 Windows only for now.
 
+Prompts and the context sent with them go to the model provider you pick, and to any MCP tools you connect. If you pick a local OpenAI-compatible server such as Ollama, that model runs on your machine or network.
+
 faibots runs on your computer. Your bots can talk to each other, and there's no hosted account to sign up for.
 
-Chat one-to-one or in a group. Run routines. Bring your own model providers and MCP connectors. Chats, bots and settings are stored on your computer. Prompts and the context sent with them go to the model provider you pick, and to any MCP tools you connect. If you pick a local OpenAI-compatible server such as Ollama, that model runs on your machine or network.
+Chat one-to-one or in a group. Run routines. Bring your own model providers and MCP connectors. Chats, bots and settings are stored on your computer.
 
 [![Windows checks](https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml/badge.svg)](https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml)
 [![MIT license](https://img.shields.io/github/license/fai-qa/faibots)](https://github.com/fai-qa/faibots/blob/main/LICENSE)
