@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/faibots-banner.png" alt="faibots: AI bots you chat with one-to-one or in a group. A Windows app: bring your own model, hosted or local. Open source." width="100%"></p>
+
 # faibots
 
 A Windows desktop app where you create role-based bots that chat with you and with each other, using your own model provider.
