@@ -241,6 +241,37 @@ async function checkWorkBrief(invoke, window, mode, profile, baseUrl) {
   console.log(`Windows ${release()}, Electron ${process.versions.electron}: ${mode} passed for the same work brief.`)
 }
 
+async function checkSourceComparison(invoke, window, profile) {
+  const evaluate = source => window.webContents.executeJavaScript(source)
+  const name = 'Supplier comparison'
+  const project = await invoke('projects:create',{name})
+  for (const [file,body] of [['quote-a.md','Price: 40 QAR'],['quote-b.md','Price: ٤٠ QAR'],['quote-c.md','Price: 45 QAR']]) {
+    const path = join(profile,file)
+    writeFileSync(path,body)
+    await invoke('projects:attach-notes',{projectId:project.id,paths:[path]})
+  }
+  const loaded = new Promise(done=>window.webContents.once('did-finish-load',done))
+  window.webContents.reload()
+  await loaded
+  const click = async (tag,label) => {
+    const selector = `[...document.querySelectorAll(${JSON.stringify(tag)})].find(el=>el.textContent.trim()===${JSON.stringify(label)} && !el.disabled)`
+    await waitForWindow(evaluate,`Boolean(${selector})`,label)
+    await evaluate(`${selector}.click()`)
+  }
+  await click('button',name)
+  await click('button','Start fresh')
+  await waitForWindow(evaluate,`Boolean(document.querySelector('input[aria-label="Search selected evidence"]'))`,'evidence search')
+  await evaluate(`document.querySelector('input[aria-label="Search selected evidence"]').focus()`)
+  await window.webContents.insertText('Price')
+  await click('button','Search evidence')
+  await click('summary','Compare source lines')
+  const groups = await evaluate(`[...document.querySelectorAll('article[aria-label="Saved answer"] dl dd')].map(node=>node.innerText)`)
+  assert.equal(groups.length,2)
+  assert.ok(groups.some(row=>row.includes('40 qar') && row.includes('quote-a.md r1, line 1') && row.includes('quote-b.md r1, line 1')))
+  assert.ok(groups.some(row=>row.includes('45 qar') && row.includes('quote-c.md r1, line 1')))
+  console.log('Windows project search linked all three selected quotes to their checked source lines.')
+}
+
 function runDesktop() {
   const { app } = require('electron')
   const [mode, profile, baseUrl] = process.argv.slice(-3)
@@ -255,6 +286,11 @@ function runDesktop() {
         assert.equal((await invoke('app:info')).platform, 'win32')
         assert.equal(await window.webContents.executeJavaScript('document.title'), 'faibots')
         assert.equal(window.getTitle(), 'faibots')
+        if (mode === 'source-comparison') {
+          await checkSourceComparison(invoke,window,profile)
+          app.quit()
+          return
+        }
         if (mode.startsWith('brief')) {
           await checkWorkBrief(invoke,window,mode,profile,baseUrl)
           app.quit()
@@ -316,7 +352,7 @@ async function runSmoke() {
   const electron = process.env.FAIBOTS_SMOKE_ELECTRON || require('electron')
   const { server, baseUrl } = await startFixture()
   try {
-    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen'], ['brief','brief-answer','brief-reopen']]) {
+    for (const stages of [['chat', 'chat-reopen'], ['draft', 'reopen'], ['brief','brief-answer','brief-reopen'], ['source-comparison']]) {
       const profile = mkdtempSync(join(tmpdir(), 'faibots-desktop-'))
       mkdirSync(join(profile, 'workspaces'))
       for (const mode of stages) {
