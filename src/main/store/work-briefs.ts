@@ -55,9 +55,8 @@ export function workBriefs(db: Db) {
         bindTurn(id,turnId)
         const reason = invalidWait(db,chat,predicate,children(id),Date.now())
         if (reason) throw new WorkRefusal(reason)
-        const cursor = predicate.kind === 'webhook' ? db.prepare('select coalesce(max(rowid),0) as last from routine_runs').get()?.last : null
-        db.prepare("insert into chief_wakes(work_id,revision,state,predicate,due_at,signal_after) values(?,?,'pending',?,?,?)")
-          .run(id,revision,JSON.stringify(predicate),waitDueAt(predicate),cursor ?? null)
+        db.prepare("insert into chief_wakes(work_id,revision,state,predicate,due_at) values(?,?,'pending',?,?)")
+          .run(id,revision,JSON.stringify(predicate),waitDueAt(predicate))
         db.prepare("update chief_work set state='waiting',revision=revision+1,updated_at=? where id=?").run(Date.now(),id)
         return get(id,chat)
       })

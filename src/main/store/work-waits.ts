@@ -45,9 +45,7 @@ export function evaluateWait(db: Db, row: Row, wait: WorkWait, jobs: Row[], now:
   }
   if (wait.kind === 'webhook') {
     if (!ownsWebhook(db,str(row.conversation_id),wait.routineId)) return { message: 'The selected webhook is no longer available.' }
-    const run = db.prepare(`select id,started_at from routine_runs where routine_id=? and trigger='webhook'
-      and rowid>? order by rowid limit 1`).get(wait.routineId,row.signal_after ?? 0)
-    if (run && inTime(run.started_at)) return { message: 'The selected routine received a webhook. Its work has a separate result.' }
+    if (row.signaled_at != null && inTime(row.signaled_at)) return { message: 'The selected routine received a webhook. Its work has a separate result.' }
   } else if (wait.kind === 'first_match') {
     const pool = jobs.filter(job => wait.assignmentIds.includes(str(job.id)))
     const winner = pool.filter(job => job.state === 'answered' && inTime(job.updated_at) &&

@@ -383,7 +383,12 @@ export const MIGRATIONS: string[] = [
   /* 26: persist the condition and outcome for each generation of a waiting brief. */ `
   alter table chief_wakes add column predicate text not null default '{"kind":"all"}';
   alter table chief_wakes add column due_at integer;
-  alter table chief_wakes add column signal_after integer;
+  alter table chief_wakes add column signaled_at integer;
   alter table chief_wakes add column cancel_ids text not null default '[]';
+  create trigger brief_webhook_received after insert on routine_runs when new.trigger='webhook' begin
+    update chief_wakes set signaled_at=new.started_at where state='pending' and signaled_at is null
+      and json_extract(predicate,'$.kind')='webhook' and json_extract(predicate,'$.routineId')=new.routine_id
+      and exists(select 1 from chief_work w where w.id=chief_wakes.work_id and w.state='waiting' and w.revision=chief_wakes.revision+1);
+  end;
   `
 ]

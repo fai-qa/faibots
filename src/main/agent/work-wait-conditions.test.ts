@@ -73,6 +73,7 @@ it('observes only a new webhook on the selected owner-configured routine',()=>{
   run(own,'manual')
   expect(ready()).toEqual([])
   run(own,'webhook')
+  store.db.prepare("delete from routine_runs where routine_id=?").run(own.id)
   const [wake]=ready()
   const entry=store.entries.get(wake!.entryId)
   expect(entry?.conversationId).toBe(room.id)
