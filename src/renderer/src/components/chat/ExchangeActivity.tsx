@@ -188,18 +188,25 @@ function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
       <ol className="space-y-3">
         {view?.messages.map((message) => {
           const bot = bots.get(message.authorId)
+          const recipient = bots.get(message.recipientId)
           return (
             <li key={message.id} data-exchange-message={message.id} className="flex min-w-0 items-start gap-2">
               <span aria-hidden="true" className="w-6 shrink-0 pt-0.5">{bot && <BotAvatar bot={bot} size={24} />}</span>
               <div className="min-w-0 max-w-full">
                 <div className="mb-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-2">
                   <bdi className="font-semibold text-fg">{bot?.name ?? 'Deleted bot'}</bdi>
-                  <ArrowRight aria-hidden="true" size={12} /><span className="sr-only">to </span><bdi>{bots.get(message.recipientId)?.name ?? 'Deleted bot'}</bdi>
+                  <ArrowRight aria-hidden="true" size={12} /><span className="sr-only">to </span><bdi>{recipient?.name ?? 'Deleted bot'}</bdi>
                   <time dateTime={new Date(message.createdAt).toISOString()} title={formatFull(message.createdAt)}>{formatTime(message.createdAt)}</time>
                 </div>
                 <div dir="auto" className="selectable max-w-full break-words rounded-xl rounded-tl-sm bg-sunken px-3 py-2 text-[13px] text-fg">
                   <Markdown text={message.text} streaming={message.isStreaming} />
                 </div>
+                {message.selectionReason && (
+                  <div className="selectable mt-1.5 max-w-prose break-words text-xs text-fg-2">
+                    <span className="font-semibold">Why <bdi>{recipient?.name ?? 'this specialist'}</bdi> was chosen</span>
+                    <p dir="auto" className="whitespace-pre-wrap">{message.selectionReason}</p>
+                  </div>
+                )}
               </div>
             </li>
           )

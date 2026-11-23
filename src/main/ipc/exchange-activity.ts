@@ -83,12 +83,34 @@ const page =
   scoped +
   `,
 visible as (
-  select e.rowid as position,e.id,m.recipient_id
+  select e.rowid as position,e.id,m.recipient_id,m.job
   from messages m join entries e on e.id=m.entry_id group by e.id
 ),
 cursor(value) as (values (?))
-select e.id,e.conversation_id,json_extract(e.author,'$.botId') as author_id,v.recipient_id,e.text,e.created_at,e.is_streaming
+select e.id,e.conversation_id,json_extract(e.author,'$.botId') as author_id,v.recipient_id,e.text,e.created_at,e.is_streaming,
+  case
+    when p.kind='tool-call' and json_extract(p.author,'$.kind')='bot' and json_extract(p.author,'$.botId')=d.caller_id
+      and json_extract(p.tool_call,'$.toolName')='send_to_agent' and json_type(p.tool_call,'$.input.reason')='text'
+      then json_extract(p.tool_call,'$.input.reason')
+    when p.kind='event' and json_extract(p.author,'$.kind')='system' then coalesce(
+      case when json_type(p.meta,'$.selectionReason')='text' then json_extract(p.meta,'$.selectionReason') end,
+      -- An older background anchor can still be matched to the exact admission receipt.
+      -- A reused room, a matching recipient or a nearby SDK card cannot establish this link.
+      case when p.client_nonce='faibots:assignment:'||d.id then (
+        select case when json_type(c.tool_call,'$.input.reason')='text' then json_extract(c.tool_call,'$.input.reason') end from entries c
+        where c.conversation_id=p.conversation_id and c.kind='tool-call'
+          and json_extract(c.author,'$.botId')=d.caller_id
+          and json_extract(c.meta,'$.turnId')=json_extract(e.meta,'$.turnId')
+          and json_extract(c.tool_call,'$.toolName')='assign_to_agent'
+          and json_extract(c.tool_call,'$.status')='done'
+          and json_extract(c.tool_call,'$.resultText')='Assignment '||d.id||' is running. You can answer now. Its result will return to this chat.'
+        group by c.conversation_id having count(*)=1
+      ) end
+    )
+  end as selection_reason
 from visible v join entries e on e.id=v.id
+left join delegations d on d.id=v.job and d.question_id=e.id
+left join entries p on p.id=d.parent_entry_id
 where (select value from cursor) is null or v.position < (select p.position from visible p join cursor on p.id=cursor.value)
 order by v.position desc limit ?`
 
@@ -158,6 +180,7 @@ export function exchangeActivityHandlers(
           conversationId: str(row.conversation_id),
           authorId: str(row.author_id),
           recipientId: str(row.recipient_id),
+          ...(typeof row.selection_reason === 'string' && row.selection_reason.trim() && { selectionReason: row.selection_reason.trim() }),
           text:
             (bool(row.is_streaming) ? streamingText?.(str(row.conversation_id), str(row.id)) : undefined) ??
             str(row.text),

@@ -12,7 +12,7 @@ import { buildHandleIndex } from './mentions'
 /** What the collab tools need from the orchestrator. */
 export interface CollabRuntime {
   /** Post `message` from ctx.bot to `target` in their exchange and wait for the reply. Throws CollabError. */
-  askBot(ctx: ToolContext, target: Bot, message: string): Promise<{ reply: string; exchange: Conversation }>
+  askBot(ctx: ToolContext, target: Bot, message: string, reason?: string): Promise<{ reply: string; exchange: Conversation }>
   /** Mark the turn as passed. A bot that was addressed may not pass. */
   jobHistory(bot: Bot, conversationId: Id): { running: number; remaining: number | null; medianMs: number | null; accepted: number }
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer'
@@ -124,7 +124,7 @@ export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 's
         const missing = await missingCapabilities(ctx.bot, target, input)
         if (missing.length) throw new CollabRefusal(`Cannot assign this job to @${target.handle}: ${missing.join(', ')}.`)
         const brief = input.deliverable ? `${input.message}\n\nExpected result: ${input.deliverable}` : input.message
-        const { reply, exchange } = await deps.runtime.askBot(ctx, target, brief)
+        const { reply, exchange } = await deps.runtime.askBot(ctx, target, brief, input.reason)
         return textResult(`${target.name} (@${target.handle}) replied:\n\n${reply}`, {
           title: `Messaged ${target.name}`,
           exchangeConversationId: exchange.id

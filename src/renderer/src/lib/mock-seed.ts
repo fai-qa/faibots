@@ -313,7 +313,8 @@ export function seedMockData(now = Date.now()): MockDb {
       callId: 'call-x-1',
       toolName: 'send_to_agent',
       title: 'Messaged Iris',
-      input: { to: '@iris', message: 'What did you find on competitor pricing for the launch? Alex wants a short summary.' },
+      input: { to: '@iris', message: 'What did you find on competitor pricing for the launch? Alex wants a short summary.',
+        reason: 'Iris researched competitor pricing for this launch.' },
       status: 'done',
       resultText: 'Two of the three charge per seat; one charges per workspace. Median price is $12 per seat per month.',
       exchangeConversationId: 'x-atlas-iris'
