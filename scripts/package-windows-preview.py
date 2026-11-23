@@ -26,11 +26,14 @@ QAR 990 and delivers in two days. I need delivery in three days. Prepare a
 short decision memo in a work brief for my review.
 
 If the result meets your needs, choose Accept result, then Save to project.
-Open the saved Page in the project's Space.
+Open the saved Page in the project's Space. Choose Ask fai, enter
+"Which supplier can meet my three-day deadline, and what is the extra cost?"
+and select Send to fai. The answer returns to your main chat.
 
 The launcher opens a separate preview profile. If you used the previous
 Windows preview on this computer, quit that version first. This build opens
 the same chats and retains the workspace folder saved in its settings.
+The app makes a checked backup before upgrading the preview database.
 """
 
 def assemble(app, target):
