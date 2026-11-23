@@ -1,6 +1,7 @@
 // Drives the built faibots window for the desktop recording.
 // Launched by run.cjs with the same Electron runtime the Windows checks workflow uses.
 
+const { spawnSync } = require('node:child_process')
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const { pathToFileURL } = require('node:url')
@@ -205,8 +206,42 @@ function fit(win, strict = false) {
   }
 }
 
+function parkPoint(win) {
+  const area = screen.getPrimaryDisplay().workArea
+  const bounds = win.getBounds()
+  const x = Math.min(bounds.x + bounds.width + 48, area.x + area.width - 8)
+  const y = Math.min(Math.max(bounds.y + Math.round(bounds.height / 2), area.y + 8), area.y + area.height - 8)
+  return {
+    x: x > bounds.x + bounds.width ? x : area.x + 8,
+    y
+  }
+}
+
+async function parkPointer(win) {
+  const point = parkPoint(win)
+  const command = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${point.x}, ${point.y})`
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], { windowsHide: true })
+  if (result.status !== 0) {
+    const detail = `${result.stderr || result.stdout || ''}`.trim()
+    throw new Error(`Could not move the pointer to ${point.x},${point.y}. ${detail}`)
+  }
+  const cursor = screen.getCursorScreenPoint()
+  log(`pointer ${cursor.x},${cursor.y}`)
+  if (Math.abs(cursor.x - point.x) > 2 || Math.abs(cursor.y - point.y) > 2) {
+    throw new Error(`Pointer is at ${cursor.x},${cursor.y}, expected ${point.x},${point.y}.`)
+  }
+  await waitFor(
+    win,
+    `![...document.querySelectorAll('[role="toolbar"][aria-label="Message actions"]')].some((el) => getComputedStyle(el).display !== 'none')`,
+    'the message hover toolbar to clear',
+    5000
+  )
+  await sleep(200)
+}
+
 async function captureClient(win, filename) {
   fit(win, true)
+  await parkPointer(win)
   await sleep(200)
   const image = await win.webContents.capturePage()
   const size = image.getSize()
@@ -298,6 +333,7 @@ async function demo(win) {
   await typeInto(win, DESC_FIELD, 'finds and summarises sources', 40)
   await waitFor(win, `document.querySelector(${JSON.stringify(NAME_FIELD)}).value === 'Researcher' && document.querySelector(${JSON.stringify(DESC_FIELD)}).value === 'finds and summarises sources'`, 'the filled Create New Bot dialog')
   await sleep(1400)
+  await parkPointer(win)
   markProof()
   await sleep(400)
   await clickButton(win, 'Create bot')
@@ -331,6 +367,7 @@ async function demo(win) {
       && !/is (typing|working|reading)/.test(text)
   })()`, 'the Researcher reply', 45000)
   await sleep(1600)
+  await parkPointer(win)
   markProof()
   await sleep(700)
   endShot()
@@ -371,6 +408,7 @@ async function demo(win) {
   const linkLabel = await evalJs(win, `document.querySelector('button[aria-label^="Open bot conversation:"]')?.getAttribute('aria-label') || ''`)
   log(`link ${linkLabel}`)
   await sleep(1200)
+  await parkPointer(win)
   markProof()
   await captureClient(win, 'group-chat.png')
   await sleep(800)
@@ -383,6 +421,7 @@ async function demo(win) {
     return dialog && ((dialog.innerText.match(/\\[stand-in model\\]/g) || []).length >= 2)
   })()`, 'the bot conversation dialog', 20000)
   await sleep(1800)
+  await parkPointer(win)
   markProof()
   await sleep(700)
   await clickButton(win, 'Close chat')
@@ -410,6 +449,7 @@ async function demo(win) {
   })()`)
   log(`Your data: ${dataDir}`)
   await sleep(1600)
+  await parkPointer(win)
   markProof()
   await sleep(800)
   endShot()
