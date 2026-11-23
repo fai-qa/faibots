@@ -73,33 +73,48 @@
 }
 
 :root.dark {
-  --c-sidebar: #111214;
-  --c-pane: #18191b;
-  --c-elevated: #202124;
-  --c-sunken: #141517;
-  --c-fg: #ececee;
-  --c-fg-2: #a5a8b1;
-  --c-fg-3: rgb(236 236 238 / 0.52);
-  --c-fg-4: rgb(236 236 238 / 0.34);
-  --c-hover: rgb(236 236 238 / 0.06);
-  --c-active: rgb(236 236 238 / 0.1);
-  --c-line: #34363b;
-  --c-line-strong: rgb(236 236 238 / 0.18);
-  --c-line-soft: rgb(236 236 238 / 0.06);
-  --c-ink: #ececee;
-  --c-on-ink: #18191b;
-  --c-bubble-bot: rgb(236 236 238 / 0.06);
-  --c-accent: #5b8ff5;
-  --c-accent-fg: #8eb3ff;
-  --c-focus: #8eb3ff;
+  --c-sidebar: #000000;
+  --c-pane: #000000;
+  --c-elevated: #111111;
+  --c-sunken: #0a0a0a;
+  --c-fg: #ffffff;
+  --c-fg-2: #c8c8c8;
+  --c-fg-3: rgb(255 255 255 / 0.56);
+  --c-fg-4: rgb(255 255 255 / 0.36);
+  --c-hover: rgb(255 255 255 / 0.06);
+  --c-active: rgb(255 255 255 / 0.1);
+  --c-line: #222222;
+  --c-line-strong: rgb(255 255 255 / 0.18);
+  --c-line-soft: rgb(255 255 255 / 0.08);
+  --c-ink: #ffffff;
+  --c-on-ink: #000000;
+  --c-bubble-bot: rgb(255 255 255 / 0.06);
+  --c-accent: #2868f0;
+  --c-accent-fg: #7ea8ff;
+  --c-focus: #2868f0;
   --c-danger: #ffaaa5;
   --c-danger-fg: #ffaaa5;
   --c-on-danger: #101318;
   --c-success: #8ccea6;
   --c-success-fg: #8ccea6;
-  --c-warn: #edc18c;
-  --c-warn-fg: #edc18c;
-  --c-manager: #f49b61;
+  --c-warn: #8eb3ff;
+  --c-warn-fg: #8eb3ff;
+  --c-manager: #7ea8ff;
+  /* affectUI tokens. Amber and warning are retinted to the blue accent. */
+  --aui-blue: #2868f0;
+  --aui-orange: #2868f0;
+  --aui-amber: #8eb3ff;
+  --aui-green: #ffffff;
+  --aui-warning: #8eb3ff;
+  --aui-warning-soft: rgb(40 104 240 / 0.18);
+  --aui-surface: #111111;
+  --aui-ink: #ffffff;
+  --aui-muted: rgb(255 255 255 / 0.62);
+  --aui-placeholder: rgb(255 255 255 / 0.36);
+  --aui-border: rgb(255 255 255 / 0.08);
+  --aui-border-strong: rgb(255 255 255 / 0.14);
+  --aui-subtle: rgb(255 255 255 / 0.04);
+  --aui-focus: rgb(40 104 240 / 0.8);
   --c-scrim: rgb(0 0 0 / 0.5);
   --c-highlight: rgb(255 200 61 / 0.3);
   --c-highlight-current: rgb(255 160 30 / 0.6);
@@ -513,6 +528,109 @@ select:focus-visible {
   from { opacity: 0; }
 }
 
+/* Retheme affectUI "needs you" amber to blue. html.dark beats the components' :where(.dark) blocks. */
+html.dark .ui-ahc {
+  --ui-ahc-card: #111111;
+  --ui-ahc-lane: #000000;
+  --ui-ahc-well: rgb(255 255 255 / 0.04);
+  --ui-ahc-blue: #2868f0;
+  --ui-ahc-link: #2868f0;
+  --ui-ahc-accent: #2868f0;
+  --ui-ahc-board-amber: #2868f0;
+  --ui-ahc-amber: #8eb3ff;
+  --ui-ahc-amber-bg: rgb(40 104 240 / 0.16);
+  --ui-ahc-focus: rgb(40 104 240 / 0.8);
+}
+html.dark .ui-atrc {
+  --ui-atrc-card: #111111;
+  --ui-atrc-accent: #2868f0;
+  --ui-atrc-wash: rgb(40 104 240 / 0.14);
+  --ui-atrc-orange: #2868f0;
+  --ui-atrc-badge: #8eb3ff;
+  --ui-atrc-badge-wash: rgb(40 104 240 / 0.18);
+  --ui-atrc-focus: rgb(40 104 240 / 0.8);
+}
+html.dark .ui-aggc {
+  --ui-aggc-panel: #000000;
+  --ui-aggc-card: #111111;
+  --ui-aggc-link: rgb(40 104 240 / 0.55);
+  --ui-aggc-pulse: #7ea8ff;
+  --ui-aggc-glow: rgb(40 104 240 / 0.16);
+  --ui-aggc-breath: rgb(40 104 240 / 0.2);
+  --ui-aggc-breath-out: rgb(40 104 240 / 0.04);
+  --ui-aggc-brand-bg: rgb(40 104 240 / 0.22);
+  --ui-aggc-brand-fg: #7ea8ff;
+  --ui-aggc-ok: #ffffff;
+  --ui-aggc-ok-bg: rgb(255 255 255 / 0.1);
+  --ui-aggc-ok-fg: #ffffff;
+  --ui-aggc-warn: #8eb3ff;
+  --ui-aggc-warn-bg: rgb(40 104 240 / 0.16);
+  --ui-aggc-warn-fg: #8eb3ff;
+  --ui-aggc-focus: rgb(40 104 240 / 0.8);
+}
+html.dark .ui-apc {
+  --ui-apc-tray: #000000;
+  --ui-apc-bg: #111111;
+  --ui-apc-soft: #0a0a0a;
+  --ui-apc-tile: #0a0a0a;
+  --ui-apc-primary: #2868f0;
+  --ui-apc-primary-hover: #3b76f5;
+  --ui-apc-primary-ink: #ffffff;
+  --ui-apc-focus: rgb(40 104 240 / 0.8);
+  --ui-apc-timer-low: #8eb3ff;
+  --ui-apc-low-bg: rgb(255 255 255 / 0.06);
+  --ui-apc-low-ink: #c8c8c8;
+  --ui-apc-med-bg: rgb(40 104 240 / 0.14);
+  --ui-apc-med-ink: #8eb3ff;
+  --ui-apc-ok-bg: rgb(255 255 255 / 0.08);
+  --ui-apc-ok-ink: #ffffff;
+  --ui-apc-no-bg: rgb(255 255 255 / 0.06);
+  --ui-apc-no-ink: #c8c8c8;
+}
+html.dark .ui-tclc,
+html.dark .ui-tclc-group {
+  --ui-tclc-card: #111111;
+  --ui-tclc-code: #0a0a0a;
+  --ui-tclc-accent: #2868f0;
+  --ui-tclc-focus: rgb(40 104 240 / 0.8);
+  --ui-tclc-num: #c8c8c8;
+  --ui-tclc-lit: #7ea8ff;
+  --ui-tclc-str: #a8c4ff;
+}
+html.dark .ui-tlc {
+  --ui-tlc-accent: #2868f0;
+}
+
+/* The visible label is the plain title. The mono slot would repeat it, or a raw tool id. */
+.ui-tclc__name { display: none; }
+
+/* Trail header: keep a wrapped bot mark inside the 12px logo slot. */
+html.dark .ui-atrc__agent .ui-atrc__logo,
+.ui-atrc__agent .ui-atrc__logo {
+  overflow: hidden;
+  width: 12px;
+  height: 12px;
+}
+.ui-atrc__agent .ui-atrc__logo > * {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+/* A short blue relay between the two faces on an exchange row. */
+.handoff-relay {
+  display: inline-block;
+  width: 18px;
+  height: 2px;
+  border-radius: 1px;
+  background: #2868f0;
+  transform-origin: left center;
+  animation: handoff-draw 420ms ease both;
+}
+@keyframes handoff-draw {
+  from { transform: scaleX(0); opacity: 0.4; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -522,4 +640,13 @@ select:focus-visible {
     transition-duration: 0.001ms !important;
   }
   .stream-caret { animation: none; }
+  .handoff-relay { animation: none; }
+}
+
+/* The graph's own header says "agents" and counts tools and dollars. Ours says bots. */
+.overview-map .ui-aggc__sum,
+.overview-map .ui-aggc__legend,
+.overview-map .ui-aggc__badge[data-status="done"],
+.overview-map .ui-aggc__sum-cost {
+  display: none;
 }

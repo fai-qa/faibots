@@ -15,7 +15,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@shared': resolve(root, '../shared'),
-      '@renderer': resolve(root, 'src')
+      '@renderer': resolve(root, 'src'),
+      'agent-graph-clean': resolve(root, 'src/components/ui/agent-graph-clean.tsx')
     }
   },
   plugins: [react(), tailwindcss()],

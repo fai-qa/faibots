@@ -7,12 +7,19 @@ import { formatFull, formatTime } from '../../lib/format'
 import { Character } from '../avatar/BotAvatar'
 import { Markdown } from './Markdown'
 
-/** Centred system line: "Juno passed", "Iris was added to the chat", "Stopped". */
+/** "{name} had nothing to add" for a pass, including the older stored "{name} passed" event. */
+export function eventLineText(entry: Entry, botName: string | undefined): string {
+  const name = botName ?? 'A bot'
+  const passed = entry.kind === 'tool-call' && entry.toolCall?.toolName === 'pass_turn'
+  if (passed || (entry.kind === 'event' && entry.text === `${name} passed`)) return `${name} had nothing to add`
+  return entry.text
+}
+
+/** Centred system line: "Juno had nothing to add", "Iris was added to the chat", "Stopped". */
 export function EventLine({ entry }: { entry: Entry }) {
   const bot = useData((s) => (entry.author.kind === 'bot' ? s.botMap.get(entry.author.botId) : undefined))
   if (entry.trigger) return <TriggerTask entry={entry} trigger={entry.trigger} />
-  const passed = entry.kind === 'tool-call' && entry.toolCall?.toolName === 'pass_turn'
-  const text = passed ? `${bot?.name ?? 'A bot'} passed` : entry.text
+  const text = eventLineText(entry, bot?.name)
   const isMessage = entry.kind === 'message'
   return (
     <div className="flex justify-center px-4 py-1.5" title={formatFull(entry.createdAt)}>

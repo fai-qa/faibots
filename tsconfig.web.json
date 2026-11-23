@@ -14,8 +14,10 @@
     "noEmit": true,
     "paths": {
       "@shared/*": ["./src/shared/*"],
-      "@renderer/*": ["./src/renderer/src/*"]
+      "@renderer/*": ["./src/renderer/src/*"],
+      "agent-graph-clean": ["./src/renderer/src/components/ui/agent-graph-clean.d.ts"]
     }
   },
-  "include": ["src/renderer/src/**/*", "src/shared/**/*", "src/preload/index.d.ts"]
+  "include": ["src/renderer/src/**/*", "src/shared/**/*", "src/preload/index.d.ts"],
+  "exclude": ["src/renderer/src/components/ui/agent-graph-clean.tsx"]
 }

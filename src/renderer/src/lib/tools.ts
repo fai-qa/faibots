@@ -70,6 +70,18 @@ export function toolIcon(name: string): LucideIcon {
   }
 }
 
+/**
+ * The words a person sees for a tool call. A stored title wins. Otherwise the
+ * plain catalogue title. Never the raw id (`update_memory`, `mcp__…`).
+ */
+export function visibleToolLabel(toolName: string, title?: string): string {
+  const given = title?.trim()
+  if (given && given !== toolName && !given.startsWith('mcp__')) return given
+  const fallback = toolTitle(toolName)
+  if (!fallback || fallback === toolName || fallback.startsWith('mcp__')) return 'Using a tool'
+  return fallback
+}
+
 /** Fallback title when a tool-call entry has none. */
 export function toolTitle(name: string): string {
   const mcp = parseMcpName(name)

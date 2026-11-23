@@ -93,7 +93,7 @@ If Electron exits immediately on Windows, run `npm run prestart` to download the
 
 ## Licensing
 
-The fai.qa-owned code and documentation are available under the [MIT License](LICENSE). The brand assets and integrated affectUI Pro component keep their separate terms. See [Notice](NOTICE.md) and [third-party notices](THIRD_PARTY_LICENSES/README.md).
+The fai.qa-owned code and documentation are available under the [MIT License](LICENSE). The brand assets and the integrated affectUI Pro components (Agent Trail, Approval Card and Agent Graph) keep their separate terms and are not covered by the MIT license. See [Notice](NOTICE.md) and [third-party notices](THIRD_PARTY_LICENSES/README.md).
 
 On Windows, open the `licenses` folder beside `faibots.exe` to read the notices. The portable ZIP also includes them beside its launcher.
 

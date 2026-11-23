@@ -7,7 +7,7 @@ import { botStatus, useData } from '../../store/data'
 import { openDetails, useUi } from '../../store/ui'
 import { openBot } from '../../store/actions'
 import { findDm } from '../../lib/bots'
-import { billingFor, routeLabel } from '../../lib/providers'
+import { billingFor } from '../../lib/providers'
 import { BotAvatar } from '../avatar/BotAvatar'
 import { BillingBadge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -86,10 +86,11 @@ function ProfileCard({ bot, onDone }: { bot: Bot; onDone: () => void }) {
         </div>
       </div>
       {bot.description && <p className="mt-3 line-clamp-3 text-[12.5px] leading-relaxed text-fg-2">{bot.description}</p>}
-      <div className="mt-3 flex items-center gap-2 text-2xs text-fg-3">
-        <span className="min-w-0 truncate">{routeLabel(bot.model, providers)}</span>
-        {provider && <BillingBadge route={billingFor(provider, tests[provider.id]?.billing)} />}
-      </div>
+      {provider && (
+        <div className="mt-3 flex items-center gap-2 text-2xs text-fg-3">
+          <BillingBadge route={billingFor(provider, tests[provider.id]?.billing)} />
+        </div>
+      )}
       <div className="mt-3.5 flex gap-2">
         <Button
           size="sm"

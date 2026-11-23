@@ -9,6 +9,7 @@ import { formatTime } from '../../lib/format'
 import { BotAvatar } from '../avatar/BotAvatar'
 import { ApprovalCard } from './ApprovalCard'
 import { BotHoverCard } from './BotHoverCard'
+import { ChatTrail } from './ChatTrail'
 import { MessageBubble } from './MessageBubble'
 import { ToolCallRow } from './ToolCallRow'
 
@@ -23,7 +24,7 @@ function EntryView({ entry, conv, first, colored }: { entry: Entry; conv: Conver
   }
 }
 
-export function AuthorRun({ author, entries, conv }: { author: Author; entries: Entry[]; conv: Conversation }) {
+export function AuthorRun({ author, entries, conv, prompt }: { author: Author; entries: Entry[]; conv: Conversation; prompt?: string }) {
   const bot = useData((s) => (author.kind === 'bot' ? s.botMap.get(author.botId) : undefined))
   const live = useData((s) => (author.kind === 'bot' ? s.live[`${conv.id}:${author.botId}`] : undefined))
   const botColorInChat = useData((s) => s.settings?.botColorInChat ?? false)
@@ -70,6 +71,7 @@ export function AuthorRun({ author, entries, conv }: { author: Author; entries: 
           {bot?.label && conv.kind !== 'dm' && <span className="truncate text-[12px] text-fg-3">{bot.label}</span>}
           <span className="text-2xs text-fg-4">{formatTime(firstAt)}</span>
         </div>
+        {bot && <ChatTrail bot={bot} entries={entries} title={prompt} activity={live?.activity} />}
         {entries.map((e, i) => (
           <div key={e.id} className="w-full">
             <EntryView entry={e} conv={conv} first={i === 0} />
