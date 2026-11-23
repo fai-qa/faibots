@@ -270,10 +270,15 @@ export function buildHandlers(s: Services, getWindow: () => BrowserWindow | null
 }
 
 /** Register the table with ipcMain. Errors reach the renderer as rejected promises with a message. */
-export function registerHandlers(table: HandlerTable): void {
+export function registerHandlers(table: HandlerTable, getWindow: () => BrowserWindow | null): void {
   for (const channel of Object.keys(table) as InvokeChannel[]) {
     const fn = table[channel] as (req: unknown) => unknown
-    ipcMain.handle(channel, async (_event, req) => {
+    ipcMain.handle(channel, async (event, req) => {
+      const win = getWindow()
+      if (!win || win.isDestroyed() || win.webContents !== event.sender ||
+          event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('This action is available only in the faibots window.')
+      }
       try {
         return await fn(req)
       } catch (err) {
