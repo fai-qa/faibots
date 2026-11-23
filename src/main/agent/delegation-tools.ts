@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SPECIALIST_JOB_KINDS } from '@shared/specialist-work'
 import type { Bot, Conversation, Entry } from '@shared/domain'
 import type { Store, ToolContext, ToolRegistry, ToolResult } from '../contracts'
 import { type createDelegationRepo, type DelegationLease } from '../store/delegations'
@@ -10,6 +11,7 @@ type Work = NonNullable<ReturnType<Repo['get']>>
 const scope = ({ bot, conversation }: { bot: Bot; conversation: Conversation }) =>
   bot.isPrimary && conversation.kind !== 'exchange' && conversation.botIds.includes(bot.id)
 const job = z.object({
+  jobKind: z.enum(SPECIALIST_JOB_KINDS).optional().describe('Reuse the job kind used to compare candidates in list_bots.'),
   to: z.string().trim().min(1), message: z.string().trim().min(1),
   reason: z.string().trim().min(1).max(500).optional(), deliverable: z.string().trim().min(1).max(1000).optional(),
   requiredSkills: z.array(z.string().trim().min(1).max(120)).max(16).optional(),

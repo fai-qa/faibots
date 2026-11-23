@@ -48,6 +48,8 @@ import { nativeActionId } from '../tools/action-executor'
 import { CollabError, CollabRefusal, findBot, type CollabRuntime } from './collab-tools'
 import { attachmentContext, projectSelections, safeModelId, saveTurnContext } from '../store/turn-context'
 import { startOfLocalDay } from '../store/turns'
+import { comparableAssignments, comparableRoute, type JobComparison } from '../store/comparable-assignments'
+import type { SpecialistJobKind } from '@shared/specialist-work'
 import { MAIN_BOT_NAME } from '../store/bots'
 import { workBriefs } from '../store/work-briefs'
 import { BackgroundAssignments } from './delegation-tools'
@@ -431,7 +433,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
   // Collab tools
   // -------------------------------------------------------------------------------------------
 
-  jobHistory(bot: Bot, conversationId: Id) {
+  jobHistory(bot: Bot, conversationId: Id, comparison?: JobComparison) {
     const { db, turns } = this.deps.store
     const running = db.prepare("select count(*) as n from delegations where child_id=? and state='assigned'").get(bot.id)
     const recent = db.prepare(`select d.updated_at-d.created_at as elapsed from delegations d join entries p on p.id=d.parent_entry_id
@@ -444,7 +446,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       join assignment_admissions a on a.root_turn_id=t.turn_id join delegations d on d.id=a.assignment_id
       where w.conversation_id=? and w.state='accepted' and w.partial=0 and d.child_id=? and d.state='answered'`).get(conversationId,bot.id)
     return { running: Number(running?.n ?? 0), remaining: bot.dailyRunLimit > 0 ? Math.max(0,bot.dailyRunLimit-used) : null,
-      medianMs, accepted: Number(accepted?.n ?? 0) }
+      medianMs, accepted: Number(accepted?.n ?? 0),
+      ...(comparison && { comparable: comparableAssignments(db,bot.id,conversationId,comparison) }) }
   }
 
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer' {
@@ -455,7 +458,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     return 'passed'
   }
 
-  async askBot(ctx: ToolContext, target: Bot, message: string, reason?: string): Promise<{ reply: string; exchange: Conversation }> {
+  async askBot(ctx: ToolContext, target: Bot, message: string, reason?: string, jobKind?: SpecialistJobKind): Promise<{ reply: string; exchange: Conversation }> {
     const { store, bus } = this.deps
     const from = ctx.bot
     if (target.id === from.id) throw new CollabRefusal('You cannot send a message to yourself.')
@@ -490,7 +493,9 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
     const assignmentLimit = work?.assignmentLimit ?? MAX_ASKS_PER_CHAIN
     const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
-    const inputHash = createHash('sha256').update(message.trim()).digest('hex')
+    const classification = ctx.projectResultTrigger ? undefined : jobKind
+    const messageHash = createHash('sha256').update(message.trim()).digest('hex')
+    const inputHash = classification ? `${classification}:${messageHash}` : messageHash
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
       if (!this.delegations.reserve(id, root, assignmentLimit)) {
         const reason = work
@@ -513,7 +518,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const exchange = found ??
         store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
       const question = store.entries.append({
-        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id }, meta: { turnId: ctx.turnId, ...(asking?.projectScoped && { projectScoped: true }) },
+        conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id },
+        meta: {turnId:ctx.turnId,...(asking?.projectScoped && {projectScoped:true}),...(classification && {jobKind:classification})},
         text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
       })
       return { parent, question }
@@ -835,6 +841,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       return false
     } : undefined
     let lateBuffer = ''
+    const childRoute = req.assignment && route && comparableRoute(route.provider, route.modelId, route.effort)
     const recorder: TurnRecorder = new TurnRecorder(
       { store, bus, live: this.live, redact: (s) => secrets.redact(s) },
       {
@@ -850,7 +857,8 @@ export class Orchestrator implements Runtime, CollabRuntime {
         ...(req.assignment && { onLateText: (delta: string) => {
           if (lateBuffer.length < 8192) lateBuffer += delta.slice(0, 8192 - lateBuffer.length)
         } }),
-        meta: { ...(route && {providerId: route.provider.id, modelId: route.modelId}), ...(isolatedTrigger && {projectScoped:true}), ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) },
+        meta: { ...(route && {providerId:route.provider.id,modelId:route.modelId}), ...(childRoute && {comparisonRoute:childRoute.routeKey}),
+          ...(isolatedTrigger && {projectScoped:true}), ...(selectedResultTrigger && {selectedResultEntryId:resultOrigin}) },
         ...(req.cascade && { reservePost: () => req.cascade!.reserve(), onRefused: () => abort.abort() })
       }
     )

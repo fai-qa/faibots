@@ -89,6 +89,7 @@ export class TurnRecorder {
   private refused = false
   private phaseNow: { phase: BotPhase; activity?: string } | undefined
   private usage = { inputTokens: 0, outputTokens: 0 }
+  private usageCoverage: 'none' | 'complete' | 'incomplete' = 'none'
   private codexUsageState?: 'measured' | 'unknown'
   private held?: { text: string; separate: boolean; failed: boolean; overflow: boolean; withdrawn: boolean; closed: boolean }
 
@@ -241,6 +242,9 @@ export class TurnRecorder {
   }
 
   addUsage(usage: { inputTokens?: number; outputTokens?: number } | undefined): void {
+    const complete = [usage?.inputTokens, usage?.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
+    if (!complete) this.usageCoverage = 'incomplete'
+    else if (this.usageCoverage === 'none') this.usageCoverage = 'complete'
     if (!usage) return
     this.usage.inputTokens += usage.inputTokens ?? 0
     this.usage.outputTokens += usage.outputTokens ?? 0
@@ -382,8 +386,10 @@ export class TurnRecorder {
       }
     }
     const last = this.posts[this.posts.length - 1]
-    if (last && (this.usage.inputTokens || this.usage.outputTokens)) {
-      const meta = { ...last.meta, inputTokens: this.usage.inputTokens, outputTokens: this.usage.outputTokens }
+    const measuredChild = this.opts.conversation.kind === 'exchange' && !!this.opts.replyToId && this.usageCoverage === 'complete'
+    if (last && (measuredChild || this.usage.inputTokens || this.usage.outputTokens)) {
+      const meta = { ...last.meta, inputTokens: this.usage.inputTokens, outputTokens: this.usage.outputTokens,
+        ...(measuredChild && { measuredChildUsage: true as const }) }
       this.posts[this.posts.length - 1] = this.update(last.id, { meta }) ?? last
     }
     return withheld

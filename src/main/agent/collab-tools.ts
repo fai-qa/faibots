@@ -8,13 +8,15 @@ import { billingRoute, kindInfo, resolveModelId } from '@shared/provider-catalog
 import type { EventBus, SkillService, Store, ToolContext, ToolRegistry } from '../contracts'
 import { defineTool, errorResult, textResult, type PlatformToolDefinition } from '../tools/define'
 import { buildHandleIndex } from './mentions'
+import { SPECIALIST_JOB_KINDS, type SpecialistJobKind } from '@shared/specialist-work'
+import { comparableRoute, type AssignmentSample, type JobComparison } from '../store/comparable-assignments'
 
 /** What the collab tools need from the orchestrator. */
 export interface CollabRuntime {
   /** Post `message` from ctx.bot to `target` in their exchange and wait for the reply. Throws CollabError. */
-  askBot(ctx: ToolContext, target: Bot, message: string, reason?: string): Promise<{ reply: string; exchange: Conversation }>
+  askBot(ctx: ToolContext, target: Bot, message: string, reason?: string, jobKind?: SpecialistJobKind): Promise<{ reply: string; exchange: Conversation }>
+  jobHistory(bot: Bot, conversationId: Id, comparison?: JobComparison): { running: number; remaining: number | null; medianMs: number | null; accepted: number; comparable?: AssignmentSample }
   /** Mark the turn as passed. A bot that was addressed may not pass. */
-  jobHistory(bot: Bot, conversationId: Id): { running: number; remaining: number | null; medianMs: number | null; accepted: number }
   markPassed(turnId: Id): 'passed' | 'no-turn' | 'must-answer'
 }
 
@@ -53,8 +55,17 @@ const directoryLine = (b: Bot) =>
   `- @${b.handle}: ${b.name}${b.label ? `, ${b.label}` : ''}${b.isPrimary ? ' (primary bot)' : ''}${b.description ? `. ${b.description}` : ''}`
 
 const jobRequirements = {
+  jobKind: z.enum(SPECIALIST_JOB_KINDS).optional().describe('Type of specialist work requested. Use the same kind when listing and assigning, or omit for an unclassified job.'),
   requiredSkills: z.array(z.string().trim().min(1).max(120)).max(16).optional().describe('Exact skill names this assignment requires'),
   requiredTools: z.array(z.string().trim().min(1).max(128)).max(16).optional().describe('Tool names the specialist must be allowed to use')
+}
+
+function comparisonLine(kind: SpecialistJobKind, sample?: AssignmentSample): string {
+  if (!sample?.count) return `Comparable ${kind} history is unknown for this chat, model and provider.`
+  const usage = sample.medianTokens === null ? 'Token use unknown.' :
+    `Median ${sample.medianTokens} total tokens across ${sample.metered} metered child ${sample.metered === 1 ? 'turn' : 'turns'}.`
+  return `Recent comparable ${kind} assignments in this chat on this model and provider (up to 20): ${sample.count} answered. ` +
+    `Median turnaround ${sample.medianMs} ms. ${usage} Owner-accepted team jobs: ${sample.acceptedTeamJobs}. Individual accuracy and spend unknown.`
 }
 
 export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 'settings' | 'conversations'>; skills: SkillService; tools: Pick<ToolRegistry, 'forTurn'>; bus: EventBus; runtime: CollabRuntime }): PlatformToolDefinition[] {
@@ -64,7 +75,7 @@ export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 's
     const provider = deps.store.providers.get(route.providerId)
     if (!provider?.enabled || (kindInfo(provider.kind).needsApiKey && !provider.hasApiKey)) return undefined
     const modelId = resolveModelId(provider, route.modelId)
-    return modelId ? { route, billing: provider.kind === 'claude-code' ? 'check sign-in' : billingRoute(provider), label: `${modelId} via ${provider.label}` } : undefined
+    return modelId ? { route, provider, modelId, billing: provider.kind === 'claude-code' ? 'check sign-in' : billingRoute(provider), label: `${modelId} via ${provider.label}` } : undefined
   }
   const newBotModel = (creator: Bot) =>
     configuredModel(deps.store.settings.get().defaultModel) ?? configuredModel(creator.model)
@@ -124,7 +135,7 @@ export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 's
         const missing = await missingCapabilities(ctx.bot, target, input)
         if (missing.length) throw new CollabRefusal(`Cannot assign this job to @${target.handle}: ${missing.join(', ')}.`)
         const brief = input.deliverable ? `${input.message}\n\nExpected result: ${input.deliverable}` : input.message
-        const { reply, exchange } = await deps.runtime.askBot(ctx, target, brief, input.reason)
+        const { reply, exchange } = await deps.runtime.askBot(ctx, target, brief, input.reason, input.jobKind)
         return textResult(`${target.name} (@${target.handle}) replied:\n\n${reply}`, {
           title: `Messaged ${target.name}`,
           exchangeConversationId: exchange.id
@@ -149,7 +160,7 @@ export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 's
 
   const listBots = defineTool({
     name: 'list_bots',
-    description: "List the user's other bots (handle, name, role, what each is for), to decide who to ask with send_to_agent.",
+    description: "List the user's other bots and compare candidates before assigning work. Supply a jobKind to compare observed turnaround and measured token use on similar jobs in this chat. Reuse that jobKind when assigning.",
     schema: z.object(jobRequirements),
     source: 'faibots',
     defaultPermission: 'always',
@@ -160,15 +171,18 @@ export function collabTools(deps: { store: Pick<Store, 'bots' | 'providers' | 's
       if (bots.length === 0) return textResult('There are no other bots yet. You can propose one with create_bot.')
       const rows = await Promise.all(bots.map(async (bot) => {
         const model = configuredModel(bot.model)
-        const history = deps.runtime.jobHistory(bot,ctx.conversation.id)
+        const route = input.jobKind && model && comparableRoute(model.provider, model.modelId, model.route.effort)
+        const comparison = input.jobKind && route ? { kind: input.jobKind, ...route } : undefined
+        const history = deps.runtime.jobHistory(bot, ctx.conversation.id, comparison)
         const skills = deps.skills.list(bot.id).map((skill) => skill.name)
         const missing = input.requiredSkills?.length || input.requiredTools?.length ? await missingCapabilities(ctx.bot, bot, input) : []
         return [directoryLine(bot), model ? `Model configured: ${model.label}` : 'Model needs setup',
           `Running assignments: ${history.running}`,
           ...(model ? [`Billing configuration: ${model.billing}`] : []),
           ...(history.remaining !== null ? [`Automatic runs left today: ${history.remaining}`] : []),
-          ...(history.medianMs !== null ? [`Recent median reply in this chat: ${Math.ceil(history.medianMs/1000)}s`] : []),
-          ...(history.accepted ? [`Owner-accepted jobs involving this bot in this chat: ${history.accepted}`] : []),
+          ...(input.jobKind ? [comparisonLine(input.jobKind, history.comparable)] : []),
+          ...(!input.jobKind && history.medianMs !== null ? [`Recent median reply across all job kinds and models in this chat: ${Math.ceil(history.medianMs/1000)}s`] : []),
+          ...(!input.jobKind && history.accepted ? [`Owner-accepted team jobs involving this bot across all job kinds in this chat: ${history.accepted}`] : []),
           ...(skills.length ? [`Skills: ${skills.join(', ')}`] : []),
           ...(missing.length ? [`Cannot take this job: ${missing.join(', ')}`] : [])].join(' | ')
       }))
