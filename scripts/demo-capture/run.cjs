@@ -89,7 +89,6 @@ function startRecorder(bin) {
     '-f', 'gdigrab',
     '-framerate', '30',
     '-draw_mouse', '0',
-    '-thread_queue_size', '1024',
     '-i', 'desktop',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
@@ -247,7 +246,10 @@ async function main() {
     await waitForReady(stop)
     recorder = startRecorder(bin)
     await sleep(800)
-    if (recorder.exitCode !== null) throw new Error('ffmpeg exited before the demo. See demo-out/ffmpeg.log.')
+    if (recorder.exitCode !== null) {
+      dumpLog('ffmpeg.log')
+      throw new Error(`ffmpeg exited with code ${recorder.exitCode} before the demo.`)
+    }
     videoStartedAt = Date.now()
     writeFileSync(join(outDir, 'go.json'), JSON.stringify({ videoStartedAt }))
     log('recording')
@@ -256,6 +258,7 @@ async function main() {
   } catch (error) {
     failure = error
     dumpLog('electron.log')
+    dumpLog('ffmpeg.log')
   } finally {
     clearTimeout(killTimer)
     await stopRecorder(recorder)

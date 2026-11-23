@@ -229,7 +229,8 @@ async function configure(win) {
   const model = { providerId: provider.id, modelId: 'stand-in' }
   await invoke(win, 'settings:update', {
     defaultModel: model,
-    notifications: { enabled: false, sound: false }
+    notifications: { enabled: false, sound: false },
+    userName: 'Sam'
   })
   const bots = await invoke(win, 'bots:list')
   const fai = bots.find((bot) => bot.isPrimary)
