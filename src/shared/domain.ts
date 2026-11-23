@@ -218,6 +218,7 @@ export interface Entry {
     providerId?: Id; modelId?: string; inputTokens?: number; outputTokens?: number; turnId?: Id
     selectedResultEntryId?: Id; projectScoped?: boolean; selectionReason?: string
     jobKind?: import('./specialist-work').SpecialistJobKind; comparisonRoute?: string; measuredChildUsage?: true
+    selectionComparison?: import('./specialist-work').SelectionComparison & { questionId: Id }
   }
   /** Set on the message FaiBots posts for an automatic run (author is 'system'). */
   trigger?: EntryTrigger

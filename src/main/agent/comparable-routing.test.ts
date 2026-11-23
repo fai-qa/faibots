@@ -94,6 +94,11 @@ describe('comparing specialist candidates', () => {
 
     const exchange = store.conversations.findExchange(chief.id, expert.id)!
     const firstReply = store.entries.page(exchange.id, { limit: 100 }).entries.find(e => e.replyToId)!
+    const question = store.entries.get(firstReply.replyToId!)!
+    // A classified project question from an older build cannot contribute to an ordinary chat comparison.
+    store.entries.update(question.id, { meta: { ...question.meta, projectScoped: true } })
+    expect(sample()).toMatchObject({ count: 0, metered: 0, medianTokens: null })
+    store.entries.update(question.id, { meta: question.meta })
     store.entries.append({ conversationId:exchange.id, kind:'message', author:{kind:'bot',botId:expert.id},
       replyToId:firstReply.replyToId!, text:'Historical reply without a turn ID.', mentions:[], mentionsEveryone:false, attachments:[], isStreaming:false })
     expect(sample()).toMatchObject({ count: 0, metered: 0, medianTokens: null })

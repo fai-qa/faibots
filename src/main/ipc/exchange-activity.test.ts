@@ -240,14 +240,63 @@ it('keeps reasons from protected project requests off event anchors and exchange
   h.engine.script(chief.handle, async (a) => {
     await h.runtime.askBot({
       ...a.turn.toolContext, callId: 'protected-bridge-call', projectResultTrigger: { entryId: 'selected-result' }
-    }, editor, 'A safe question.', 'Private source material.')
+    }, editor, 'A safe question.', 'Private source material.', 'research')
     a.say('Done.')
   }).script(editor.handle, (a) => a.say('A safe answer.'))
   await h.send(chat.id, 'Protected project request')
   const entryIds = anchors()
   expect(entryIds).toHaveLength(1)
   expect(store.entries.get(entryIds[0]!)?.meta?.selectionReason).toBeUndefined()
+  expect(store.entries.get(entryIds[0]!)?.meta?.selectionComparison).toBeUndefined()
   const page = api['conv:exchange-messages']({ conversationId: chat.id, entryIds })
   expect(page.messages).toHaveLength(2)
   expect(page.messages.every(message => !message.selectionReason)).toBe(true)
+  expect(page.messages.every(message => !message.selectionComparison)).toBe(true)
+})
+
+it('opens only the chosen question’s selection-time sample, including after further assignments and a reopen', async () => {
+  const { chief, editor, chat, store, api, anchors } = fixture()
+  let step = 0
+  h.engine.script(editor.handle, a => {
+    if (step !== 2) a.turn.recorder.addUsage({ inputTokens: 20, outputTokens: 6 })
+    a.say('Reviewed.')
+  })
+  h.engine.script(chief.handle, async a => {
+    step++
+    const input = { to: editor.handle, message: `Check catalogue ${step}.`, jobKind: 'review', reason:'Owns the catalogue.' }
+    if (step === 2) await a.tool('assign_to_agent', input)
+    else if (step === 3) await h.services.tools.execute('send_to_agent', input, { ...a.turn.toolContext, callId:'bridge-3' })
+    else await a.tool('send_to_agent', input)
+    a.say('Done.')
+  })
+  await h.send(chat.id, 'First catalogue.')
+  const [native] = anchors()
+  store.db.prepare('update delegations set updated_at=created_at+1250 where parent_entry_id=?').run(native!)
+  await h.send(chat.id, 'Second catalogue.')
+  await h.send(chat.id, 'Third catalogue.')
+  const [, background, bridge] = anchors()
+  const scope = { conversationId: chat.id, entryIds: [native!, background!, bridge!] }
+  const first = api['conv:exchange-messages'](scope).messages
+  const questions = first.filter(m => m.authorId === chief.id)
+  expect(questions.map(m => m.selectionComparison)).toEqual([
+    { kind:'review', count:0, medianMs:null, metered:0, medianTokens:null },
+    { kind:'review', count:1, medianMs:1250, metered:1, medianTokens:26 },
+    { kind:'review', count:2, medianMs:expect.any(Number), metered:1, medianTokens:26 }
+  ])
+  expect(first.filter(m => m.authorId === editor.id).every(m => !m.selectionComparison)).toBe(true)
+  const room = store.conversations.findExchange(chief.id, editor.id)!
+  expect(store.entries.since(room.id,0).every(entry => !entry.meta?.selectionComparison)).toBe(true)
+  expect(api['conv:exchange-messages']({ ...scope, conversationId:room.id }).messages).toEqual([])
+  expect(api['conv:exchange-summaries'](scope).every(summary => !('selectionComparison' in summary))).toBe(true)
+  // Removing the older job changes live history. The exact selection-time comparison remains frozen.
+  store.db.prepare('delete from entries where id=?').run(native!)
+  const reopened = openStore(join(root, 'faibots.db'), { homeDir:root })
+  try {
+    const read = exchangeActivityHandlers(reopened.db)['conv:exchange-messages']
+    const selected = { conversationId:chat.id, entryIds:[background!] }
+    expect(read(selected).messages[0]?.selectionComparison).toEqual(questions[1]!.selectionComparison)
+    reopened.db.prepare("update entries set meta=json_set(meta,'$.selectionComparison.questionId',?) where id=?")
+      .run(questions[2]!.id, background!)
+    expect(read(selected).messages.every(m => !m.selectionComparison)).toBe(true)
+  } finally { reopened.close() }
 })

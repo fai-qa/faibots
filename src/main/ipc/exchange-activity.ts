@@ -1,5 +1,14 @@
 import type { ExchangeActivityInvoke, ExchangeMessage, ExchangeSummary } from '@shared/exchange-activity'
-import { bool, num, str, type Db } from '../store/db'
+import { SPECIALIST_JOB_KINDS } from '@shared/specialist-work'
+import { z } from 'zod'
+import { bool, num, parseJson, str, type Db } from '../store/db'
+
+const comparison = z.object({
+  kind: z.enum(SPECIALIST_JOB_KINDS),
+  count: z.number().int().min(0).max(20), medianMs: z.number().nonnegative().nullable(),
+  metered: z.number().int().min(0).max(20), medianTokens: z.number().nonnegative().nullable()
+}).refine(value => value.metered <= value.count && (value.count > 0) === (value.medianMs !== null) &&
+  (value.metered > 0) === (value.medianTokens !== null))
 
 // The anchor and question IDs are committed in the same transaction as the assignment.
 // Pair rooms are reused. Their origin and the order of surrounding messages cannot prove a reply.
@@ -89,6 +98,7 @@ visible as (
 cursor(value) as (values (?))
 select e.id,e.conversation_id,json_extract(e.author,'$.botId') as author_id,v.recipient_id,e.text,e.created_at,e.is_streaming,
   case
+    when json_extract(e.meta,'$.projectScoped')=1 or json_extract(e.meta,'$.selectedResultEntryId') is not null then null
     when p.kind='tool-call' and json_extract(p.author,'$.kind')='bot' and json_extract(p.author,'$.botId')=d.caller_id
       and json_extract(p.tool_call,'$.toolName')='send_to_agent' and json_type(p.tool_call,'$.input.reason')='text'
       then json_extract(p.tool_call,'$.input.reason')
@@ -107,7 +117,11 @@ select e.id,e.conversation_id,json_extract(e.author,'$.botId') as author_id,v.re
         group by c.conversation_id having count(*)=1
       ) end
     )
-  end as selection_reason
+  end as selection_reason,
+  case when json_extract(p.meta,'$.selectionComparison.questionId')=e.id
+    and json_extract(p.meta,'$.selectionComparison.kind')=json_extract(e.meta,'$.jobKind')
+    and coalesce(json_extract(e.meta,'$.projectScoped'),0)=0 and json_extract(e.meta,'$.selectedResultEntryId') is null
+    then json_extract(p.meta,'$.selectionComparison') end selection_comparison
 from visible v join entries e on e.id=v.id
 left join delegations d on d.id=v.job and d.question_id=e.id
 left join entries p on p.id=d.parent_entry_id
@@ -175,18 +189,21 @@ export function exchangeActivityHandlers(
       const messages: ExchangeMessage[] = rows
         .slice(0, limit)
         .reverse()
-        .map((row) => ({
-          id: str(row.id),
-          conversationId: str(row.conversation_id),
-          authorId: str(row.author_id),
-          recipientId: str(row.recipient_id),
-          ...(typeof row.selection_reason === 'string' && row.selection_reason.trim() && { selectionReason: row.selection_reason.trim() }),
-          text:
-            (bool(row.is_streaming) ? streamingText?.(str(row.conversation_id), str(row.id)) : undefined) ??
-            str(row.text),
-          createdAt: num(row.created_at),
-          isStreaming: bool(row.is_streaming)
-        }))
+        .map((row) => {
+          const sample = typeof row.selection_comparison === 'string'
+            ? comparison.safeParse(parseJson(row.selection_comparison, null)) : undefined
+          return {
+            id: str(row.id),
+            conversationId: str(row.conversation_id),
+            authorId: str(row.author_id),
+            recipientId: str(row.recipient_id),
+            ...(typeof row.selection_reason === 'string' && row.selection_reason.trim() && { selectionReason: row.selection_reason.trim() }),
+            ...(sample?.success && { selectionComparison: sample.data }),
+            text: (bool(row.is_streaming) ? streamingText?.(str(row.conversation_id), str(row.id)) : undefined) ?? str(row.text),
+            createdAt: num(row.created_at),
+            isStreaming: bool(row.is_streaming)
+          }
+        })
       return { messages, ...(rows.length > limit && { before: messages[0]!.id }) }
     }
   }

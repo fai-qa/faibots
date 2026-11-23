@@ -493,9 +493,12 @@ export class Orchestrator implements Runtime, CollabRuntime {
     if (work && work.state !== 'active' && !(work.state === 'waiting' && inherited.parentAssignmentId)) throw new CollabRefusal('This brief is closed or waiting. New work cannot be assigned.')
     const assignmentLimit = work?.assignmentLimit ?? MAX_ASKS_PER_CHAIN
     const root = work ? { ...inherited, turnId: work.rootTurnId } : inherited
-    const classification = ctx.projectResultTrigger ? undefined : jobKind
+    const protectedWork = !!(ctx.projectResultTrigger || asking?.projectScoped)
+    // Keep the original idempotency format, including older classified project jobs.
+    const identityKind = ctx.projectResultTrigger ? undefined : jobKind
+    const classification = protectedWork ? undefined : identityKind
     const messageHash = createHash('sha256').update(message.trim()).digest('hex')
-    const inputHash = classification ? `${classification}:${messageHash}` : messageHash
+    const inputHash = identityKind ? `${identityKind}:${messageHash}` : messageHash
     const assignment = this.delegations.assign({ id, callerId: from.id, childId: target.id, parentId: ctx.conversation.id, inputHash }, () => {
       if (!this.delegations.reserve(id, root, assignmentLimit)) {
         const reason = work
@@ -509,7 +512,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const parent = card ?? store.entries.append({
         conversationId: ctx.conversation.id, kind: 'event', author: { kind: 'system' },
         text: detached ? `Assigned ${target.name} background work (${id}).` : `Messaging ${target.name}`,
-        ...(reason && !ctx.projectResultTrigger && { meta: { selectionReason: this.deps.secrets.redact(reason) } }),
+        ...(reason && !protectedWork && { meta: { selectionReason: this.deps.secrets.redact(reason) } }),
         ...(detached && { clientNonce: backgroundAnchor(id) }), mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
       })
       if (detached && (parent.kind !== 'event' || parent.author.kind !== 'system')) throw new CollabRefusal('The assignment anchor is already in use.')
@@ -519,9 +522,22 @@ export class Orchestrator implements Runtime, CollabRuntime {
         store.conversations.create({ kind: 'exchange', title: `${from.name} ↔ ${target.name}`, botIds: [from.id, target.id], origin })
       const question = store.entries.append({
         conversationId: exchange.id, kind: 'message', author: { kind: 'bot', botId: from.id },
-        meta: {turnId:ctx.turnId,...(asking?.projectScoped && {projectScoped:true}),...(classification && {jobKind:classification})},
+        meta: {turnId:ctx.turnId,...(protectedWork && {projectScoped:true}),...(classification && {jobKind:classification})},
         text: this.deps.secrets.redact(message.trim()), mentions: [target.id], mentionsEveryone: false, attachments: [], isStreaming: false
       })
+      if (classification) {
+        const current = store.bots.get(target.id)
+        let route
+        try { if (current) route = this.deps.providers.resolve(current.model) } catch { /* Unavailable providers have no comparable route. */ }
+        const criteria = route && comparableRoute(route.provider, route.modelId, route.effort)
+        if (criteria) {
+          const { count, medianMs, metered, medianTokens } = comparableAssignments(store.db, target.id, ctx.conversation.id, { ...criteria, kind: classification })
+          // Keep the source chat's statistics on its own anchor. The pair room is reused across unrelated chats.
+          store.entries.update(parent.id, { meta: { ...parent.meta, selectionComparison: {
+            questionId: question.id, kind: classification, count, medianMs, metered, medianTokens
+          } } })
+        }
+      }
       return { parent, question }
     })
     if (assignment.existing) {
@@ -551,7 +567,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
         mustAnswer: true,
         inGroup: false,
         ...(asking?.projectRun && { projectRun: asking.projectRun }),
-        ...(asking?.projectScoped && { projectInputId: question.id }),
+        ...(protectedWork && { projectInputId: question.id }),
         assignment: { lease, questionId: question.id, questionSeq: question.seq, origin: { conversationId: ctx.conversation.id, entryId: parent.id, fromBotId: from.id } },
         chain: [...ctx.chain, from.id],
         parentSignal: AbortSignal.any([ctx.signal, timeout.signal]),

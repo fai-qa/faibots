@@ -2,6 +2,7 @@ import { ArrowLeftRight, ArrowRight } from 'lucide-react'
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Bot } from '@shared/domain'
 import type { ExchangeMessage, ExchangeSummary } from '@shared/exchange-activity'
+import type { SelectionComparison } from '@shared/specialist-work'
 import { invoke, on } from '../../lib/bridge'
 import { formatFull, formatTime } from '../../lib/format'
 import { useData } from '../../store/data'
@@ -11,6 +12,18 @@ import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Markdown } from './Markdown'
 import { useExchangeChanges } from './useExchangeActivity'
+
+function selectionHistory(sample: SelectionComparison): string {
+  const scope = 'in this chat on the same model and provider'
+  if (!sample.count || sample.medianMs === null) return `At selection, there were no earlier matching ${sample.kind} jobs ${scope}.`
+  const duration = sample.medianMs < 1000 ? `${sample.medianMs} ms` : `${(sample.medianMs / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`
+  const usage = sample.medianTokens === null ? 'Token use unknown.' :
+    `Median ${sample.medianTokens.toLocaleString()} tokens (${sample.metered} of ${sample.count} measured).`
+  const history = sample.count === 20
+    ? `the sample covered the 20 most recent ${sample.kind} jobs ${scope}.`
+    : `${sample.count} earlier ${sample.kind} ${sample.count === 1 ? 'job' : 'jobs'} in this chat used the same model and provider.`
+  return `At selection, ${history} Median turnaround ${duration}. ${usage}`
+}
 
 function FaceName({ bot }: { bot?: Bot }) {
   return (
@@ -201,10 +214,11 @@ function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
                 <div dir="auto" className="selectable max-w-full break-words rounded-xl rounded-tl-sm bg-sunken px-3 py-2 text-[13px] text-fg">
                   <Markdown text={message.text} streaming={message.isStreaming} />
                 </div>
-                {message.selectionReason && (
+                {(message.selectionReason || message.selectionComparison) && (
                   <div className="selectable mt-1.5 max-w-prose break-words text-xs text-fg-2">
                     <span className="font-semibold">Why <bdi>{recipient?.name ?? 'this specialist'}</bdi> was chosen</span>
-                    <p dir="auto" className="whitespace-pre-wrap">{message.selectionReason}</p>
+                    {message.selectionReason && <p dir="auto" className="whitespace-pre-wrap">{message.selectionReason}</p>}
+                    {message.selectionComparison && <p>{selectionHistory(message.selectionComparison)}</p>}
                   </div>
                 )}
               </div>

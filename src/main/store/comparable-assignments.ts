@@ -45,6 +45,7 @@ export function comparableAssignments(db: Db, botId: string, chatId: string, cri
       having count(distinct json_extract(reply.meta,'$.turnId'))=1 and count(*)=count(json_extract(reply.meta,'$.turnId'))
         and min(case when json_extract(reply.meta,'$.comparisonRoute')=? then 1 else 0 end)=1)
     where d.child_id=? and p.conversation_id=? and d.state='answered' and json_extract(q.meta,'$.jobKind')=?
+      and coalesce(json_extract(q.meta,'$.projectScoped'),0)=0 and json_extract(q.meta,'$.selectedResultEntryId') is null
       and t.bot_id=d.child_id and t.conversation_id=q.conversation_id and t.conversation_kind='exchange'
       and t.trigger='agent' and t.status='sent' and t.provider_id=? and t.model_id=?
       and d.updated_at>=d.created_at
