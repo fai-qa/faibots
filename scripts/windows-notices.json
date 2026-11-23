@@ -1,0 +1,21 @@
+{
+  "files": {
+    "LICENSE": "LICENSE",
+    "NOTICE.md": "NOTICE.md",
+    "THIRD_PARTY_LICENSES/README.md": "THIRD_PARTY_LICENSES/README.md",
+    "THIRD_PARTY_LICENSES/affectui-MIT.txt": "THIRD_PARTY_LICENSES/affectui-MIT.txt",
+    "THIRD_PARTY_LICENSES/Inter.txt": "node_modules/@fontsource-variable/inter/LICENSE",
+    "THIRD_PARTY_LICENSES/JetBrains-Mono.txt": "node_modules/@fontsource-variable/jetbrains-mono/LICENSE",
+    "THIRD_PARTY_LICENSES/Codex-SDK.txt": "node_modules/@openai/codex-sdk/LICENSE",
+    "THIRD_PARTY_LICENSES/Claude-Agent-SDK.txt": "node_modules/@anthropic-ai/claude-agent-sdk/LICENSE.md"
+  },
+  "proComponent": "src/renderer/src/components/ui/agent-trail-clean.tsx",
+  "pdfFiles": [
+    "LICENSE",
+    "dist/licenses/LICENSE_PDFJS",
+    "dist/licenses/LICENSE_JBIG2",
+    "dist/licenses/LICENSE_OPENJPEG",
+    "dist/licenses/LICENSE_PDFJS_JBIG2",
+    "dist/licenses/LICENSE_PDFJS_OPENJPEG"
+  ]
+}
