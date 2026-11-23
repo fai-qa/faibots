@@ -1,4 +1,17 @@
-<p align="center"><img src="docs/assets/faibots-banner.png" alt="faibots: AI bots you chat with one-to-one or in a group. A Windows app: bring your own model, hosted or local. Open source." width="100%"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/faibots-hero-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/media/faibots-hero-light.png">
+    <img alt="faibots: AI bots you chat with one-to-one or in a group" src="docs/media/faibots-hero-dark.png" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml"><img alt="Windows checks" src="https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/fai-qa/faibots?color=2868F0&labelColor=222222"></a>
+  <a href="https://github.com/fai-qa/faibots/releases"><img alt="latest release" src="https://img.shields.io/github/v/release/fai-qa/faibots?include_prereleases&color=2868F0&labelColor=222222"></a>
+  <img alt="platform: Windows" src="https://img.shields.io/badge/platform-Windows-2868F0?labelColor=222222">
+</p>
 
 # faibots
 
@@ -11,10 +24,6 @@ Prompts and the context sent with them go to the model provider you pick, and to
 The app runs on your computer. Your bots can talk to each other, and there's no hosted account to sign up for.
 
 Chat one-to-one or in a group. Run routines. Bring your own model providers and MCP connectors. Chats, bots and settings are stored on your computer.
-
-[![Windows checks](https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml/badge.svg)](https://github.com/fai-qa/faibots/actions/workflows/windows-checks.yml)
-[![MIT license](https://img.shields.io/github/license/fai-qa/faibots)](https://github.com/fai-qa/faibots/blob/main/LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/fai-qa/faibots?include_prereleases)](https://github.com/fai-qa/faibots/releases)
 
 <!-- demo GIF: two-bot group chat, added in a later PR -->
 
