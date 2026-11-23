@@ -42,13 +42,13 @@ Model availability and sign-in depend on your provider. Install and start from t
 3. When a new bot is needed, review its role and model in the approval card. A specialist can use the configured default model or the model already assigned to fai.
 4. You can also create bots yourself in **New Bot**, give one a name and a **Label**, and select its model on **Profile**. Open its chat to talk directly to a specialist, or use **New chat** and select both for a group. You can choose several bots in that chat. Reopening the app takes you back to fai.
 
-You can speak to fai in English, Arabic or a mix. Ask for what you want back. A request with a clear answer can finish in one sentence. When a job needs several steps, fai can keep a work brief in the chat. Open it to see the deliverable and checks, update that job, answer a question, or accept a result. **Scope and limits** shows the selected inputs, how many specialists fai can assign and where fai will return the result. A specialist can work in the background while you speak with fai. The brief and the results fai has checked stay there when you reopen the app.
+You can speak to fai in English, Arabic or a mix. A request with a clear answer can finish in one sentence. For a longer job, open the work brief to see the deliverable, checks and assignment limit. If fai needs a decision, choose a suggested answer or type your own, then press **Send answer**. You can update the job while specialists work. A brief can wait for a particular reply, a time or an enabled webhook. Reopening the app restores the brief and checks what happened while it was closed.
 
 When bots work together, select the message count in your chat to read what they said for that job. Choose **Close chat** or press **Esc** to return to the same place.
 
 When a work brief has a result you want to keep, choose **Accept result**, then **Save to project**. Open the saved Page in the project's Space. A result based on selected project evidence goes back to that project.
 
-Each project has a Library for the source versions you choose, a Space for reviewed Pages, and its own session history. You choose which work to bring into a new session. To discuss a search result in your main chat, choose **Ask fai** below the result, enter your instruction, and select **Send to fai**. To ask a follow-up about the same evidence, use **Reply** on the answer in chat. Project instructions can be tried on two sets of notes before you activate them.
+Each project has a Library for selected sources and a Space for reviewed Pages. In a search result, open **Compare source lines** to see where selected files record the same or different values. To work with a search result or an accepted Page, open it, choose **Ask fai**, enter your instruction and select **Send to fai**. Use **Reply** on the answer to continue with that same revision. Project instructions can be tried on two sets of notes before you activate them.
 
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.
 

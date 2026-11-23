@@ -55,7 +55,7 @@ function checked(
       verified.add(key)
     }
   )
-  if (JSON.stringify([result.citations, result.conflicts, result.omissions]).length > 80_000)
+  if (JSON.stringify([result.citations, result.relationships, result.conflicts, result.omissions]).length > 80_000)
     throw new Error('This result exceeds the context limit. Narrow the search before asking fai.')
   return result
 }
@@ -220,6 +220,7 @@ export function projectResultOrigin(
 interface SelectedResult extends ProjectAddress {
   requestId: string; conversationId: string; entryId: string; instruction: string
   sessionId?: string; answerId?: string; page?: PageEvidence
+  relationships?: ProjectAnswer['relationships']
   query: string; status: ProjectAnswer['status']; citations: EvidenceCitation[]; conflicts: string[]; omissions: string[]
 }
 export function readProjectResult(store: PlatformStore, authority: Authority, chat: string, entryId: string, pageCheck?: PageCheck): SelectedResult | undefined {
@@ -254,6 +255,7 @@ export function readProjectResult(store: PlatformStore, authority: Authority, ch
     query: answer.query,
     status: answer.status,
     citations: answer.citations,
+    ...(answer.relationships?.length && {relationships:answer.relationships}),
     conflicts: answer.conflicts,
     omissions: answer.omissions
   }
