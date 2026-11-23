@@ -288,6 +288,17 @@ function runDesktop() {
         assert.equal(window.getTitle(), 'faibots')
         if (mode === 'source-comparison') {
           await checkSourceComparison(invoke,window,profile)
+          // A final renderer request can arrive while Electron is closing its windows.
+          window.once('close', (event) => {
+            event.preventDefault()
+            void invoke('conv:exchange-summaries', {conversationId:'closing', entryIds:['last-render']})
+              .then((rows) => {
+                assert.deepEqual(rows, [])
+                console.log('Final renderer read completed during Windows shutdown.')
+                app.quit()
+              })
+              .catch((error) => { console.error(error); app.exit(1) })
+          })
           app.quit()
           return
         }
