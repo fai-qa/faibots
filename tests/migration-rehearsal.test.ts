@@ -12,6 +12,7 @@ import { MIGRATIONS } from '../src/main/store/schema'
 import { PROJECT_CONTENT_SCHEMA } from '../src/main/store/project-content-schema'
 import { SESSION_SCHEMA } from '../src/main/store/session-schema'
 import { PROJECT_IMPROVEMENTS_SCHEMA } from '../src/main/store/project-improvements-schema'
+import { PROJECT_REQUEST_INSTRUCTIONS_SCHEMA } from '../src/main/store/project-request-instructions-schema'
 import { ESCALATION_SCHEMA } from '../src/main/store/escalation-schema'
 
 import { ASSIGNMENT_BUDGET_SCHEMA } from '../src/main/store/assignment-budget-schema'
@@ -30,6 +31,7 @@ const BUDGET_VERSION = MIGRATIONS.indexOf(ASSIGNMENT_BUDGET_SCHEMA) + 1
 const CONTENT_VERSION = MIGRATIONS.indexOf(PROJECT_CONTENT_SCHEMA) + 1
 const SESSION_VERSION = MIGRATIONS.indexOf(SESSION_SCHEMA) + 1
 const IMPROVEMENTS_VERSION = MIGRATIONS.indexOf(PROJECT_IMPROVEMENTS_SCHEMA) + 1
+const CHAT_INSTRUCTION_VERSION = MIGRATIONS.indexOf(PROJECT_REQUEST_INSTRUCTIONS_SCHEMA) + 1
 const ESCALATION_VERSION = MIGRATIONS.indexOf(ESCALATION_SCHEMA) + 1
 const WORK_PAGE_VERSION = 22
 const RESULT_REQUEST_VERSION = 19
@@ -38,6 +40,7 @@ const LATEST = MIGRATIONS.length
 // Every user-data table, the version that introduced it, and the columns we seed and hash
 // (columns added by later migrations are deliberately left out so the hash is comparable).
 const TABLES: { name: string; since: number; cols: string[]; order: string }[] = [
+  { name: 'project_request_instructions', since: CHAT_INSTRUCTION_VERSION, cols: ['entry_id','project_id','candidate_id'], order: 'entry_id' },
   { name:'accepted_work_pages', since:WORK_PAGE_VERSION, order:'id',
     cols:['id','space_id','work_id','work_revision','chat_id','entry_id','revision_id','review_id','inputs','body','partial','created_at'] },
   { name: 'project_result_requests', since: RESULT_REQUEST_VERSION,
@@ -189,6 +192,9 @@ function seed(db: DatabaseSync, v: number): void {
     run("insert into improvement_candidates values(?,?,1,'Use this heading','Next step',?,?,null,'approved',1,2)",`candidate-${t}`,`proj-${t}`,`jr-${t}`,`held-${t}`)
     run("insert into improvement_runs values(?,?,'matched',?,'passed','Checked','sha',3)",`jr-${t}`,`candidate-${t}`,`held-${t}`)
     run("insert into improvement_history values(?,?,null,?,'publish',4)",v,`proj-${t}`,`candidate-${t}`)
+  }
+  if (v >= CHAT_INSTRUCTION_VERSION) {
+    run('insert into project_request_instructions values(?,?,?)',`entry-${t}`,`proj-${t}`,`candidate-${t}`)
   }
 }
 

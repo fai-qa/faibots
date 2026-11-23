@@ -8,6 +8,7 @@ import { chiefForHandoff } from './escalations'
 import type { PlatformStore } from './index'
 import { createProjectSessions } from './project-sessions'
 import { readPageEvidence, type PageCheck, type PageEvidence } from './page-evidence'
+import { inheritChatInstruction, pinChatInstruction } from './project-request-instructions'
 
 type Request = SessionInvoke['session:ask-fai']['req']
 type PageRequest = SessionInvoke['session:ask-page']['req']
@@ -127,6 +128,7 @@ export function queueProjectResult(
       )
       .run(req.requestId, sessionId, answer?.id ?? null, ownerId, chat, entry.id, instruction,
         page?.id ?? null,page?.revisionId ?? null,page?.sha256 ?? null,page?.projectId ?? null,address?.hostId ?? null,address?.environmentId ?? null)
+    pinChatInstruction(store.db, entry.id, req.projectId)
     return entry
   })
 }
@@ -175,6 +177,7 @@ export function queueProjectReply(
         entry.id,
         entry.text.trim() || 'Use my attached message with the selected project result.',origin,chat
       )
+    inheritChatInstruction(store.db, entry.id, origin)
     return entry
   })
 }

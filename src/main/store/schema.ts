@@ -10,6 +10,7 @@ import { ASSIGNMENT_BUDGET_SCHEMA } from './assignment-budget-schema'
 import { PROJECT_CONTENT_SCHEMA } from './project-content-schema'
 import { SESSION_SCHEMA } from './session-schema'
 import { PROJECT_IMPROVEMENTS_SCHEMA } from './project-improvements-schema'
+import { PROJECT_REQUEST_INSTRUCTIONS_SCHEMA } from './project-request-instructions-schema'
 import { ESCALATION_SCHEMA } from './escalation-schema'
 
 export const MIGRATIONS: string[] = [
@@ -382,6 +383,7 @@ export const MIGRATIONS: string[] = [
   alter table chief_work add column question_choices text not null default '[]';
   `,
   /* 24: select a reviewed Page or a source-search result for private delivery to fai. */ PAGE_REQUEST_SCHEMA,
+  /* 25: preserve the reviewed instruction for an explicitly selected project request. */ PROJECT_REQUEST_INSTRUCTIONS_SCHEMA,
   /* 26: persist the condition and outcome for each generation of a waiting brief. */ `
   alter table chief_wakes add column predicate text not null default '{"kind":"all"}';
   alter table chief_wakes add column due_at integer;

@@ -9,6 +9,8 @@ import { workBriefTools } from '../agent/work-brief-tools'
 import { turnPrompt } from '../agent/external-common'
 import { createAttachmentStore } from '../attachments/attachments'
 import { createSnapshotService } from '../attachments/snapshots'
+import { type PlatformStore } from '../store'
+import { pinnedChatInstruction } from '../store/project-request-instructions'
 import {
   projectResultForEntry,
   projectResultOrigin,
@@ -65,6 +67,82 @@ async function fixture() {
   }
   return { ipc, store, chief, dm, project, source: source!, scope, start, answer, unrelated, request }
 }
+
+// The publishing gate has its own production-path tests. Seed its durable published outcome here
+// so changes to the current version can be timed precisely between chat admission and dispatch.
+function publishFixtureVersion(store: PlatformStore, projectId: string, version: number) {
+  const run = () => store.journeyRuns.start({ projectId, status: 'complete', startedAt: 1 }).id
+  const policy = { id: randomUUID(), version, instruction: 'Use the routing rule for version ' + version, requiredText: 'Cutoff V' + version }
+  store.db.prepare(`insert into improvement_candidates(id,project_id,version,instruction,required_text,matched,heldout,decision,created_at)
+    values(?,?,?,?,?,?,?,'approved',1)`).run(policy.id,projectId,version,policy.instruction,policy.requiredText,run(),run())
+  store.db.prepare("insert into improvement_history(project_id,after_id,action,created_at) values(?,?,'publish',1)").run(projectId,policy.id)
+  return policy
+}
+
+it('pins only the chosen project at admission and retains that version or the original default through explicit replies', async () => {
+  const { ipc, store, chief, dm, request, source } = await fixture()
+  const before = queueProjectResult(store,h.services,dm.id,request)
+  const v1 = publishFixtureVersion(store,request.projectId,1)
+  const linked = queueProjectResult(store,h.services,dm.id,{ ...request, requestId: randomUUID() })
+  const other = store.projects.create({ name: 'Other project' })
+  const foreign = publishFixtureVersion(store,other.id,17)
+  const v2 = publishFixtureVersion(store,request.projectId,2)
+  expect(pinnedChatInstruction(store.db,linked.id,other.id)).toBeUndefined()
+  const seen: unknown[] = []
+  h.engine.script(chief.handle,async ({ turn, tool, say }) => {
+    expect(turnPrompt(turn,store,true).text).not.toContain(v1.instruction)
+    const result = await tool('read_project_result',{})
+    const body = result.content[0]
+    if (!body || body.type !== 'text') throw Error('Expected project result')
+    expect(body.text).not.toContain(foreign.instruction)
+    seen.push(result.isError ? 'unavailable' : JSON.parse(body.text).projectInstruction ?? null)
+    say('Checked.')
+  })
+  const sendPointer = async (entry: typeof before) => {
+    await h.runtime.send({conversationId:dm.id,text:entry.text,clientNonce:entry.clientNonce!,attachmentPaths:[],mentions:[],mentionsEveryone:false})
+    await h.runtime.idle()
+  }
+  const reply = async (id: string) => {
+    await h.runtime.send({conversationId:dm.id,text:'Follow up.',replyToId:id,clientNonce:randomUUID(),attachmentPaths:[],mentions:[],mentionsEveryone:false})
+    await h.runtime.idle()
+  }
+  await sendPointer(before)
+  await sendPointer(linked)
+  await reply(before.id)
+  await reply(linked.id)
+  const fresh = await ipc['session:ask-fai']({...request,requestId:randomUUID()})
+  await h.runtime.idle()
+  await h.send(dm.id,'An unrelated question.')
+  expect(seen).toEqual([null,v1,null,v1,v2,'unavailable'])
+  expect(JSON.stringify(store.entries.since(dm.id,0))).not.toContain(v1.instruction)
+  expect(JSON.stringify(store.db.prepare("select * from actions where tool_name='read_project_result'").all())).not.toContain(v1.instruction)
+  store.projectContent.select(request.projectId,store.projectContent.pin(request.projectId,source.id).itemId,false)
+  await expect(reply(fresh.entryId)).rejects.toThrow(/unavailable|granted|selected/i)
+})
+
+it('keeps a result pending when the completed project brief omits its pinned output check', async () => {
+  const { ipc, store, chief, dm, request } = await fixture()
+  const version = publishFixtureVersion(store,request.projectId,1)
+  const states: string[] = []
+  h.engine.script(chief.handle,async ({ tool, say }) => {
+    const plan = await tool('plan_work',{objective:'Check the cutoff',deliverable:'Cutoff note',checks:'Quote the cutoff.'})
+    const body = plan.content[0]
+    if (!body || body.type !== 'text') throw Error('Expected work brief')
+    const {id,revision} = JSON.parse(body.text)
+    const submit = (text: string) => tool('review_work',{action:'result',id,revision,text})
+    const refused = await submit('An incomplete result.')
+    expect(refused.isError).toBe(true)
+    expect(JSON.stringify(refused)).not.toContain(version.requiredText)
+    states.push(workBriefs(store.db).get(id,dm.id).state)
+    const acceptedForReview = await submit('Confirmed. ' + version.requiredText)
+    expect(acceptedForReview.isError).toBeFalsy()
+    states.push(workBriefs(store.db).get(id,dm.id).state)
+    say('Ready to review.')
+  })
+  await ipc['session:ask-fai'](request)
+  await h.runtime.idle()
+  expect(states).toEqual(['active','review'])
+})
 
 it('delivers the same DM entry on retry, checks each live read and excludes other result text from model history and receipts', async () => {
   const { ipc, store, chief, dm, request, scope, source, unrelated } = await fixture()

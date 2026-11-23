@@ -2,7 +2,9 @@ import { MAX_ASKS_PER_CHAIN } from '@shared/work-brief'
 import { z } from 'zod'
 import { getHandoffCheckpoint } from '../store/escalations'
 import { MAIN_BOT_NAME } from '../store/bots'
-import type { EventBus, Runtime, Services } from '../contracts'
+import type { EventBus, Runtime, Services, ToolContext } from '../contracts'
+import { pinnedChatInstruction } from '../store/project-request-instructions'
+import { projectResultOrigin, readProjectResult } from '../store/project-result-requests'
 import { workBriefs, WorkRefusal } from '../store/work-briefs'
 import type { PlatformStore } from '../store'
 import { defineTool, errorResult, textResult } from '../tools/define'
@@ -24,6 +26,22 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
   const changed = (conversationId: string) => bus.emit('work:changed', { conversationId })
   const handoffs = (chat: string, lookup: { userEntryId?: string; workId?: string }) =>
     getHandoffCheckpoint(store, chat, lookup, authority).map(({id,workId,availability}) => ({id,workId,availability}))
+  function checkProjectResult(ctx: ToolContext, workId: string, result: string) {
+    const entryId = work.get(workId,ctx.conversation.id).userEntryId
+    if (!store.db.prepare('select 1 from project_request_instructions where entry_id=? and candidate_id is not null').get(entryId)) return
+    const trigger = ctx.projectResultTrigger
+    const entry = trigger && store.entries.get(trigger.entryId)
+    if (!authority || !entry || projectResultOrigin(store,ctx.conversation.id,entry,trigger?.wake) !== entryId)
+      throw new WorkRefusal('Return to the original project request to submit this result.')
+    let instruction
+    try {
+      const selected = readProjectResult(store,authority,ctx.conversation.id,entryId)
+      if (selected) instruction = pinnedChatInstruction(store.db,entryId,selected.projectId)
+    } catch { /* Revoked requests disclose no project information. */ }
+    if (!instruction) throw new WorkRefusal('The selected project request is unavailable.')
+    if (!result.includes(instruction.requiredText))
+      throw new WorkRefusal('The result is missing required output text from its reviewed project instruction. Read the selected request and check the result again.')
+  }
   const tools = [
     defineTool({
       name: 'plan_work', description: 'Record a checkable brief for a substantial user request in this chat. Use once before assigning specialists. Record exclusions, stop conditions and a smaller specialist budget when the job calls for them. Answer simple questions directly.',
@@ -70,6 +88,7 @@ export function workBriefTools(store: PlatformStore, bus: EventBus, authority?: 
           return textResult(JSON.stringify(brief))
         }
         if (!input.text || !input.revision) throw new WorkRefusal('Include the current revision and the question or result.')
+        if (input.action === 'result' && !input.partial) checkProjectResult(ctx,input.id,input.text)
         const brief = work.submit(ctx.conversation.id, input.id, input.revision, input.action, input.text,
           input.action === 'result' ? input.evidenceEntryIds ?? [] : [], ctx.turnId, input.action === 'result' && input.partial === true, input.choices)
         changed(ctx.conversation.id)
