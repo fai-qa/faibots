@@ -25,6 +25,8 @@ The app runs on your computer. Your bots can talk to each other, and there's no 
 
 Chat one-to-one or in a group. Run routines. Bring your own model providers and MCP connectors. Chats, bots and settings are stored on your computer.
 
+<p align="center"><img alt="faibots group chat with three bots: the user asks Researcher to get Editor to tighten three notes, Researcher asks Editor, and Editor confirms the line. Replies come from a stand-in test model." src="docs/media/faibots-group-chat.png" width="100%"></p>
+
 <!-- demo GIF: two-bot group chat, added in a later PR -->
 
 ## Quick start
