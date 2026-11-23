@@ -35,7 +35,7 @@ export function ExchangeActivity({ conversationId, rows }: { conversationId: str
       <button type="button" aria-haspopup="dialog" aria-expanded={open}
         aria-label={'Open bot conversation: ' + messageLabel + (peerLabel ? ' with ' + peerLabel : '')}
         onClick={() => setOpen(true)}
-        className="inline-flex min-h-9 max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full px-3 py-1 text-xs font-medium text-fg-3 hover:bg-hover hover:text-fg focus-visible:outline focus-visible:outline-2">
+        className="inline-flex min-h-9 max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full px-3 py-1 text-xs font-medium text-fg-2 hover:bg-hover hover:text-fg focus-visible:outline focus-visible:outline-2">
         {rows.some((row) => row.active) && <Spinner size={12} />}
         <span>{messageLabel}{peers.length > 0 && ' with'}</span>
         {peers.length > 2 ? (
@@ -180,26 +180,33 @@ function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
       const el = e.currentTarget
       pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
     }}>
-      {incomplete && <p className="mb-3 text-xs text-fg-3">Some older messages could not be linked to this exchange.</p>}
+      {incomplete && <p className="mb-3 text-xs text-fg-2">Some older messages could not be linked to this exchange.</p>}
       {error && <div role="status" className="mb-3 flex items-center gap-2 text-xs text-fg-2">Couldn’t load the conversation. <Button size="sm" onClick={() => retryOlder.current ? loadEarlier() : read.current()}>Try again</Button></div>}
-      {!view && !error && <p role="status" className="text-xs text-fg-3">Loading messages…</p>}
+      {!view && !error && <p role="status" className="text-xs text-fg-2">Loading messages…</p>}
       {view?.before && <div className="mb-3 text-center"><Button size="sm" variant="ghost" disabled={loadingEarlier} onClick={loadEarlier}>Show earlier messages</Button></div>}
-      {view?.messages.length === 0 && <p className="text-xs text-fg-3">No messages available for this exchange.</p>}
+      {view?.messages.length === 0 && <p className="text-xs text-fg-2">No messages available for this exchange.</p>}
       <ol className="space-y-3">
         {view?.messages.map((message) => {
           const bot = bots.get(message.authorId)
+          const recipient = bots.get(message.recipientId)
           return (
             <li key={message.id} data-exchange-message={message.id} className="flex min-w-0 items-start gap-2">
               <span aria-hidden="true" className="w-6 shrink-0 pt-0.5">{bot && <BotAvatar bot={bot} size={24} />}</span>
               <div className="min-w-0 max-w-full">
-                <div className="mb-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-3">
+                <div className="mb-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-2">
                   <bdi className="font-semibold text-fg">{bot?.name ?? 'Deleted bot'}</bdi>
-                  <ArrowRight aria-hidden="true" size={12} /><span className="sr-only">to </span><bdi>{bots.get(message.recipientId)?.name ?? 'Deleted bot'}</bdi>
+                  <ArrowRight aria-hidden="true" size={12} /><span className="sr-only">to </span><bdi>{recipient?.name ?? 'Deleted bot'}</bdi>
                   <time dateTime={new Date(message.createdAt).toISOString()} title={formatFull(message.createdAt)}>{formatTime(message.createdAt)}</time>
                 </div>
                 <div dir="auto" className="selectable max-w-full break-words rounded-xl rounded-tl-sm bg-sunken px-3 py-2 text-[13px] text-fg">
                   <Markdown text={message.text} streaming={message.isStreaming} />
                 </div>
+                {message.selectionReason && (
+                  <div className="selectable mt-1.5 max-w-prose break-words text-xs text-fg-2">
+                    <span className="font-semibold">Why <bdi>{recipient?.name ?? 'this specialist'}</bdi> was chosen</span>
+                    <p dir="auto" className="whitespace-pre-wrap">{message.selectionReason}</p>
+                  </div>
+                )}
               </div>
             </li>
           )

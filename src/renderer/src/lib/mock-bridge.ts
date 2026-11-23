@@ -362,13 +362,14 @@ export function createMockBridge(): FaiBotsBridge {
     return id
   }
 
-  function exchangeActivity(conversationId: Id, entryIds: Id[]) {
+  function exchangeActivity(conversationId: Id, entryIds: Id[], includeMessages = false) {
     const validId = (id: Id) => typeof id === 'string' && id.length > 0 && id.length <= 256
     if (!validId(conversationId) || !Array.isArray(entryIds) || entryIds.length > 100 || !entryIds.every(validId)) {
       throw new Error('Choose up to 100 activity entries from one conversation.')
     }
     const wanted = new Set(entryIds)
     const summaries = new Map<Id, ExchangeSummary>()
+    const reasons = new Map<Id, string>()
     const messages: ExchangeMessage[] = []
     for (const anchor of db.entries) {
       const call = anchor.toolCall
@@ -379,6 +380,9 @@ export function createMockBridge(): FaiBotsBridge {
       if (pair?.kind !== 'exchange' || !pair.botIds.includes(callerId)) continue
       const other = pair.botIds.find(id => id !== callerId)
       if (!other) continue
+      const input = call.input
+      if (includeMessages && input && typeof input === 'object' && 'reason' in input && typeof input.reason === 'string' && input.reason.trim())
+        reasons.set(anchor.id, input.reason.trim())
       summaries.set(anchor.id, {
         anchorId: anchor.id, callerId, botIds: [callerId, other], messageCount: 0, active: call.status === 'running',
         ...(call.status !== 'running' && call.status !== 'done' && { attention: 'failed' })
@@ -393,8 +397,11 @@ export function createMockBridge(): FaiBotsBridge {
       const recipientId = summary.botIds.find(id => id !== authorId)
       if (!recipientId || !summary.botIds.includes(authorId)) continue
       summary.messageCount++
+      if (!includeMessages) continue
+      const reason = authorId === summary.callerId ? reasons.get(anchorId) : undefined
       messages.push({
         id: entry.id, conversationId: entry.conversationId, authorId, recipientId,
+        ...(reason && { selectionReason: reason }),
         text: entry.text, createdAt: entry.createdAt, isStreaming: entry.isStreaming
       })
     }
@@ -413,7 +420,8 @@ export function createMockBridge(): FaiBotsBridge {
     const call = append(c.id, {
       kind: 'tool-call',
       author: { kind: 'bot', botId: bot.id },
-      toolCall: { callId: uid('call'), toolName: 'send_to_agent', title: `Messaging ${peer.name}`, input: { to: `@${peer.handle}`, message }, status: 'running' }
+      toolCall: { callId: uid('call'), toolName: 'send_to_agent', title: `Messaging ${peer.name}`,
+        input: { to: `@${peer.handle}`, message, ...(peer.handle === 'iris' && { reason: 'Iris handles research for this team.' }) }, status: 'running' }
     })
     const x = findOrCreateExchange(bot, peer, c, call.id)
     updateTool(call, { exchangeConversationId: x.id })
@@ -1008,7 +1016,7 @@ export function createMockBridge(): FaiBotsBridge {
         (before !== undefined && (typeof before !== 'string' || !before || before.length > 256))) {
         throw new Error('Invalid exchange transcript page.')
       }
-      const { messages } = exchangeActivity(conversationId, entryIds)
+      const { messages } = exchangeActivity(conversationId, entryIds, true)
       const end = before === undefined ? messages.length : messages.findIndex(message => message.id === before)
       if (end <= 0) return { messages: [] }
       const start = Math.max(0, end - size)

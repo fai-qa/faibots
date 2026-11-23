@@ -15,6 +15,8 @@ export interface ExchangeMessage {
   conversationId: Id
   authorId: Id
   recipientId: Id
+  /** The caller's recorded reason for selecting this recipient. Only assignment questions carry it. */
+  selectionReason?: string
   text: string
   createdAt: number
   isStreaming: boolean

@@ -449,7 +449,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
     return 'passed'
   }
 
-  async askBot(ctx: ToolContext, target: Bot, message: string): Promise<{ reply: string; exchange: Conversation }> {
+  async askBot(ctx: ToolContext, target: Bot, message: string, reason?: string): Promise<{ reply: string; exchange: Conversation }> {
     const { store, bus } = this.deps
     const from = ctx.bot
     if (target.id === from.id) throw new CollabRefusal('You cannot send a message to yourself.')
@@ -498,6 +498,7 @@ export class Orchestrator implements Runtime, CollabRuntime {
       const parent = card ?? store.entries.append({
         conversationId: ctx.conversation.id, kind: 'event', author: { kind: 'system' },
         text: detached ? `Assigned ${target.name} background work (${id}).` : `Messaging ${target.name}`,
+        ...(reason && !ctx.projectResultTrigger && { meta: { selectionReason: this.deps.secrets.redact(reason) } }),
         ...(detached && { clientNonce: backgroundAnchor(id) }), mentions: [], mentionsEveryone: false, attachments: [], isStreaming: false
       })
       if (detached && (parent.kind !== 'event' || parent.author.kind !== 'system')) throw new CollabRefusal('The assignment anchor is already in use.')
