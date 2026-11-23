@@ -31,6 +31,12 @@ export interface EvidenceCitation {
   excerpt: string
 }
 
+/** Each citation index addresses this answer's immutable, verified list of source lines. */
+export interface EvidenceRelationship {
+  field: string
+  values: { value: string; citationIndexes: number[] }[]
+}
+
 export interface ProjectAnswer {
   id: Id
   sessionId: Id
@@ -40,7 +46,8 @@ export interface ProjectAnswer {
   createdAt: number
   status: 'found' | 'conflict' | 'unavailable'
   retrieval: 'native'
-  graph: 'disconnected'
+  graph: 'disconnected' | 'local'
+  relationships?: EvidenceRelationship[]
   modelRequested: boolean
   verifiedSourceIds: string[]
   citations: EvidenceCitation[]

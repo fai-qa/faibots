@@ -147,6 +147,9 @@ it('forks just selected, currently granted results and never moves ownership or 
   expect(result.session.parentId).toBe(first.id)
   expect(JSON.stringify(result.history)).not.toContain(door.id)
   expect(() => handlers['session:open']({ ...fork, answerIds: [randomUUID()] })).toThrow(/parent session/)
+  store.projectContent.select(a.id,item,false)
+  expect(handlers['session:history']({...scope(b.id),sessionId:result.session.id})).toEqual({history:[],omittedHistory:1})
+  store.projectContent.select(a.id,item,true)
   store.projectContent.revoke(a.id, item, b.id)
   expect(() =>
     handlers['session:open']({ ...scope(b.id), mode: 'continue', sessionId: result.session.id })
@@ -157,7 +160,7 @@ it('forks just selected, currently granted results and never moves ownership or 
   })
 })
 
-it('preserves native citations and conflict with the graph disconnected; detects missing bytes, a stale revision, and private sources', async () => {
+it('links conflicting local source lines and detects missing bytes, a stale revision, and private sources', async () => {
   const { a, b, scope, start, ask, handlers, attach, complete } = fixture()
   const first = attach(a.id, 'schedule.md', 'Deadline: Tuesday')
   const second = attach(a.id, 'announcement.md', 'Deadline: Friday')
@@ -170,12 +173,15 @@ it('preserves native citations and conflict with the graph disconnected; detects
     [1, 1, second.sha256]
   ])
   expect(found.conflicts[0]).toMatch(/tuesday.*friday/)
+  expect(found.graph).toBe('local')
+  expect(found.relationships).toEqual([{field:'deadline',values:[{value:'tuesday',citationIndexes:[0]},{value:'friday',citationIndexes:[1]}]}])
   expect(JSON.stringify(found)).not.toContain('Monday')
   expect(complete).not.toHaveBeenCalled()
   const copy = join(root, 'attachments', first.sha256.slice(0, 16) + '-' + first.name)
   writeFileSync(copy, 'stale bytes')
   const again = await ask(a.id, s.id, 'Deadline')
   expect(again.citations.map((c) => c.excerpt)).toEqual(['Deadline: Friday'])
+  expect(again.relationships).toEqual([])
   expect(again.omissions[0]).toMatch(/schedule.md.*could not be verified/)
   expect(await ask(a.id, s.id, 'Nonexistent')).toMatchObject({ status: 'unavailable', citations: [] })
   expect(handlers['session:history']({ ...scope(a.id), sessionId: s.id }).omittedHistory).toBeGreaterThan(0)

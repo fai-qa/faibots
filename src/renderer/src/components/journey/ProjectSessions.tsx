@@ -81,6 +81,21 @@ function Answer({ answer, scope, sessionId }: { answer: ProjectAnswer; scope: Pr
         </p>
       ))}
       {answer.modelReply && <p className="selectable whitespace-pre-wrap">{answer.modelReply}</p>}
+      {!!answer.relationships?.length && (
+        <details className="text-fg-2">
+          <summary className="cursor-pointer">Compare source lines</summary>
+          {answer.relationships.map(({field,values})=>(
+            <dl className="mt-2" key={field}><dt className="font-medium" dir="auto">{field}</dt>
+              {values.map(({value,citationIndexes})=><dd key={value} className="ml-2">
+                <span dir="auto">{value}</span>{' · '}{citationIndexes.map(index=>{
+                  const citation = answer.citations[index]!
+                  return `${citation.source.name} r${citation.source.revision}, line ${citation.line}`
+                }).join(' / ')}
+              </dd>)}
+            </dl>
+          ))}
+        </details>
+      )}
       {answer.citations.map(({ source, line, excerpt }) => (
         <blockquote className="selectable border-l border-line-soft pl-2" key={source.sourceId + ':' + line}>
           {excerpt}
@@ -239,7 +254,7 @@ function OpenSession({ view, scope }: { view: ProjectSessionView; scope: Project
         ))}
       </details>
       <TurnContext revision={history.length} scope={{ ...scope, kind: 'project', sessionId: view.session.id }} />
-      <p className={small}>Searching verified local sources. The graph is disconnected.</p>
+      <p className={small}>Search the selected revisions and compare their source lines.</p>
       {view.omittedHistory > 0 && (
         <p role="status">Some results are hidden because their sources are unavailable.</p>
       )}

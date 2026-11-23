@@ -90,7 +90,7 @@ export function projectSessionHandlers(services: Pick<Services,'runtime'|'dataDi
       ...evidence,
       sources: session.sources,
       retrieval: 'native',
-      graph: 'disconnected',
+      graph: 'local',
       modelRequested: !!req.useModel,
       verifiedSourceIds: [...verifiedSources],
       ...(modelReply && { modelReply })

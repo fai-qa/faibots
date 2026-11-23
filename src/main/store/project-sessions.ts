@@ -122,10 +122,14 @@ export function createProjectSessions(store: PlatformStore, dataDir: string) {
     verify: (id: string, s: SessionSource) => void
   ) {
     const available = new Set(keys(readable))
-    if (!keys(answer.sources).every((key) => available.has(key)))
+    const origin = answer.projectId === projectId ? available : new Set(keys(selected(answer.projectId)))
+    if (!keys(answer.sources).every((key) => available.has(key) && origin.has(key)))
       throw new Error('A selected result references a revision outside the target project selection.')
     const included = new Set(answer.verifiedSourceIds)
-    for (const source of answer.sources) if (included.has(source.sourceId)) verify(projectId, source)
+    for (const source of answer.sources) if (included.has(source.sourceId)) {
+      verify(projectId, source)
+      if (answer.projectId !== projectId) verify(answer.projectId, source)
+    }
   }
   function open(req: SessionInvoke['session:open']['req'], verify: (id: string, s: SessionSource) => void) {
     assertHost(req)
@@ -224,7 +228,6 @@ export function createProjectSessions(store: PlatformStore, dataDir: string) {
     if (!answer.citations.length || !['found','conflict'].includes(answer.status))
       throw new Error('Choose a result with verified citations.')
     checkAnswer(scope.projectId, answer, session.sources, verify)
-    if (origin.projectId !== scope.projectId) checkAnswer(origin.projectId, answer, selected(origin.projectId), verify)
     const verified = new Set(keys(answer.sources.filter(s => answer.verifiedSourceIds.includes(s.sourceId))))
     if (!answer.citations.every(c => verified.has(keys([c.source])[0]!))) throw new Error('The citation is unverified.')
     return answer
