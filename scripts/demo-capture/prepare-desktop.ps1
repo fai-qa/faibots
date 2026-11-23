@@ -69,9 +69,15 @@ namespace FaibotsCapture {
   return [FaibotsCapture.Display]::Change($Width, $Height)
 }
 
-$toast = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications'
-New-Item -Path $toast -Force | Out-Null
-New-ItemProperty -Path $toast -Name ToastEnabled -Value 0 -PropertyType DWord -Force | Out-Null
+# Best effort. The runner account cannot always write this key, and the app also turns its own notifications off.
+try {
+  $toast = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications'
+  New-Item -Path $toast -Force | Out-Null
+  New-ItemProperty -Path $toast -Name ToastEnabled -Value 0 -PropertyType DWord -Force | Out-Null
+  Write-Output 'Windows toasts disabled'
+} catch {
+  Write-Output "Could not change Windows toast settings: $($_.Exception.Message)"
+}
 
 $logPixels = (Get-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name LogPixels -ErrorAction SilentlyContinue).LogPixels
 Write-Output "LogPixels=$logPixels"
