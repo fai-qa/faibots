@@ -233,7 +233,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     try {
       services = startServices()
-      registerHandlers(buildHandlers(services, () => mainWindow))
+      const getWindow = () => mainWindow
+      registerHandlers(buildHandlers(services, getWindow), getWindow)
     } catch (err) {
       // Without services the window would be an empty shell; say why and quit instead.
       const message = err instanceof Error ? err.message : String(err)
