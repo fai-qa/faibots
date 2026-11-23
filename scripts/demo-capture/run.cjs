@@ -58,10 +58,21 @@ function durationSeconds(file) {
   return value
 }
 
-async function waitForReady() {
+function dumpLog(name) {
+  const file = join(outDir, name)
+  if (!existsSync(file)) {
+    log(`${name} was not created`)
+    return
+  }
+  const text = readFileSync(file, 'utf8')
+  log(`--- ${name} ---\n${text.slice(-6000)}`)
+}
+
+async function waitForReady(stop) {
   const readyPath = join(outDir, 'ready.json')
   const deadline = Date.now() + 120000
   while (Date.now() < deadline) {
+    if (stop.closed) throw new Error(`The app exited with code ${stop.code} before it was ready.`)
     if (existsSync(readyPath)) {
       const ready = JSON.parse(readFileSync(readyPath, 'utf8'))
       if (ready.ok === false) throw new Error(ready.error || 'The app failed before the recording started.')
@@ -194,41 +205,46 @@ async function main() {
   let videoStartedAt = 0
   let wallSeconds = 0
   let failure = null
+  let killTimer
   try {
-    const child = spawn(electron, [
-      '--force-device-scale-factor=1',
-      `--user-data-dir=${profile}`,
-      drive,
-      profile,
-      standIn.baseUrl,
-      outDir
-    ], {
+    const stop = { closed: false, code: null }
+    const child = spawn(electron, [drive, '--', profile, standIn.baseUrl, outDir], {
       cwd: root,
-      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RENDERER_URL: '' }
+      env: {
+        ...process.env,
+        ELECTRON_RENDERER_URL: '',
+        ELECTRON_ENABLE_LOGGING: '1'
+      }
     })
-    child.stdout.on('data', (chunk) => process.stdout.write(chunk))
-    child.stderr.on('data', (chunk) => process.stderr.write(chunk))
+    const electronLog = join(outDir, 'electron.log')
+    const writeElectron = (chunk) => {
+      process.stdout.write(chunk)
+      try { appendFileSync(electronLog, chunk) } catch { /* keep the app running */ }
+    }
+    child.stdout.on('data', writeElectron)
+    child.stderr.on('data', writeElectron)
+    log(`spawned electron pid ${child.pid}`)
     const appDone = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      killTimer = setTimeout(() => {
         child.kill()
         reject(new Error('The app ran for more than 8 minutes.'))
       }, 8 * 60 * 1000)
       child.once('error', (error) => {
-        clearTimeout(timer)
-        reject(error)
+        clearTimeout(killTimer)
+        stop.closed = true
+        stop.code = error.message
+        resolve(1)
       })
       child.once('close', (code) => {
-        clearTimeout(timer)
-        resolve(code ?? 1)
+        clearTimeout(killTimer)
+        stop.closed = true
+        stop.code = code ?? 1
+        resolve(stop.code)
       })
     })
 
-    await new Promise((resolve, reject) => {
-      waitForReady().then(resolve, reject)
-      appDone.then((code) => reject(new Error(`The app exited with code ${code} before it was ready.`)), reject)
-    })
+    await waitForReady(stop)
     recorder = startRecorder(bin)
     await sleep(800)
     if (recorder.exitCode !== null) throw new Error('ffmpeg exited before the demo. See demo-out/ffmpeg.log.')
@@ -239,7 +255,9 @@ async function main() {
     if (appExit !== 0) throw new Error(`The app exited with code ${appExit}. See demo-out/electron.log.`)
   } catch (error) {
     failure = error
+    dumpLog('electron.log')
   } finally {
+    clearTimeout(killTimer)
     await stopRecorder(recorder)
     if (videoStartedAt) wallSeconds = (Date.now() - videoStartedAt) / 1000
     await standIn.close()

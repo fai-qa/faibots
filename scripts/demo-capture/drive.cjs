@@ -6,10 +6,10 @@ const { join, resolve } = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 const sourceRoot = resolve(__dirname, '..', '..')
-const profile = process.argv[process.argv.length - 3]
-const baseUrl = process.argv[process.argv.length - 2]
-const outDir = process.argv[process.argv.length - 1]
-const logPath = join(outDir, 'electron.log')
+const marker = process.argv.indexOf('--')
+const demoArgs = marker >= 0 ? process.argv.slice(marker + 1) : process.argv.slice(-3)
+const [profile, baseUrl, outDir] = demoArgs
+const logPath = outDir ? join(outDir, 'electron.log') : ''
 
 function log(line) {
   const text = `[${new Date().toISOString()}] ${line}`
@@ -32,8 +32,12 @@ if (!process.versions.electron) {
 
 const { app, BrowserWindow, Menu, screen } = require('electron')
 
+if (!profile || !baseUrl || !outDir) {
+  console.error('Missing demo arguments', process.argv)
+  app.exit(1)
+}
+log(`electron ${process.versions.electron} profile=${profile} base=${baseUrl}`)
 app.commandLine.appendSwitch('force-device-scale-factor', '1')
-app.disableHardwareAcceleration()
 app.setPath('userData', profile)
 delete process.env.ELECTRON_RENDERER_URL
 
