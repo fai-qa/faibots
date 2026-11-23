@@ -46,6 +46,8 @@ You can speak to fai in English, Arabic or a mix. Ask for what you want back. A 
 
 When bots work together, select the message count in your chat to read what they said for that job. Choose **Close chat** or press **Esc** to return to the same place.
 
+When a work brief has a result you want to keep, choose **Accept result**, then **Save to project**. Open the saved Page in the project's Space. A result based on selected project evidence goes back to that project.
+
 Each project has a Library for the source versions you choose, a Space for reviewed Pages, and its own session history. You choose which work to bring into a new session. To discuss a search result in your main chat, choose **Ask fai** below the result, enter your instruction, and select **Send to fai**. To ask a follow-up about the same evidence, use **Reply** on the answer in chat. Project instructions can be tried on two sets of notes before you activate them.
 
 A bot’s profile gives you access to its tools, memory, skills and routines. Start a routine manually to check its result before giving it a schedule. Scheduled routines run while the desktop app is open.

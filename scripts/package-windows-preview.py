@@ -27,10 +27,15 @@ Extract the whole ZIP. Double-click Open faibots preview.cmd.
 Keep the app folder next to the launcher. This local preview is unsigned.
 
 Open Settings > Models & providers and test a provider you already use.
-Choose its model in the profile for fai. Then try this in the fai chat:
+Choose its model in the profile for fai. For a trial with fictional quotes,
+create a project and give fai this job in chat.
 
-Find someone on my team to edit this line: "We make tools for small teams."
-If we need an editor, propose one. Bring me two versions here.
+Compare two quotes. Atlas costs QAR 920 and delivers in four days. Wadi costs
+QAR 990 and delivers in two days. I need delivery in three days. Prepare a
+short decision memo in a work brief for my review.
+
+If the result meets your needs, choose Accept result, then Save to project.
+Open the saved Page in the project's Space.
 
 The launcher opens a separate preview profile. If you used the previous
 Windows preview on this computer, quit that version first. This build opens
