@@ -491,12 +491,13 @@ describe('mission run (M1c)', () => {
     expect(store.conversations.findExchange(chiefId, alternate.id)).toBeUndefined()
   })
 
-  it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {
+  async function projectCorrectionCases() {
     const { adapter, missions, projectId, chiefId } = setup()
     const services = h!.services
     const store = services.store
     const attachments = createAttachmentStore({ dataDir: services.dataDir })
     const handlers = improvementHandlers({ ...services, missions, attachments } as unknown as Services, store)
+    const content = projectContentHandlers({ ...services, missions, attachments } as unknown as Services, store)
     const other = store.projects.create({ name: 'Separate project' })
     const requiredText = '## Next decision'
     const instruction = 'Include a Next decision heading before the final recommendation.'
@@ -521,6 +522,11 @@ describe('mission run (M1c)', () => {
     const heldout = missions.start(projectId).id
     await missions.idle()
     expect(store.journeyRuns.get(heldout)?.status,store.journeyRuns.get(heldout)?.error).toBe('complete')
+    return { store, adapter, missions, projectId, other, handlers, content, instruction, requiredText, matched, heldout, heldNotes, stage }
+  }
+
+  it('reviews a scoped correction, runs two separate cases, publishes only after both pass, and rolls its production use back', async () => {
+    const { store, missions, projectId, other, handlers, instruction, requiredText, matched, heldout, heldNotes, stage } = await projectCorrectionCases()
     expect(() => handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout:matched})).toThrow(/different/)
     const candidateId = handlers['improvement:propose']({projectId,instruction,requiredText,matched,heldout})
     const req = { projectId,candidateId }
@@ -554,6 +560,76 @@ describe('mission run (M1c)', () => {
     expect(result.active).toBeNull()
     expect(result.history.map((item)=>item.action)).toEqual(['rollback','publish'])
     expect(result.trials.map((t)=>t.observed)).toEqual(['passed','failed','passed'])
+  })
+
+  it('replays and compares the exact original review checks across publication, rollback and replacement', async () => {
+    const { store, adapter, missions, projectId, other, handlers, content, instruction, requiredText, matched, heldout, heldNotes, stage } = await projectCorrectionCases()
+    const interrupt = async () => {
+      adapter.push(() => { throw new Error('Replay fixture interrupted.') })
+      const id = missions.start(projectId).id
+      await missions.idle()
+      expect(store.journeyRuns.get(id)?.status).toBe('failed')
+      return id
+    }
+    const publish = async () => {
+      const candidateId = handlers['improvement:propose']({ projectId, instruction, requiredText, matched, heldout })
+      const req = { projectId, candidateId }
+      handlers['improvement:review']({ ...req, decision:'approved' })
+      for (const [lane, source] of [['matched', NOTE_BODY], ['heldout', heldNotes]] as const) {
+        stage(true,true,source)
+        handlers['improvement:trial']({ ...req, lane })
+        await missions.idle()
+      }
+      handlers['improvement:publish'](req)
+      return req
+    }
+    const originalDefault = await interrupt()
+    const first = await publish()
+    stage(true,true,heldNotes)
+    const live = missions.start(projectId).id
+    await missions.idle()
+    expect(store.journeyRuns.get(live)?.status).toBe('complete')
+    const baseline = { projectId, runId: originalDefault }
+    expect(content['content:evaluate'](baseline).report?.status).toBe('failed')
+    // An old installation may already have compared these incompatible runs.
+    store.db.prepare("insert into evaluation_trials(run_id,candidate_id,outcome,reason,created_at,integrity,contract) values (?,?,'passed','Old comparison',?,'verified','accepted')")
+      .run(originalDefault, live, Date.now())
+    expect(content['content:project']({ projectId }).evaluations.find(e => e.runId === originalDefault)?.report)
+      .toMatchObject({ status:'failed', contract:'unmet', candidateId:live })
+    expect(() => content['content:rerun']({ projectId:other.id, runId:originalDefault })).toThrow(/not found/)
+    stage(false,true,heldNotes)
+    const priorDefault = content['content:rerun'](baseline).runId
+    await missions.idle()
+    expect(store.journeyRuns.get(priorDefault)?.status).toBe('complete')
+    expect(store.db.prepare('select candidate_id from improvement_runs where run_id=?').get(priorDefault)).toBeUndefined()
+    const originalVersion = await interrupt()
+    handlers['improvement:rollback'](first)
+    stage(false,true,heldNotes)
+    missions.start(projectId)
+    await missions.idle()
+    const versionedCase = { projectId, runId:originalVersion }
+    expect(content['content:evaluate'](versionedCase).report?.status).toBe('failed')
+    stage(true,true,heldNotes)
+    const replay = content['content:rerun'](versionedCase).runId
+    await missions.idle()
+    expect(store.journeyRuns.get(replay)?.status).toBe('complete')
+    expect(store.db.prepare('select candidate_id,lane from improvement_runs where run_id=?').get(replay))
+      .toMatchObject({ candidate_id:first.candidateId, lane:'production' })
+    expect(content['content:evaluate'](versionedCase).report).toMatchObject({ status:'passed', candidateId:replay })
+
+    // Publishing the same text under a new revision must not make its receipts interchangeable.
+    const second = await publish()
+    stage(true,true,heldNotes)
+    const newRun = missions.start(projectId).id
+    await missions.idle()
+    expect(store.db.prepare('select candidate_id,observed from improvement_runs where run_id=?').get(newRun))
+      .toMatchObject({ candidate_id:second.candidateId, observed:'passed' })
+    expect(content['content:evaluate'](versionedCase).report).toMatchObject({ status:'passed', candidateId:replay })
+    stage(true,true,heldNotes)
+    const originalChecks = content['content:rerun'](versionedCase).runId
+    await missions.idle()
+    expect(store.db.prepare('select candidate_id,observed from improvement_runs where run_id=?').get(originalChecks))
+      .toMatchObject({ candidate_id:first.candidateId, observed:'passed' })
   })
 
   it('publishes a Page tied to the accepted revision and captures a failed case to recheck against a later matching run', async () => {

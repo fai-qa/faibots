@@ -89,12 +89,22 @@ export function createProjectImprovements(store: PlatformStore, readRevision: (p
       if (changed.changes !== 1) throw new Error('Only a proposed correction in this project can be reviewed.')
     },
     pin(run: JourneyRun, baselineId?: string, trialCandidateId?: string): ProjectInstruction | undefined {
-      const active = activeProjectInstruction(db,run.projectId)
       const candidate = trialCandidateId ? get(run.projectId,trialCandidateId) : undefined
       if (candidate && (candidate.decision !== 'approved' || !baselineId || ![candidate.matched,candidate.heldout].includes(baselineId))) {
         throw new Error('Approve the correction and choose one of its pinned trial cases first.')
       }
-      const pinned = candidate ?? active
+      let pinned: ProjectInstruction | undefined
+      if (candidate) {
+        pinned = candidate
+      } else if (baselineId) {
+        const original = db.prepare(`select i.candidate_id from journey_runs r
+          left join improvement_runs i on i.run_id=r.id where r.project_id=? and r.id=?`).get(run.projectId, baselineId)
+        if (!original) throw new Error('Evaluation case not found in this project.')
+        // Absence is the original default, including runs created before project instructions existed.
+        if (original.candidate_id) pinned = get(run.projectId, str(original.candidate_id))
+      } else {
+        pinned = activeProjectInstruction(db,run.projectId)
+      }
       if (pinned) db.prepare(`insert into improvement_runs values (?,?,?,?, 'pending','',null,?)`).run(
         run.id,pinned.id,candidate ? candidate.matched === baselineId ? 'matched' : 'heldout' : 'production',candidate ? baselineId! : null,Date.now())
       return pinned
