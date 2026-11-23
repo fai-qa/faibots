@@ -180,7 +180,7 @@ function seed(db: DatabaseSync, v: number): void {
   if (v >= BRIEF_VERSION) {
     run("insert into chief_work(id,conversation_id,user_entry_id,objective,deliverable,checks,state,revision,updated_at) values (?,?,?,'brief','draft','review','active',3,1)", `brief-${t}`,`conv-${t}`,`entry-${t}`)
     run("insert into chief_decisions values (?,2,'answer','two copies',1,1)", `brief-${t}`)
-    run("insert into chief_wakes values (?,2,'finished',?)",`brief-${t}`,`entry-${t}`)
+    run("insert into chief_wakes(work_id,revision,state,entry_id) values (?,2,'finished',?)",`brief-${t}`,`entry-${t}`)
     run("insert into chief_work_turns values (?,?,1)",`turn-${t}`,`brief-${t}`)
   }
   if (v >= BUDGET_VERSION) run(`insert into assignment_admissions values (?, ?, ?, ?, 1)`, `work-${t}`, `root-${t}`, `conv-${t}`, 'work-v8')
