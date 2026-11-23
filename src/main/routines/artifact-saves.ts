@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import type { ArtifactProvenance, ArtifactRevision, JourneyRun } from '@shared/domain'
 import type { PlatformStore } from '../store'
 import { parseJson, str, transaction } from '../store/db'
+import { RUNNING_STATUSES } from '../store/journey-runs'
 import { observeFile } from './acceptance'
 
 const filename = 'proposal.md'
@@ -87,10 +88,12 @@ export function artifactSaves(store: PlatformStore, dataDir: string) {
           capture(id,observation.data,observation.sha256)
         }
         transaction(db,() => {
-          const revision = link(id)
+          link(id)
+          // Even a failed draft can have recoverable bytes. Only an unfinished run needs an outcome.
+          const current = store.journeyRuns.get(id)
+          if (!current || !RUNNING_STATUSES.includes(current.status)) return
           const updated = store.journeyRuns.finish(id,{status:'partial',endedAt:at,error:'Draft recovered after an interrupted save. Review the saved revision before using it.'})
           store.projectContent.recordOutcome(updated)
-          return revision
         })
       } catch (error) {
         // The bytes and intent remain available on retry. A failed recovery never marks the draft reviewed.

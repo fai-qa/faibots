@@ -4,7 +4,8 @@
 // and must surface as partial/failed — never success.
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHarness, type Harness } from '../agent/testing/fakes'
@@ -16,6 +17,8 @@ import { createAttachmentStore } from '../attachments/attachments'
 import { pdfFixture } from '../attachments/testing/pdf-fixture'
 import { createSnapshotService } from '../attachments/snapshots'
 import { projectContentHandlers } from '../ipc/project-content'
+import { openStore } from '../store'
+import { artifactSaves } from './artifact-saves'
 import { improvementHandlers } from '../ipc/project-improvements'
 import type { MissionRunService, Services } from '../contracts'
 import {
@@ -29,18 +32,22 @@ const REVIEW_MESSAGE = /<<<REVIEW MESSAGE\n([\s\S]*?)REVIEW MESSAGE>>>/
 
 describe('mission run (M1c)', () => {
   let h: Harness | undefined
+  let diskProfile: string | undefined
   afterEach(async () => {
     if (h) {
       await h.runtime.shutdown()
       h.cleanup()
     }
     h = undefined
+    if (diskProfile) rmSync(diskProfile, { recursive: true, force: true, maxRetries: 5 })
+    diskProfile = undefined
   })
 
   /** Harness with the native engine driven by a scripted adapter, file tools, and a real attachment store. */
   const setup = (name = 'launch-notes.md', contents: string | Buffer = NOTE_BODY) => {
     const adapter = new ScriptedAdapter()
     h = createHarness({
+      diskProfile,
       engines: (services, providers) => ({
         native: createNativeEngine({
           store: services.store,
@@ -287,6 +294,49 @@ describe('mission run (M1c)', () => {
     expect(run.budgets.b2!.errors).toBeGreaterThanOrEqual(1)
     expect(run.budgets.b7).toBe(1)
     expect(run.budgets.b10).toMatchObject({ checksPassed: 1, checksTotal: 1 })
+  })
+
+  it.each(['error', 'cancelled'] as const)('preserves a finished %s after the draft file was written and the app reopens', async (outcome) => {
+    diskProfile = mkdtempSync(join(tmpdir(), 'faibots-finished-draft-'))
+    const { missions, adapter, projectId, chiefId } = setup()
+    const { store, dataDir } = h!.services
+    adapter.push(writeDraft(h!, chiefId), (events, signal) => {
+      if (outcome === 'error') throw new Error('Fixture failure after file write')
+      h!.runtime.stop(store.conversations.findDm(chiefId)!.id)
+      return endTurn(events, signal)
+    })
+    const { id } = missions.start(projectId)
+    await missions.idle()
+    const finished = store.journeyRuns.get(id)!
+    expect(finished).toMatchObject({ status: 'failed', endedAt: expect.any(Number), error: expect.stringContaining(outcome) })
+    if (outcome === 'error') expect(finished.error).toContain('Fixture failure after file write')
+    const evaluation = store.projectContent.evaluations(projectId).find(e => e.runId === id)!
+    expect(evaluation).toMatchObject({ status: 'failed', reason: finished.error })
+    expect(store.db.prepare('select state from artifact_saves where run_id=?').get(id)?.state).toBe('expected')
+    expect(store.artifacts.revisions(finished.artifactId!)).toHaveLength(0)
+    const workspaceFile = join(store.settings.get().workspaceRoot, store.bots.get(chiefId)!.handle, 'mission-'+id, DELIVERABLE_PATH)
+    expect(readFileSync(workspaceFile, 'utf8')).toBe(DRAFT)
+    await h!.runtime.shutdown()
+    h!.cleanup()
+    h = undefined
+
+    let originalRevision: string | undefined
+    for (const at of [finished.endedAt! + 1000, finished.endedAt! + 2000]) {
+      const reopened = openStore(join(diskProfile, 'faibots.db'), { homeDir: diskProfile })
+      try {
+        artifactSaves(reopened, dataDir).recover(at)
+        expect(reopened.journeyRuns.get(id)).toEqual(finished)
+        expect(reopened.projectContent.evaluations(projectId).find(e => e.runId === id)).toEqual(evaluation)
+        const revisions = reopened.artifacts.revisions(finished.artifactId!)
+        expect(revisions).toHaveLength(1)
+        const revision = revisions[0]!
+        expect(revision).toMatchObject({ artifactId: finished.artifactId, sha256: sha(DRAFT), provenance: { projectId } })
+        expect(readFileSync(join(revision.provenance.file!.workspace, revision.provenance.file!.path), 'utf8')).toBe(DRAFT)
+        expect(reopened.artifacts.reviews(revision.id)).toEqual([])
+        if (originalRevision) expect(revision.id).toBe(originalRevision)
+        originalRevision = revision.id
+      } finally { reopened.close() }
+    }
   })
 
   it('chief failure: a draft turn that errors ends the run as failed with no revision', async () => {
