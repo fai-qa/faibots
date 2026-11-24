@@ -349,6 +349,18 @@ export function seedMockData(now = Date.now()): MockDb {
     author: user,
     text: 'Great. Run the test suite before we ship.'
   })
+  add('c-atlas', now - 5 * MIN, {
+    kind: 'approval',
+    author: by('b-atlas'),
+    text: 'Run the test suite before we ship.',
+    approval: {
+      approvalId: 'ap-seed-empty',
+      toolName: 'shell',
+      summary: 'Run the test suite before we ship.',
+      input: {},
+      status: 'pending'
+    }
+  })
 
   // --- Exchange fai <-> Iris ------------------------------------------------
   const pricingQuestion = add('x-atlas-iris', now - 39 * MIN, {

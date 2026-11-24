@@ -1,112 +1,49 @@
-// A bot's tool call as a compact row that expands to show input and result.
-// Calls with no attributed messages still show their original input, result and status.
+// A bot's tool call as an affectUI Tool Call Card. send_to_agent stays a small exchange
+// card when this entry is still in the transcript (a failed call). The inline relay
+// replaces the ordinary "N messages with …" control.
 
 import clsx from 'clsx'
-import { Ban, Check, ChevronDown, ChevronRight, CircleX, MessagesSquare } from 'lucide-react'
-import { useState } from 'react'
+import { CircleX, MessagesSquare } from 'lucide-react'
 import type { Entry, ToolCallInfo } from '@shared/domain'
 import { useData } from '../../store/data'
 import { findBotByRef } from '../../lib/bots'
-import { commandOf, parseMcpName, prettyJson, toolIcon, toolTitle } from '../../lib/tools'
+import { toolIcon, visibleToolLabel } from '../../lib/tools'
 import { BotAvatar } from '../avatar/BotAvatar'
 import { Spinner } from '../ui/Badge'
+import { ToolCallCard, type ToolCallStatus } from '../ui/tool-call-card-clean'
 
-function detailOf(call: ToolCallInfo): string | undefined {
-  const input = (call.input ?? {}) as Record<string, unknown>
-  const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
-  switch (call.toolName) {
-    case 'shell':
-      return commandOf(call.input)
-    case 'read_file':
-    case 'write_file':
-    case 'edit_file':
-    case 'list_dir':
-      return str(input.path)
-    case 'web_fetch': {
-      const url = str(input.url)
-      try {
-        return url ? new URL(url).host + new URL(url).pathname.replace(/\/$/, '') : undefined
-      } catch {
-        return url
-      }
-    }
-    case 'update_memory':
-      return str(input.content)
-    case 'recall_memory':
-      return str(input.query)
-    case 'skill':
-    case 'update_skill':
-      return str(input.name)
-    default: {
-      const mcp = parseMcpName(call.toolName)
-      return mcp?.tool
-    }
-  }
-}
-
-function StatusIcon({ status }: { status: ToolCallInfo['status'] }) {
-  switch (status) {
-    case 'running':
-      return <Spinner size={13} className="text-fg-3" />
-    case 'done':
-      return <Check size={14} className="text-success-fg" aria-label="Done" />
-    case 'error':
-      return <CircleX size={14} className="text-danger-fg" aria-label="Failed" />
-    case 'denied':
-      return <Ban size={13} className="text-fg-3" aria-label="Denied" />
-    case 'cancelled':
-      return <Ban size={13} className="text-fg-4" aria-label="Cancelled" />
-  }
+function cardOf(call: ToolCallInfo): { status: ToolCallStatus; summary: string; error?: string } {
+  const label = visibleToolLabel(call.toolName, call.title)
+  if (call.status === 'running') return { status: 'running', summary: label }
+  if (call.status === 'done') return { status: 'success', summary: label }
+  if (call.status === 'denied') return { status: 'error', summary: `${label}. Denied`, error: 'Denied' }
+  if (call.status === 'cancelled') return { status: 'error', summary: `${label}. Stopped`, error: 'Stopped' }
+  return { status: 'error', summary: label, error: call.resultText?.trim() || 'The tool call failed.' }
 }
 
 export function ToolCallRow({ entry }: { entry: Entry }) {
   const call = entry.toolCall
-  const [open, setOpen] = useState(false)
   if (!call) return null
   if (call.toolName === 'send_to_agent') return <ExchangeCard entry={entry} call={call} />
 
   const Icon = toolIcon(call.toolName)
-  const detail = detailOf(call)
-  const title = call.title || toolTitle(call.toolName)
-  const muted = call.status === 'denied' || call.status === 'cancelled'
+  const { status, summary, error } = cardOf(call)
+  const elapsed = entry.updatedAt - entry.createdAt
+  const label = visibleToolLabel(call.toolName, call.title)
 
   return (
-    <div className={clsx('max-w-[min(100%,620px)] rounded-[10px] border border-line-soft', open && 'bg-sunken')}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-[12.5px] hover:bg-hover"
-      >
-        <Icon size={14} className={clsx('shrink-0', muted ? 'text-fg-4' : 'text-fg-3')} />
-        <span className={clsx('shrink-0 font-medium', muted ? 'text-fg-3' : 'text-fg-2')}>{title}</span>
-        {detail && <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-fg-3">{detail}</span>}
-        {!detail && <span className="flex-1" />}
-        {call.status === 'denied' && <span className="text-2xs text-fg-3">Denied</span>}
-        {call.status === 'cancelled' && <span className="text-2xs text-fg-4">Stopped</span>}
-        <StatusIcon status={call.status} />
-        {open ? <ChevronDown size={14} className="text-fg-4" /> : <ChevronRight size={14} className="text-fg-4" />}
-      </button>
-      {open && (
-        <div className="space-y-2 px-2.5 pb-2.5 pt-0.5">
-          <div>
-            <div className="mb-1 text-2xs font-medium text-fg-3">
-              Input <span className="font-mono font-normal text-fg-4">{call.toolName}</span>
-            </div>
-            <pre className="selectable max-h-48 overflow-auto rounded-lg border border-line-soft bg-pane px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-fg-2">
-              {prettyJson(call.input) || '(none)'}
-            </pre>
-          </div>
-          {call.resultText && (
-            <div>
-              <div className="mb-1 text-2xs font-medium text-fg-3">Result</div>
-              <pre className="selectable max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-line-soft bg-pane px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-fg-2">
-                {call.resultText}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
+    <div className="w-full max-w-[min(100%,620px)]">
+      <ToolCallCard
+        name={label}
+        summary={summary}
+        status={status}
+        icon={<Icon size={16} strokeWidth={1.6} />}
+        args={call.input}
+        result={call.resultText}
+        error={error}
+        startedAt={call.status === 'running' ? entry.createdAt : undefined}
+        duration={call.status === 'running' || !Number.isFinite(elapsed) || elapsed < 0 ? undefined : elapsed}
+      />
     </div>
   )
 }
@@ -118,7 +55,7 @@ function ExchangeCard({ entry, call }: { entry: Entry; call: ToolCallInfo }) {
   const input = (call.input ?? {}) as { to?: unknown; message?: unknown }
   const peer = findBotByRef(input.to, bots)
   const running = call.status === 'running'
-  const name = peer?.name ?? (typeof input.to === 'string' ? input.to.replace(/^@/, '') : 'a bot')
+  const name = peer?.name ?? (typeof input.to === 'string' && !input.to.startsWith('mcp__') ? input.to.replace(/^@/, '') : 'a bot')
   const title = running ? `Messaging ${name}` : `Messaged ${name}`
   return (
     <div

@@ -1,20 +1,19 @@
 import { ArrowLeft, Eye, PanelRight, Search } from 'lucide-react'
-import { useEffect, useMemo, useRef } from 'react'
-import type { Conversation } from '@shared/domain'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Bot, Conversation } from '@shared/domain'
 import { liveFor, useData } from '../../store/data'
 import { navigate, useUi } from '../../store/ui'
 import { loadEntries, markRead, sendMessage, stopConversation } from '../../store/actions'
 import { conversationTitle, mainBotRole, membersOf } from '../../lib/bots'
-import { billingFor, routeLabel } from '../../lib/providers'
 import { joinNames, modKey, plural } from '../../lib/format'
 import { BotAvatar, GroupAvatar } from '../avatar/BotAvatar'
-import { BillingBadge } from '../ui/Badge'
 import { IconButton } from '../ui/Button'
 import { Composer } from '../composer/Composer'
 import { FindBar } from './FindBar'
 import { PresenceLine } from './PresenceLine'
 import { WorkBriefPanel } from './WorkBriefPanel'
 import { Transcript } from './Transcript'
+import { WhoSaidWhat } from './WhoSaidWhat'
 import { SpecialistHandoff } from './SpecialistHandoff'
 import { isMockBridge } from '../../lib/bridge'
 
@@ -26,6 +25,11 @@ export function ChatView({ conv }: { conv: Conversation }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const members = useMemo(() => membersOf(conv, botMap), [conv, botMap])
   const readOnly = conv.kind === 'exchange'
+  const [overview, setOverview] = useState(false)
+
+  useEffect(() => {
+    setOverview(false)
+  }, [conv.id])
 
   useEffect(() => {
     if (!loaded) void loadEntries(conv.id)
@@ -63,21 +67,25 @@ export function ChatView({ conv }: { conv: Conversation }) {
         </p>
       </div>
     ) : (
-      <p className="text-[12.5px] text-fg-3">No messages from this agent yet</p>
+      <p className="text-[12.5px] text-fg-3">No messages from this bot yet</p>
     )
 
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-pane" aria-label={conversationTitle(conv, botMap)}>
-      <ChatHeader conv={conv} />
+      <ChatHeader conv={conv} onWho={conv.kind === 'group' ? () => setOverview(true) : undefined} />
       {conv.kind === 'dm' && members[0]?.isPrimary && <WorkBriefPanel key={conv.id} conversationId={conv.id} />}
       {!isMockBridge() && conv.kind === 'dm' && members[0] && !members[0].isPrimary && <SpecialistHandoff key={conv.id} conversationId={conv.id}/>}
       {readOnly && <ExchangeBanner conv={conv} />}
+      {overview && conv.kind === 'group' ? (
+        <WhoSaidWhat conv={conv} onBack={() => setOverview(false)} />
+      ) : (
       <div className="relative flex min-h-0 flex-1 flex-col">
         {findOpen && <FindBar scrollRef={scrollRef} conversationId={conv.id} />}
         <Transcript conv={conv} scrollRef={scrollRef} empty={empty} />
       </div>
-      <PresenceLine conversationId={conv.id} />
-      {!readOnly && (
+      )}
+      {!overview && <PresenceLine conversationId={conv.id} />}
+      {!readOnly && !overview && (
         <Composer
           draftKey={conv.id}
           conversationId={conv.id}
@@ -93,15 +101,21 @@ export function ChatView({ conv }: { conv: Conversation }) {
   )
 }
 
-function ChatHeader({ conv }: { conv: Conversation }) {
+/** The chat header shows the bot's role, not the model id. The id stays in the model picker. */
+export function dmHeaderRole(bot: Pick<Bot, 'label' | 'isPrimary'>): string | undefined {
+  const label = bot.label?.trim()
+  if (!label) return undefined
+  if (bot.isPrimary && label.toLowerCase() === 'main bot') return undefined
+  return label
+}
+
+function ChatHeader({ conv, onWho }: { conv: Conversation; onWho?: () => void }) {
   const botMap = useData((s) => s.botMap)
-  const providers = useData((s) => s.providers)
-  const tests = useData((s) => s.providerTests)
   const detailsOpen = useUi((s) => s.detailsOpen)
   const findOpen = useUi((s) => s.findOpen)
   const members = membersOf(conv, botMap)
   const bot = conv.kind === 'dm' ? members[0] : undefined
-  const provider = bot ? providers.find((p) => p.id === bot.model.providerId) : undefined
+  const role = bot ? dmHeaderRole(bot) : undefined
   const title = conv.kind === 'exchange' ? 'Bot exchange' : conversationTitle(conv, botMap)
 
   return (
@@ -114,11 +128,7 @@ function ChatHeader({ conv }: { conv: Conversation }) {
         </div>
         <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-3">
           {bot ? (
-            <>
-              {bot.label && !(bot.isPrimary && bot.label.trim().toLowerCase() === 'main bot') && <span className="shrink-0">{bot.label}</span>}
-              <span className="min-w-0 truncate">{routeLabel(bot.model, providers)}</span>
-              {provider && <BillingBadge route={billingFor(provider, tests[provider.id]?.billing)} />}
-            </>
+            role ? <span className="min-w-0 truncate">{role}</span> : null
           ) : conv.kind === 'group' ? (
             <span className="truncate">
               {plural(members.length, 'member')}: {joinNames(members.map((m) => m.name), 4)}
@@ -128,6 +138,11 @@ function ChatHeader({ conv }: { conv: Conversation }) {
           )}
         </div>
       </div>
+      {onWho && (
+        <button type="button" onClick={onWho} className="rounded-md px-2 py-1 text-[13px] text-fg-3 hover:bg-hover hover:text-fg">
+          Who said what
+        </button>
+      )}
       <IconButton icon={Search} label={`Find in chat (${modKey}+F)`} active={findOpen} onClick={() => useUi.setState({ findOpen: !findOpen })} />
       <IconButton
         icon={PanelRight}

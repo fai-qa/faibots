@@ -11,12 +11,17 @@ import { Dialog } from '../ui/Dialog'
 import { Field, TextInput } from '../ui/Field'
 import { ToolPermissionList } from './ToolPermissionList'
 
+export const TOOLS_TAB_STANDING_LINE = 'Choose Always allow or Never allow here. It applies to this bot only.'
+
 export function ToolsTab({ bot }: { bot: Bot }) {
   return (
     <div className="space-y-6 p-4">
-      <p className="text-[12.5px] text-fg-3">
-        Choose what {bot.name} may do without asking. <span className="text-fg-2">Ask</span> shows you an approval card first.
-      </p>
+      <div className="space-y-2">
+        <p className="text-[12.5px] text-fg-3">
+          Choose what {bot.name} may do without asking. <span className="text-fg-2">Ask</span> shows you an approval card first.
+        </p>
+        <p className="text-[12.5px] text-fg-3">{TOOLS_TAB_STANDING_LINE}</p>
+      </div>
       <ToolPermissionList botId={bot.id} overrides={bot.toolPermissions} />
       <Secrets bot={bot} />
     </div>

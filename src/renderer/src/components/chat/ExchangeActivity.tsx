@@ -1,231 +1,282 @@
-import { ArrowLeftRight, ArrowRight } from 'lucide-react'
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { Bot } from '@shared/domain'
+// Compact inline relay in place of the "N messages with …" pill and its modal.
+// Question and answer come from the exchange messages, or from the tool call when
+// that text is already stored. Nothing here is invented.
+
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import type { Bot, ToolCallInfo } from '@shared/domain'
 import type { ExchangeMessage, ExchangeSummary } from '@shared/exchange-activity'
 import type { SelectionComparison } from '@shared/specialist-work'
-import { invoke, on } from '../../lib/bridge'
-import { formatFull, formatTime } from '../../lib/format'
+import { invoke } from '../../lib/bridge'
+import { findBotByRef } from '../../lib/bots'
 import { useData } from '../../store/data'
-import { BotAvatar, GroupAvatar } from '../avatar/BotAvatar'
+import { BotAvatar } from '../avatar/BotAvatar'
 import { Spinner } from '../ui/Badge'
-import { Button } from '../ui/Button'
-import { Dialog } from '../ui/Dialog'
 import { Markdown } from './Markdown'
 import { useExchangeChanges } from './useExchangeActivity'
+
+/** First sentence, split on a period. The rest wraps; nothing is cut mid-word. */
+export function firstSentence(text: string): string {
+  const trimmed = text.replace(/\s+/g, ' ').trim()
+  if (!trimmed) return ''
+  return trimmed.split(/(?<=\.)\s/)[0] || trimmed
+}
+
+export function relayPeers(row: ExchangeSummary, bots: Map<string, Bot>, call?: ToolCallInfo): Bot[] {
+  const listed = row.botIds.filter((id) => id !== row.callerId).flatMap((id) => {
+    const bot = bots.get(id)
+    return bot ? [bot] : []
+  })
+  if (listed.length > 0) return listed
+  const input = call?.input as { to?: unknown } | undefined
+  const found = findBotByRef(input?.to, [...bots.values()])
+  return found ? [found] : []
+}
+
+export function peerLabelOf(peers: Bot[]): string {
+  if (peers.length === 0) return 'a bot'
+  if (peers.length === 1) return peers[0]!.name
+  if (peers.length === 2) return `${peers[0]!.name} and ${peers[1]!.name}`
+  return `${peers.length} bots`
+}
+
+export interface RelayLineCopy {
+  authorId: string
+  text: string
+  selectionReason?: string
+  selectionComparison?: SelectionComparison
+}
+
+export interface RelayCopy {
+  question?: RelayLineCopy
+  answer?: RelayLineCopy
+}
+
+/** The caller's question and the peer's answer. Messages win over the tool-call text. */
+export function relayCopy(messages: ExchangeMessage[], callerId: string, peerIds: string[], call?: ToolCallInfo): RelayCopy {
+  const questionMsg = messages.find((message) => message.authorId === callerId && message.text.trim())
+  const answerMsg = [...messages].reverse().find((message) => peerIds.includes(message.authorId) && message.text.trim())
+  const input = call?.input as { message?: unknown } | undefined
+  const asked = typeof input?.message === 'string' ? input.message.trim() : ''
+  const question: RelayLineCopy | undefined = questionMsg
+    ? { authorId: questionMsg.authorId, text: questionMsg.text, selectionReason: questionMsg.selectionReason, selectionComparison: questionMsg.selectionComparison }
+    : asked
+      ? { authorId: callerId, text: asked }
+      : undefined
+  const answer: RelayLineCopy | undefined = answerMsg
+    ? { authorId: answerMsg.authorId, text: answerMsg.text, selectionReason: answerMsg.selectionReason, selectionComparison: answerMsg.selectionComparison }
+    : call?.resultText?.trim()
+      ? { authorId: peerIds[0] ?? callerId, text: call.resultText }
+      : undefined
+  return { question, answer }
+}
+
+/** Close an open relay on Escape. The caller returns focus to the toggle. */
+export function relayEscape(event: { key: string; preventDefault(): void; stopPropagation(): void }, open: boolean): boolean {
+  if (event.key !== 'Escape' || !open) return false
+  event.preventDefault()
+  event.stopPropagation()
+  return true
+}
 
 function selectionHistory(sample: SelectionComparison): string {
   const scope = 'in this chat on the same model and provider'
   if (!sample.count || sample.medianMs === null) return `At selection, there were no earlier matching ${sample.kind} jobs ${scope}.`
   const duration = sample.medianMs < 1000 ? `${sample.medianMs} ms` : `${(sample.medianMs / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`
-  const usage = sample.medianTokens === null ? 'Token use unknown.' :
-    `Median ${sample.medianTokens.toLocaleString()} tokens (${sample.metered} of ${sample.count} measured).`
+  const usage = sample.medianTokens === null ? 'Token use unknown.' : `Median ${sample.medianTokens.toLocaleString()} tokens (${sample.metered} of ${sample.count} measured).`
   const history = sample.count === 20
     ? `the sample covered the 20 most recent ${sample.kind} jobs ${scope}.`
     : `${sample.count} earlier ${sample.kind} ${sample.count === 1 ? 'job' : 'jobs'} in this chat used the same model and provider.`
   return `At selection, ${history} Median turnaround ${duration}. ${usage}`
 }
 
-function FaceName({ bot }: { bot?: Bot }) {
-  return (
-    <span className="inline-flex min-w-0 max-w-full items-center gap-1">
-      {bot && <span aria-hidden="true" className="inline-flex"><BotAvatar bot={bot} size={18} /></span>}
-      <bdi className="truncate">{bot?.name ?? 'Deleted bot'}</bdi>
-    </span>
-  )
+async function readExchange(conversationId: string, row: ExchangeSummary): Promise<ExchangeMessage[]> {
+  const collected: ExchangeMessage[] = []
+  let before: string | undefined
+  for (let page = 0; page < 20; page++) {
+    const result = await invoke('conv:exchange-messages', {
+      conversationId,
+      entryIds: [row.anchorId],
+      before,
+      limit: 50
+    })
+    if (page === 0) collected.push(...result.messages)
+    else collected.unshift(...result.messages)
+    const sawCaller = collected.some((message) => message.authorId === row.callerId && message.text.trim())
+    if (!result.before || sawCaller) break
+    before = result.before
+  }
+  return collected
 }
 
-export function ExchangeActivity({ conversationId, rows }: { conversationId: string; rows: ExchangeSummary[] }) {
-  const byId = useData((state) => state.botMap)
-  const [open, setOpen] = useState(false)
-  const ids = [...new Set(rows.flatMap((row) => row.botIds))]
-  const peers = ids.filter((id) => id !== rows[0]?.callerId)
-  const count = rows.reduce((sum, row) => sum + row.messageCount, 0)
-  const messageLabel = String(count) + (count === 1 ? ' message' : ' messages')
-  const peerLabel = peers.length > 2 ? peers.length + ' bots' : peers.map((id) => byId.get(id)?.name ?? 'Deleted bot').join(' and ')
-  const key = JSON.stringify(rows.map((row) => row.anchorId))
+export function RelayRow({
+  row,
+  bots,
+  call,
+  messages,
+  loadMessages,
+  reloadToken = 0,
+  defaultOpen = false
+}: {
+  row: ExchangeSummary
+  bots: Map<string, Bot>
+  call?: ToolCallInfo
+  /** Already-loaded messages. When set, the row does not fetch. */
+  messages?: ExchangeMessage[]
+  loadMessages?: () => Promise<ExchangeMessage[]>
+  reloadToken?: number
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const [loaded, setLoaded] = useState<ExchangeMessage[] | undefined>(messages)
+  const [failed, setFailed] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const regionId = useId()
+  const caller = bots.get(row.callerId)
+  const peers = relayPeers(row, bots, call)
+  const peerIds = peers.map((bot) => bot.id)
+  const callerName = caller?.name ?? 'Deleted bot'
+  const peersText = peerLabelOf(peers)
+  const countLabel = `${row.messageCount} ${row.messageCount === 1 ? 'message' : 'messages'}`
+  const withPeers = `${countLabel} with ${peersText}`
+  const known = loaded ?? messages ?? []
+  const copy = relayCopy(known, row.callerId, peerIds.length ? peerIds : row.botIds.filter((id) => id !== row.callerId), call)
+  const sentence = call?.resultText ? firstSentence(call.resultText) : ''
+  const summaryTitle = call?.title?.trim() && call.title.trim() !== call.toolName && !call.title.includes('mcp__') ? call.title.trim() : undefined
+
+  useEffect(() => {
+    if (messages) setLoaded(messages)
+  }, [messages])
+
+  useEffect(() => {
+    if (!open || messages || !loadMessages) return
+    let alive = true
+    setFailed(false)
+    loadMessages().then(
+      (next) => {
+        if (alive) setLoaded(next)
+      },
+      () => {
+        if (alive) setFailed(true)
+      }
+    )
+    return () => {
+      alive = false
+    }
+  }, [open, messages, loadMessages, reloadToken, row.anchorId, row.messageCount])
+
+  const close = () => {
+    setOpen(false)
+    buttonRef.current?.focus()
+  }
+
   return (
-    <div className="flex min-w-0 justify-center py-1">
-      <button type="button" aria-haspopup="dialog" aria-expanded={open}
-        aria-label={'Open bot conversation: ' + messageLabel + (peerLabel ? ' with ' + peerLabel : '')}
-        onClick={() => setOpen(true)}
-        className="inline-flex min-h-9 max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full px-3 py-1 text-xs font-medium text-fg-2 hover:bg-hover hover:text-fg focus-visible:outline focus-visible:outline-2">
-        {rows.some((row) => row.active) && <Spinner size={12} />}
-        <span>{messageLabel}{peers.length > 0 && ' with'}</span>
-        {peers.length > 2 ? (
-          <><span aria-hidden="true"><GroupAvatar bots={botsFor(peers, byId)} size={23} /></span>{peerLabel}</>
-        ) : peers.map((id, i) => (
-          <Fragment key={id}>{i > 0 && <span>and</span>}<FaceName bot={byId.get(id)} /></Fragment>
-        ))}
+    <div
+      className="my-2"
+      onKeyDown={(event) => {
+        if (relayEscape(event, open)) close()
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? regionId : undefined}
+        aria-label={open ? `Hide the messages with ${peersText}` : `Open bot conversation: ${withPeers}${row.active ? ', still in progress' : ''}`}
+        onClick={() => (open ? close() : setOpen(true))}
+        className="flex w-full items-start gap-3 rounded-2xl border border-line-soft bg-sunken px-3 py-2.5 text-left hover:bg-hover"
+      >
+        <span className="mt-0.5 flex shrink-0 items-center gap-1" aria-hidden="true">
+          {caller && <BotAvatar bot={caller} size={24} />}
+          <span className="handoff-relay" />
+          {peers[0] && <BotAvatar bot={peers[0]} size={24} state={row.active ? 'thinking' : 'idle'} />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-[13px] font-semibold text-fg">
+              {callerName}
+              <span className="px-1 font-normal text-fg-4">to</span>
+              {peersText}
+            </span>
+            <span className="text-[12px] font-medium text-fg-3">{withPeers}</span>
+            {row.active && <Spinner size={12} />}
+            {row.attention === 'failed' && <span className="text-[12px] text-danger-fg">Failed</span>}
+          </span>
+          {!open && (summaryTitle || sentence) && (
+            <span className="mt-1 block text-[13px] leading-5 text-fg-2">
+              {summaryTitle && <span className="font-medium text-fg-3">{summaryTitle}. </span>}
+              {sentence}
+            </span>
+          )}
+        </span>
+        <span className="mt-0.5 inline-flex shrink-0 items-center gap-0.5 text-[13px] font-medium text-accent-fg" aria-hidden="true">
+          {open ? 'Hide' : 'Show'}
+          {open ? <ChevronDown size={16} strokeWidth={2.25} /> : <ChevronRight size={16} strokeWidth={2.25} />}
+        </span>
       </button>
       {open && (
-        <Dialog
-          title={<span className="flex flex-wrap items-center gap-2">
-            <span className="sr-only">Bot conversation with </span>
-            {ids.map((id, i) => (
-              <Fragment key={id}>
-                {i > 0 && (ids.length === 2
-                  ? <ArrowLeftRight size={13} className="shrink-0 text-fg-3" aria-hidden="true" />
-                  : <span aria-hidden="true" className="text-fg-3">·</span>)}
-                <FaceName bot={byId.get(id)} />
-              </Fragment>
-            ))}
-          </span>}
-          onClose={() => setOpen(false)} width={680} bodyClassName="!overflow-hidden !p-0"
-          footer={<Button data-autofocus size="sm" onClick={() => setOpen(false)}>Close chat</Button>}
-        >
-          <ExchangeHistory key={conversationId + key} conversationId={conversationId} anchorKey={key} bots={byId}
-            incomplete={rows.some((row) => row.incompleteHistory)} />
-        </Dialog>
+        <div id={regionId} role="region" tabIndex={-1} aria-label={`Messages between ${callerName} and ${peersText}`} className="mt-1 rounded-2xl border border-line-soft bg-sunken px-3 py-3 outline-none">
+          {row.incompleteHistory && <p className="mb-2 text-[12px] text-fg-3">Some older messages could not be linked to this exchange.</p>}
+          {failed && !copy.question && !copy.answer && <p className="text-[12px] text-fg-2">Couldn’t load the conversation.</p>}
+          {!failed && loaded === undefined && !copy.question && !copy.answer && <p className="text-[12px] text-fg-3">Loading messages…</p>}
+          <ol className="space-y-2">
+            {copy.question && <RelayLine from={caller} fromName={callerName} toName={peersText} line={copy.question} />}
+            {copy.answer && (
+              <RelayLine
+                from={peers.find((bot) => bot.id === copy.answer?.authorId) ?? peers[0]}
+                fromName={peers.find((bot) => bot.id === copy.answer?.authorId)?.name ?? peersText}
+                toName={callerName}
+                line={copy.answer}
+              />
+            )}
+          </ol>
+        </div>
       )}
     </div>
   )
 }
 
-function botsFor(ids: string[], byId: Map<string, Bot>): Bot[] {
-  return ids.flatMap((id) => { const bot = byId.get(id); return bot ? [bot] : [] })
+function RelayLine({ from, fromName, toName, line }: { from?: Bot; fromName: string; toName: string; line: RelayLineCopy }) {
+  return (
+    <li data-relay-line="" className="flex gap-2.5">
+      {from && <BotAvatar bot={from} size={22} />}
+      <div className="min-w-0 flex-1">
+        <p className="text-[12px] text-fg-4">
+          <span className="font-semibold text-fg">{fromName}</span>
+          <span className="px-1">to</span>
+          {toName}
+        </p>
+        <div className="mt-1 text-[13px] leading-5 text-fg">
+          <Markdown text={line.text} className="!text-[13px] !leading-5" />
+        </div>
+        {(line.selectionReason || line.selectionComparison) && (
+          <div className="selectable mt-1.5 max-w-prose break-words text-[12px] text-fg-3">
+            <span className="font-semibold">Why {toName} was chosen</span>
+            {line.selectionReason && <p className="whitespace-pre-wrap">{line.selectionReason}</p>}
+            {line.selectionComparison && <p>{selectionHistory(line.selectionComparison)}</p>}
+          </div>
+        )}
+      </div>
+    </li>
+  )
 }
 
-function ExchangeHistory({ conversationId, anchorKey, bots, incomplete }: {
-  conversationId: string; anchorKey: string; bots: Map<string, Bot>; incomplete: boolean
-}) {
-  const version = useExchangeChanges(conversationId, true, true)
-  const [view, setView] = useState<{ messages: ExchangeMessage[]; before?: string }>()
-  const [error, setError] = useState(false)
-  const [loadingEarlier, setLoadingEarlier] = useState(false)
-  const read = useRef<(older?: boolean) => void>(() => {})
-  const retryOlder = useRef(false)
-  const scroll = useRef<HTMLDivElement>(null)
-  const pinned = useRef(true)
-  const earlier = useRef<{ id: string; offset: number } | undefined>(undefined)
-
-  useEffect(() => {
-    const entryIds: string[] = JSON.parse(anchorKey)
-    let generation = 0
-    let current = true
-    let running = false
-    let pending = false
-    let pendingOlder = false
-    let visible: { messages: ExchangeMessage[]; before?: string } | undefined
-    async function drain() {
-      if (running) return
-      running = true
-      try {
-        while (current && (pending || pendingOlder)) {
-          const older = Boolean(pendingOlder && visible?.before)
-          const start = generation
-          if (older) pendingOlder = false
-          else { pending = false; pendingOlder = false }
-          try {
-            let page = await invoke('conv:exchange-messages', { conversationId, entryIds, before: older ? visible?.before : undefined, limit: 50 })
-            if (!current || generation !== start) continue
-            if (older && visible) {
-              page = { before: page.before, messages: [...page.messages, ...visible.messages] }
-            } else if (visible && page.messages.length) {
-              // Catch up from the newest page to the first message we already have.
-              // Keep older pages open while new messages arrive.
-              const positions = new Map(visible.messages.map((message, index) => [message.id, index]))
-              while (current && generation === start && page.before && !page.messages.some((m) => positions.has(m.id))) {
-                const previous = await invoke('conv:exchange-messages', { conversationId, entryIds, before: page.before, limit: 50 })
-                page = { before: previous.before, messages: [...previous.messages, ...page.messages] }
-              }
-              if (!current || generation !== start) continue
-              const first = page.messages[0]
-              const overlap = first ? positions.get(first.id) : undefined
-              if (overlap !== undefined && overlap > 0) {
-                page = { before: visible.before, messages: [...visible.messages.slice(0, overlap), ...page.messages] }
-              }
-            }
-            visible = page
-            setView(page)
-            setError(false)
-          } catch {
-            if (current && start === generation) {
-              retryOlder.current = older
-              setError(true)
-            }
-          } finally {
-            if (current && older) setLoadingEarlier(false)
-          }
-        }
-      } finally {
-        running = false
-      }
-    }
-    read.current = (older = false) => {
-      if (older && visible?.before) { pendingOlder = true; setLoadingEarlier(true) }
-      else pending = true
-      void drain()
-    }
-    const off = on('conv:deleted', () => {
-      generation++
-      visible = undefined
-      earlier.current = undefined
-      setView(undefined)
-      setLoadingEarlier(false)
-      read.current()
-    })
-    return () => { current = false; off(); read.current = () => {} }
-  }, [conversationId, anchorKey])
-
-  useEffect(() => { read.current() }, [version, conversationId, anchorKey])
-
-  useLayoutEffect(() => {
-    const el = scroll.current
-    if (!el || !view) return
-    const saved = earlier.current
-    if (saved && !loadingEarlier) {
-      const anchor = Array.from(el.querySelectorAll<HTMLElement>('[data-exchange-message]')).find((item) => item.dataset.exchangeMessage === saved.id)
-      if (anchor) el.scrollTop += anchor.getBoundingClientRect().top - saved.offset
-      earlier.current = undefined
-    } else if (pinned.current && !saved) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [view, loadingEarlier])
-
-  function loadEarlier() {
-    const first = scroll.current?.querySelector<HTMLElement>('[data-exchange-message]')
-    if (first?.dataset.exchangeMessage) earlier.current = { id: first.dataset.exchangeMessage, offset: first.getBoundingClientRect().top }
-    read.current(true)
-  }
-
+export function ExchangeActivity({ conversationId, rows }: { conversationId: string; rows: ExchangeSummary[] }) {
+  const bots = useData((state) => state.botMap)
+  const entries = useData((state) => state.entries[conversationId])
+  const version = useExchangeChanges(conversationId, rows.length > 0, true)
   return (
-    <div ref={scroll} className="scroll-y max-h-[min(59vh,620px)] min-h-24 overscroll-contain px-5 py-3" onScroll={(e) => {
-      const el = e.currentTarget
-      pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
-    }}>
-      {incomplete && <p className="mb-3 text-xs text-fg-2">Some older messages could not be linked to this exchange.</p>}
-      {error && <div role="status" className="mb-3 flex items-center gap-2 text-xs text-fg-2">Couldn’t load the conversation. <Button size="sm" onClick={() => retryOlder.current ? loadEarlier() : read.current()}>Try again</Button></div>}
-      {!view && !error && <p role="status" className="text-xs text-fg-2">Loading messages…</p>}
-      {view?.before && <div className="mb-3 text-center"><Button size="sm" variant="ghost" disabled={loadingEarlier} onClick={loadEarlier}>Show earlier messages</Button></div>}
-      {view?.messages.length === 0 && <p className="text-xs text-fg-2">No messages available for this exchange.</p>}
-      <ol className="space-y-3">
-        {view?.messages.map((message) => {
-          const bot = bots.get(message.authorId)
-          const recipient = bots.get(message.recipientId)
-          return (
-            <li key={message.id} data-exchange-message={message.id} className="flex min-w-0 items-start gap-2">
-              <span aria-hidden="true" className="w-6 shrink-0 pt-0.5">{bot && <BotAvatar bot={bot} size={24} />}</span>
-              <div className="min-w-0 max-w-full">
-                <div className="mb-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-2">
-                  <bdi className="font-semibold text-fg">{bot?.name ?? 'Deleted bot'}</bdi>
-                  <ArrowRight aria-hidden="true" size={12} /><span className="sr-only">to </span><bdi>{recipient?.name ?? 'Deleted bot'}</bdi>
-                  <time dateTime={new Date(message.createdAt).toISOString()} title={formatFull(message.createdAt)}>{formatTime(message.createdAt)}</time>
-                </div>
-                <div dir="auto" className="selectable max-w-full break-words rounded-xl rounded-tl-sm bg-sunken px-3 py-2 text-[13px] text-fg">
-                  <Markdown text={message.text} streaming={message.isStreaming} />
-                </div>
-                {(message.selectionReason || message.selectionComparison) && (
-                  <div className="selectable mt-1.5 max-w-prose break-words text-xs text-fg-2">
-                    <span className="font-semibold">Why <bdi>{recipient?.name ?? 'this specialist'}</bdi> was chosen</span>
-                    {message.selectionReason && <p dir="auto" className="whitespace-pre-wrap">{message.selectionReason}</p>}
-                    {message.selectionComparison && <p>{selectionHistory(message.selectionComparison)}</p>}
-                  </div>
-                )}
-              </div>
-            </li>
-          )
-        })}
-      </ol>
-    </div>
+    <>
+      {rows.map((row) => (
+        <RelayRow
+          key={row.anchorId}
+          row={row}
+          bots={bots}
+          call={entries?.find((entry) => entry.id === row.anchorId)?.toolCall}
+          loadMessages={() => readExchange(conversationId, row)}
+          reloadToken={version}
+        />
+      ))}
+    </>
   )
 }

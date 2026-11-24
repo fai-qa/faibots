@@ -25,6 +25,18 @@ function isEventLike(e: Entry): boolean {
   return e.kind === 'event' || e.author.kind === 'system' || (e.kind === 'tool-call' && e.toolCall?.toolName === 'pass_turn')
 }
 
+/** The user message that started this bot turn, skipping day rules and exchange rows. */
+export function userPromptBefore(blocks: Block[], index: number): string | undefined {
+  for (let i = index - 1; i >= 0; i--) {
+    const block = blocks[i]
+    if (!block || block.type === 'day' || block.type === 'event' || block.type === 'exchange') continue
+    if (block.author.kind !== 'user') break
+    const message = [...block.entries].reverse().find((entry) => entry.kind === 'message' && entry.text.trim())
+    return message?.text
+  }
+  return undefined
+}
+
 function buildBlocks(entries: Entry[], summaries: ReadonlyMap<string, ExchangeSummary>): Block[] {
   const blocks: Block[] = []
   let run: Extract<Block, { type: 'run' }> | null = null
@@ -166,7 +178,7 @@ export function Transcript({ conv, scrollRef, empty }: { conv: Conversation; scr
                   </button>
                 </div>
               )}
-              {blocks.map((b) =>
+              {blocks.map((b, index) =>
                 b.type === 'day' ? (
                   <div key={b.key} className="flex items-center gap-3 py-3" role="separator">
                     <span className="h-px flex-1 bg-line-soft" />
@@ -178,7 +190,7 @@ export function Transcript({ conv, scrollRef, empty }: { conv: Conversation; scr
                 ) : b.type === 'event' ? (
                   <EventLine key={b.key} entry={b.entry} />
                 ) : (
-                  <AuthorRun key={b.key} author={b.author} entries={b.entries} conv={conv} />
+                  <AuthorRun key={b.key} author={b.author} entries={b.entries} conv={conv} prompt={b.author.kind === 'bot' ? userPromptBefore(blocks, index) : undefined} />
                 )
               )}
             </>

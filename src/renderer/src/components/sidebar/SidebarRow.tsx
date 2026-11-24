@@ -7,6 +7,7 @@ import { confirmDialog, navigate, openDetails, useUi } from '../../store/ui'
 import { deleteBot, deleteConversation, markRead, openBot, resetConversation, updateBot } from '../../store/actions'
 import type { SidebarItem } from '../../lib/sidebar'
 import { conversationTitle, membersOf } from '../../lib/bots'
+import { eventLineText } from '../chat/EventLine'
 import { plainPreview, shortWhen } from '../../lib/format'
 import { approvalOutcome } from '../../lib/tools'
 import { BotAvatar, GroupAvatar } from '../avatar/BotAvatar'
@@ -48,7 +49,9 @@ export function SidebarRow({ item, compact }: { item: SidebarItem; compact: bool
         : last.kind === 'approval'
           ? approvalOutcome(last.approval).label
           : last.text
-    preview = last.kind === 'event' ? plainPreview(last.text, 80) : `${who}${plainPreview(body, 80)}`
+    const botName = last.author.kind === 'bot' ? botMap.get(last.author.botId)?.name : undefined
+    const eventText = last.kind === 'event' || (last.kind === 'tool-call' && last.toolCall?.toolName === 'pass_turn')
+    preview = eventText ? plainPreview(eventLineText(last, botName), 80) : `${who}${plainPreview(body, 80)}`
   } else if (bot) preview = bot.label || 'Start a chat'
 
   const open = () => {
