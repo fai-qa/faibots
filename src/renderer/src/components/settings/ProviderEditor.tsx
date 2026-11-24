@@ -3,6 +3,7 @@ import { useState } from 'react'
 import type { ProviderConfig, ProviderKind } from '@shared/domain'
 import { errorMessage, invoke } from '../../lib/bridge'
 import { refreshProviders } from '../../store/actions'
+import { useData } from '../../store/data'
 import { toast } from '../../store/ui'
 import { PROVIDER_KINDS, billingFor, kindInfo } from '../../lib/providers'
 import { BillingBadge } from '../ui/Badge'
@@ -48,6 +49,11 @@ export function ProviderEditor({ provider, onClose }: { provider: ProviderConfig
         // Write-only: omit to keep the stored key, '' to remove it.
         ...(apiKey ? { apiKey } : removeKey ? { apiKey: '' } : {})
       })
+      useData.setState((current) => {
+        const providerTests = { ...current.providerTests }
+        delete providerTests[saved.id]
+        return { providerTests }
+      })
       await refreshProviders()
       toast(provider ? `Saved ${saved.label}` : `Added ${saved.label}`, 'success')
       onClose()
@@ -71,7 +77,7 @@ export function ProviderEditor({ provider, onClose }: { provider: ProviderConfig
             >
               <span className="flex w-full items-center gap-2">
                 <span className="flex-1 text-ui font-semibold text-fg">{k.label}</span>
-                <BillingBadge route={billingFor({ kind: k.kind, baseUrl: k.baseUrlPlaceholder } as ProviderConfig)} />
+                <BillingBadge route={billingFor({ kind: k.kind, baseUrl: k.baseUrlPlaceholder, hasApiKey: false })} />
               </span>
               <span className="text-[12px] leading-snug text-fg-3">{k.description}</span>
             </button>

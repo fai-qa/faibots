@@ -1,6 +1,6 @@
 // Provider kinds, their labels and the billing route each one uses.
 
-import { kindInfo as providerKind, resolveModelId } from '@shared/provider-catalog'
+import { billingRoute, kindInfo as providerKind, resolveModelId } from '@shared/provider-catalog'
 import type { BillingRoute, ModelRoute, ProviderConfig, ProviderKind } from '@shared/domain'
 
 export interface ProviderKindInfo {
@@ -93,29 +93,10 @@ export function kindInfo(kind: ProviderKind): ProviderKindInfo {
   return PROVIDER_KINDS.find((k) => k.kind === kind) ?? PROVIDER_KINDS[0]!
 }
 
-function isLocalUrl(url: string | undefined): boolean {
-  if (!url) return false
-  try {
-    const host = new URL(url).hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host.endsWith('.local')
-  } catch {
-    return false
-  }
-}
-
-/** What a provider route costs. A test result, when we have one, wins over the guess. */
-export function billingFor(p: ProviderConfig | undefined, tested?: BillingRoute): BillingRoute {
+/** What a provider route costs. Prefer a test of the current configuration when available. */
+export function billingFor(p: Pick<ProviderConfig, 'kind' | 'baseUrl' | 'hasApiKey'> | undefined, tested?: BillingRoute): BillingRoute {
   if (tested && tested !== 'unknown') return tested
-  if (!p) return 'unknown'
-  switch (p.kind) {
-    case 'claude-code':
-    case 'codex':
-      return 'subscription'
-    case 'openai-compatible':
-      return isLocalUrl(p.baseUrl) ? 'local' : 'api-key'
-    default:
-      return 'api-key'
-  }
+  return p ? billingRoute(p) : 'unknown'
 }
 
 export const BILLING_LABELS: Record<BillingRoute, { label: string; hint: string }> = {
@@ -132,8 +113,8 @@ export interface ModelSetupIssue {
 }
 
 /** Check configuration only. The provider's live connection is tested separately. */
-export function modelSetupIssue(route: ModelRoute, providers: ProviderConfig[]): ModelSetupIssue | undefined {
-  const provider = providers.find((item) => item.id === route.providerId)
+export function modelSetupIssue(route: ModelRoute | null | undefined, providers: ProviderConfig[]): ModelSetupIssue | undefined {
+  const provider = providers.find((item) => item.id === route?.providerId)
   if (!provider) {
     if (providers.length === 0) return { message: 'Add a model provider to get started.', action: 'Open provider settings', target: 'providers' }
     if (!providers.some((item) => item.enabled)) return { message: 'All model providers are off.', action: 'Manage providers', target: 'providers' }
@@ -143,7 +124,7 @@ export function modelSetupIssue(route: ModelRoute, providers: ProviderConfig[]):
   if (providerKind(provider.kind).needsApiKey && !provider.hasApiKey) {
     return { message: `${provider.label} needs an API key.`, action: 'Manage providers', target: 'providers' }
   }
-  if (!resolveModelId(provider, route.modelId)) return { message: 'Choose a model for this bot.', action: 'Choose model', target: 'profile' }
+  if (!resolveModelId(provider, route?.modelId ?? '')) return { message: 'Choose a model for this bot.', action: 'Choose model', target: 'profile' }
 }
 
 export function routeLabel(route: ModelRoute | null | undefined, providers: ProviderConfig[]): string {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfig } from '@shared/domain'
-import { modelSetupIssue } from './providers'
+import { billingFor, modelSetupIssue } from './providers'
 
 const provider: ProviderConfig = {
   id: 'local',
@@ -25,6 +25,11 @@ describe('chat and routine model setup', () => {
     expect(modelSetupIssue({ ...route, providerId: 'removed' }, [provider])?.action).toBe('Choose provider')
   })
 
+  it.each([null, undefined])('shows setup guidance for a missing model route (%s)', (missingRoute) => {
+    expect(modelSetupIssue(missingRoute, [provider])?.action).toBe('Choose provider')
+    expect(modelSetupIssue(missingRoute, [])?.target).toBe('providers')
+  })
+
   it('accepts the explicit route or the provider default, including a keyless local server', () => {
     expect(modelSetupIssue({ ...route, modelId: 'my-model' }, [provider])).toBeUndefined()
     expect(modelSetupIssue({ ...route, modelId: '  ' }, [{ ...provider, defaultModelId: 'my-model' }])).toBeUndefined()
@@ -43,5 +48,19 @@ describe('chat and routine model setup', () => {
 
   it('accepts the built-in Anthropic model for a keyed account', () => {
     expect(modelSetupIssue(route, [{ ...provider, kind: 'anthropic', hasApiKey: true }])).toBeUndefined()
+  })
+})
+
+describe('billing badges', () => {
+  it('uses the same inferred route as the engine for Codex', () => {
+    const codex = { ...provider, kind: 'codex' as const }
+    expect(billingFor(codex)).toBe('subscription')
+    expect(billingFor({ ...codex, hasApiKey: true })).toBe('api-key')
+    expect(billingFor(codex, 'api-key')).toBe('api-key')
+  })
+
+  it('recognizes mapped loopback without labelling a remote unkeyed endpoint as local', () => {
+    expect(billingFor({ ...provider, baseUrl: 'http://[::ffff:127.0.0.1]:11434/v1' })).toBe('local')
+    expect(billingFor({ ...provider, baseUrl: 'http://[::ffff:8.8.8.8]/v1' })).toBe('unknown')
   })
 })

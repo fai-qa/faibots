@@ -104,7 +104,8 @@ export function isLocalUrl(url: string | undefined): boolean {
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true
   if (host.includes(':')) {
     // IPv6: loopback, unique-local (fc00::/7) and link-local (fe80::/10).
-    return host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)
+    return host === '::1' || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(host)
+      || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)
   }
   const parts = host.split('.').map(Number)
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false

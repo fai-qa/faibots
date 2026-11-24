@@ -136,9 +136,9 @@ async function checkChatHistory(invoke, mode, bot, question, answer) {
   do {
     const { entries } = await invoke('conv:entries', { conversationId })
     userMessage = entries.find((entry) => entry.kind === 'message' && entry.author.kind === 'user' && entry.text === question)
-    reply = entries.find((entry) => entry.author.kind === 'bot' && entry.author.botId === bot.id &&
-      entry.kind === 'message' && !entry.isStreaming && entry.text === answer)
-    if (reply || mode === 'chat-reopen') break
+    reply = entries.find((entry) => entry.kind === 'message' && entry.author.kind === 'bot' &&
+      entry.author.botId === bot.id && !entry.isStreaming && entry.text === answer)
+    if (userMessage && reply) break
     await delay(150)
   } while (Date.now() < deadline)
   assert(userMessage && reply && reply.seq > userMessage.seq, `Expected the user message followed by ${bot.name}'s reply`)
