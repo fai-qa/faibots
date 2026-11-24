@@ -7,6 +7,7 @@ import { buildHandlers, registerHandlers } from './ipc/handlers'
 import { createSafeStorageCipher, encryptionAvailable, notify } from './platform/electron'
 import { createNotifier } from './platform/notifier'
 import { createTrayController, HIDDEN_ARG, setOpenAtLogin, type TrayController } from './platform/tray'
+import { resolveDefaultUserData } from './platform/user-data'
 import { createPlatformServices } from './platform-services'
 import { deliverWorkReplies } from './agent/work-brief-tools'
 import { createRuntimeServices } from './runtime-services'
@@ -217,6 +218,17 @@ async function shutdown(): Promise<void> {
     await Promise.allSettled([s.mcp.shutdown(), s.bridge.shutdown()])
   })()
   await Promise.race([steps, new Promise((r) => setTimeout(r, 5000))])
+}
+
+// Choose the established profile before Electron locks the folder or opens any services.
+if (!explicitProfile()) {
+  const current = app.getPath('userData')
+  try {
+    const established = resolveDefaultUserData(app.getPath('appData'), current)
+    if (established !== current) app.setPath('userData', established)
+  } catch (err) {
+    console.warn('[main] could not check the existing data folder:', err)
+  }
 }
 
 // One running copy only: two would write the same database and secrets file.
