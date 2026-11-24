@@ -3,7 +3,7 @@
 
 import clsx from 'clsx'
 import { AlarmClock, Ban, ChevronDown, CircleCheck, CircleMinus, CircleX, Copy, Pencil, Play, Plus, Trash, Webhook } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   MIN_ROUTINE_INTERVAL_MINUTES,
   type Bot,
@@ -283,6 +283,8 @@ function RoutineEditor({ bot, routine, ready, onClose, onSaved }: { bot: Bot; ro
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [token, setToken] = useState<{ token: string; url: string } | null>(null)
+  const savedId = useRef(routine?.id)
+  const issuedToken = useRef<{ token: string; url: string } | null>(null)
 
   const schedule = (): RoutineSchedule =>
     mode === 'manual'
@@ -303,22 +305,23 @@ function RoutineEditor({ bot, routine, ready, onClose, onSaved }: { bot: Bot; ro
     setSaving(true)
     setError(null)
     try {
-      const saved = await invoke('routines:save', {
-        ...(routine && { id: routine.id }),
+      const needsToken = webhook && !routine?.hasWebhookToken
+      const input = {
         botId: bot.id,
         name,
         prompt,
         schedule: schedule(),
-        webhookEnabled: webhook,
+        webhookEnabled: webhook && !needsToken,
         enabled: startsSchedule && !ready ? false : (routine?.enabled ?? true)
-      })
-      // A new webhook needs its token once; show it before closing.
-      if (webhook && !saved.hasWebhookToken) {
-        const t = await attempt('routines:webhook-token', { id: saved.id }, "Couldn't make a webhook token.")
-        if (t) {
-          setToken(t)
-          return
-        }
+      }
+      const saved = await invoke('routines:save', { ...input, id: savedId.current })
+      savedId.current = saved.id
+      if (needsToken) {
+        // Retain the record and any issued token across a retry of the enable step.
+        issuedToken.current ??= await invoke('routines:webhook-token', { id: saved.id })
+        await invoke('routines:save', { ...input, id: saved.id, webhookEnabled: true })
+        setToken(issuedToken.current)
+        return
       }
       onSaved()
     } catch (err) {
@@ -350,6 +353,9 @@ function RoutineEditor({ bot, routine, ready, onClose, onSaved }: { bot: Bot; ro
     >
       <div className="space-y-4">
         {!ready && startsSchedule && <Notice>This schedule will be saved off. Set up the bot’s model, then turn on its schedule.</Notice>}
+        {!ready && !startsSchedule && mode !== 'manual' && routine?.enabled && (
+          <Notice>This schedule is on. Set up the bot’s model so its runs can finish.</Notice>
+        )}
         <Field label="Name">
           <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning brief" maxLength={80} autoFocus data-autofocus />
         </Field>
