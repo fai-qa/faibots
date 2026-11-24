@@ -1,0 +1,89 @@
+name: Windows demo capture
+
+# Records the built faibots window on a GitHub-hosted Windows desktop.
+# Replies come from scripts/demo-capture/stand-in-server.cjs, a plain Node stand-in.
+# This job does not install Ollama or any model.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/demo-capture.yml
+      - scripts/demo-capture/**
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.20.0'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Install the Electron runtime used by Windows checks
+        shell: pwsh
+        run: |
+          npm run prestart
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $runtime = Join-Path $env:RUNNER_TEMP 'faibots-electron'
+          New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+          Copy-Item -Path 'node_modules/electron/dist/*' -Destination $runtime -Recurse
+          "FAIBOTS_DEMO_ELECTRON=$(Join-Path $runtime 'electron.exe')" | Add-Content $env:GITHUB_ENV
+      - name: Check the stand-in server
+        run: node scripts/demo-capture/stand-in-server.cjs --self-test
+      - name: Prepare the desktop
+        shell: pwsh
+        run: ./scripts/demo-capture/prepare-desktop.ps1
+      - name: Download ffmpeg with gdigrab
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TEMP 'ffmpeg-dist'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          $urls = @(
+            'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          )
+          $downloaded = $false
+          foreach ($url in $urls) {
+            Write-Output "Downloading $url"
+            & curl.exe -L --fail --retry 3 --retry-delay 2 -o $zip $url
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $zip) -and (Get-Item $zip).Length -gt 1000000) {
+              $downloaded = $true
+              break
+            }
+          }
+          if (-not $downloaded) { throw 'Could not download ffmpeg.' }
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $exe = Get-ChildItem -Path $dest -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { throw 'ffmpeg.exe was not in the archive.' }
+          $probe = Join-Path $exe.DirectoryName 'ffprobe.exe'
+          & $exe.FullName -hide_banner -h demuxer=gdigrab
+          if ($LASTEXITCODE -ne 0) { throw 'This ffmpeg build has no gdigrab.' }
+          "FFMPEG=$($exe.FullName)" | Add-Content $env:GITHUB_ENV
+          "FFPROBE=$probe" | Add-Content $env:GITHUB_ENV
+      - name: Record the desktop demo
+        shell: pwsh
+        env:
+          DEMO_OUT: ${{ github.workspace }}\demo-out
+        run: node scripts/demo-capture/run.cjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: faibots-demo-capture
+          path: |
+            demo-out/*.mp4
+            demo-out/*.png
+            demo-out/*.txt
+            demo-out/*.log
+            demo-out/*.json
+          if-no-files-found: warn
