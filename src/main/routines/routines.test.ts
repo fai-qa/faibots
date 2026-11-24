@@ -137,6 +137,20 @@ describe('routine service', () => {
     expect(service.list(bot.id)).toEqual([])
   })
 
+  it('can prepare a token while the saved webhook stays off', async () => {
+    const draft = { botId: bot.id, name: 'Hook', prompt: 'Handle the event', schedule: { kind: 'manual' as const } }
+    const routine = service.save({ ...draft, webhookEnabled: false })
+    const token = service.newWebhookToken(routine.id)
+    expect(service.list(bot.id)).toMatchObject([{ id: routine.id, hasWebhookToken: true, webhookEnabled: false }])
+    expect(() => service.triggerWebhook(routine.id, token, '')).toThrow(WebhookError)
+
+    service.save({ ...draft, id: routine.id, webhookEnabled: true })
+    expect(service.list(bot.id)).toMatchObject([{ id: routine.id, hasWebhookToken: true, webhookEnabled: true }])
+    expect(service.triggerWebhook(routine.id, token, '').trigger).toBe('webhook')
+    runtime.calls[0]!.finish()
+    await service.idle()
+  })
+
   it('checks webhook calls: address, token, size, rate and overlap', async () => {
     const r = service.save({ botId: bot.id, name: 'Hook', prompt: 'Handle the event', schedule: { kind: 'manual' }, webhookEnabled: true })
     const status = (fn: () => unknown) => {

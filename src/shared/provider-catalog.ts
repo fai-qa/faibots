@@ -92,6 +92,11 @@ export function baseUrlOf(provider: Pick<ProviderConfig, 'kind' | 'baseUrl'>): s
   return url?.replace(/\/+$/, '')
 }
 
+function isLocalIpv4(first: number, second: number): boolean {
+  return first === 127 || first === 10 || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168) || (first === 169 && second === 254)
+}
+
 /** True for localhost, loopback and private-network addresses (an Ollama or LM Studio box). */
 export function isLocalUrl(url: string | undefined): boolean {
   if (!url) return false
@@ -103,13 +108,18 @@ export function isLocalUrl(url: string | undefined): boolean {
   }
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true
   if (host.includes(':')) {
+    const mappedHigh = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(host)?.[1]
+    if (mappedHigh) {
+      const high = Number.parseInt(mappedHigh, 16)
+      return isLocalIpv4(high >> 8, high & 0xff)
+    }
     // IPv6: loopback, unique-local (fc00::/7) and link-local (fe80::/10).
     return host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)
   }
   const parts = host.split('.').map(Number)
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false
   const [a, b] = parts as [number, number, number, number]
-  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)
+  return isLocalIpv4(a, b)
 }
 
 /**

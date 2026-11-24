@@ -7,6 +7,7 @@ import { buildHandlers, registerHandlers } from './ipc/handlers'
 import { createSafeStorageCipher, encryptionAvailable, notify } from './platform/electron'
 import { createNotifier } from './platform/notifier'
 import { createTrayController, HIDDEN_ARG, setOpenAtLogin, type TrayController } from './platform/tray'
+import { resolveDefaultUserData } from './platform/user-data'
 import { createPlatformServices } from './platform-services'
 import { deliverWorkReplies } from './agent/work-brief-tools'
 import { createRuntimeServices } from './runtime-services'
@@ -219,8 +220,30 @@ async function shutdown(): Promise<void> {
   await Promise.race([steps, new Promise((r) => setTimeout(r, 5000))])
 }
 
+function reportStartupFailure(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error('[main] startup failed:', error)
+  dialog.showErrorBox('faibots could not start', `${message}\n\nData folder: ${app.getPath('userData')}`)
+  app.exit(1)
+}
+
+// Choose the established profile before Electron locks the folder or opens any services.
+function selectDefaultProfile(): Error | undefined {
+  if (explicitProfile()) return
+  const current = app.getPath('userData')
+  try {
+    const established = resolveDefaultUserData(app.getPath('appData'), current)
+    if (established !== current) app.setPath('userData', established)
+  } catch (cause) {
+    return new Error('Could not check the existing FaiBots data folder. Check access to the folder and try again.', { cause })
+  }
+}
+
+const profileError = selectDefaultProfile()
 // One running copy only: two would write the same database and secrets file.
-if (!app.requestSingleInstanceLock()) {
+if (profileError) {
+  void app.whenReady().then(() => reportStartupFailure(profileError))
+} else if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => focusWindow())
@@ -239,10 +262,7 @@ if (!app.requestSingleInstanceLock()) {
       registerHandlers(buildHandlers(services, getWindow), getWindow)
     } catch (err) {
       // Without services the window would be an empty shell; say why and quit instead.
-      const message = err instanceof Error ? err.message : String(err)
-      console.error('[main] startup failed:', err)
-      dialog.showErrorBox('faibots could not start', `${message}\n\nData folder: ${app.getPath('userData')}`)
-      app.exit(1)
+      reportStartupFailure(err)
       return
     }
     mainWindow = createWindow()
