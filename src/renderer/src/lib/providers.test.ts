@@ -59,8 +59,12 @@ describe('billing badges', () => {
     expect(billingFor(codex, 'api-key')).toBe('api-key')
   })
 
-  it('recognizes mapped loopback without labelling a remote unkeyed endpoint as local', () => {
-    expect(billingFor({ ...provider, baseUrl: 'http://[::ffff:127.0.0.1]:11434/v1' })).toBe('local')
+  it.each(['127.0.0.1', '192.168.1.20', '10.0.0.8', '172.31.2.4', '169.254.2.4'])('recognizes a mapped local address (%s)', (host) => {
+    expect(billingFor({ ...provider, baseUrl: `http://[::ffff:${host}]:11434/v1` })).toBe('local')
+  })
+
+  it('does not label mapped remote endpoints as local', () => {
     expect(billingFor({ ...provider, baseUrl: 'http://[::ffff:8.8.8.8]/v1' })).toBe('unknown')
+    expect(billingFor({ ...provider, baseUrl: 'http://[::ffff:172.32.0.1]/v1', hasApiKey: true })).toBe('api-key')
   })
 })

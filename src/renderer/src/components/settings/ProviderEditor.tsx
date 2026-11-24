@@ -77,7 +77,7 @@ export function ProviderEditor({ provider, onClose }: { provider: ProviderConfig
             >
               <span className="flex w-full items-center gap-2">
                 <span className="flex-1 text-ui font-semibold text-fg">{k.label}</span>
-                <BillingBadge route={billingFor({ kind: k.kind, baseUrl: k.baseUrlPlaceholder, hasApiKey: false })} />
+                <BillingBadge route={billingFor({ kind: k.kind, hasApiKey: false })} />
               </span>
               <span className="text-[12px] leading-snug text-fg-3">{k.description}</span>
             </button>

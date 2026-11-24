@@ -35,7 +35,7 @@ interface ComposerProps {
 export function Composer({ draftKey, placeholder, members, allowEveryone, busy, onSend, onStop, conversationId, disabled, autoFocus = true }: ComposerProps) {
   const draft = useUi((s) => s.drafts[draftKey]) ?? EMPTY
   const providers = useData((s) => s.providers)
-  const directBot = members.length === 1 ? members[0] : undefined
+  const directBot = !allowEveryone && members.length === 1 ? members[0] : undefined
   const setup = directBot && modelSetupIssue(directBot.model, providers)
   const focusTick = useUi((s) => s.focusComposer)
   const ref = useRef<HTMLTextAreaElement>(null)
